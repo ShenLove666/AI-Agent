@@ -27,13 +27,13 @@ describe("LoginPage", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "云桥数码 AI 运营台" })
+      screen.getByRole("heading", { name: "邻里鲜选 AI 运营台" })
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "填入演示账号" }));
 
-    expect(screen.getByLabelText("用户名")).toHaveValue("merchant-demo");
-    expect(screen.getByLabelText("密码")).toHaveValue("MerchantDemo@2026");
+    expect(screen.getByLabelText("用户名")).toHaveValue("demo-admin");
+    expect(screen.getByLabelText("密码")).toHaveValue("AdminDemo@2026");
     expect(screen.getByLabelText("密码")).toHaveAttribute("type", "password");
   });
 });

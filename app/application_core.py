@@ -24,6 +24,7 @@ from app.api.knowledge_chunk_fixes import router as knowledge_chunk_fixes_router
 from app.api.knowledge_fixes import router as knowledge_fixes_router
 from app.api.knowledge_mutations import router as knowledge_mutation_router
 from app.api.management import router as management_router
+from app.api.retail import router as retail_router
 from app.api.system import create_system_router
 from app.container import build_container as build_ai_container
 from app.framework.config import Settings, settings
@@ -53,9 +54,12 @@ from app.modules.vector.memory import InMemoryVectorStore
 from app.modules.vector.milvus import MilvusVectorStore
 
 from app.modules.conversations import models as conversation_models  # noqa: F401,E402
+from app.modules.commerce import models as commerce_models  # noqa: F401,E402
 from app.modules.evaluation import models as evaluation_models  # noqa: F401,E402
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
+from app.modules.operations import models as operation_models  # noqa: F401,E402
+from app.modules.optimization import models as optimization_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
 
 
@@ -182,6 +186,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         knowledge_mutation_router,
         chat_router,
         management_router,
+        retail_router,
         dashboard_router,
         knowledge_fixes_router,
         knowledge_chunk_fixes_router,

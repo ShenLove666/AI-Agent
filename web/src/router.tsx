@@ -23,6 +23,9 @@ const DashboardPage = lazy(() =>
 const OperationsPage = lazy(() =>
   import("@/pages/admin/operations/OperationsPage").then((module) => ({ default: module.OperationsPage }))
 );
+const RetailOperationsPage = lazy(() =>
+  import("@/pages/admin/retail/RetailOperationsPage").then((module) => ({ default: module.RetailOperationsPage }))
+);
 const KnowledgeListPage = lazy(() =>
   import("@/pages/admin/knowledge/KnowledgeListPage").then((module) => ({ default: module.KnowledgeListPage }))
 );
@@ -85,9 +88,10 @@ function RequireAdmin({ children }: { children: JSX.Element }) {
 function RedirectIfAuth({ children }: { children: JSX.Element }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isInitialized = useAuthStore((state) => state.isInitialized);
+  const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
   if (isAuthenticated) {
-    return <Navigate to="/chat" replace />;
+    return <Navigate to={user?.role === "admin" ? "/admin/retail" : "/chat"} replace />;
   }
   return children;
 }
@@ -95,8 +99,9 @@ function RedirectIfAuth({ children }: { children: JSX.Element }) {
 function HomeRedirect() {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isInitialized = useAuthStore((state) => state.isInitialized);
+  const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
-  return <Navigate to={isAuthenticated ? "/chat" : "/login"} replace />;
+  return <Navigate to={isAuthenticated ? (user?.role === "admin" ? "/admin/retail" : "/chat") : "/login"} replace />;
 }
 
 export const router = createBrowserRouter([
@@ -154,7 +159,11 @@ export const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: <Navigate to="/admin/dashboard" replace />
+        element: <Navigate to="/admin/retail" replace />
+      },
+      {
+        path: "retail",
+        element: withPageSuspense(<RetailOperationsPage />)
       },
       {
         path: "dashboard",

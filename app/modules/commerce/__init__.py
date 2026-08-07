@@ -1,0 +1,1 @@
+"""Instant-retail commerce domain."""

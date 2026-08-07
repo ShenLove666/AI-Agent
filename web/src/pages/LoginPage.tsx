@@ -26,7 +26,7 @@ export function LoginPage() {
     }
     try {
       await login(form.username.trim(), form.password.trim(), remember);
-      navigate("/chat");
+      navigate("/");
     } catch (err) {
       setError((err as Error).message || "登录失败，请稍后重试。");
     }
@@ -52,18 +52,18 @@ export function LoginPage() {
               </div>
             </div>
             <p className="mt-20 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--merchant-cyan)]">
-              售后运营工作台
+              即时零售 AI 运营工作台
             </p>
             <h2 className="mt-5 max-w-md text-4xl font-semibold leading-[1.2] tracking-tight">
-              让每一次售后判断，
-              <span className="text-[var(--merchant-cyan)]">都有依据。</span>
+              让每一次运营决策，
+              <span className="text-[var(--merchant-cyan)]">都有数据依据。</span>
             </h2>
             <p className="mt-5 max-w-md text-sm leading-7 text-slate-300">
-              汇集退换货规则、质检记录与保修政策，帮助商家团队快速核对边界、形成可执行答复。
+              从真实购物篮发现搭配机会，连接 AI 客服、评测标注和优化任务，形成可验证的运营闭环。
             </p>
           </div>
           <ul className="space-y-3 text-sm text-slate-200">
-            {["售后规则统一检索", "来源依据清晰可追溯", "商家会话集中管理"].map((item) => (
+            {["真实购物篮关联洞察", "Agent 评测与人工标注", "优化前后证据可追溯"].map((item) => (
               <li key={item} className="flex items-center gap-3">
                 <CheckCircle2 className="h-4 w-4 text-[var(--merchant-cyan)]" />
                 {item}
@@ -89,7 +89,7 @@ export function LoginPage() {
               {BRAND_NAME}
             </h1>
             <p className="mt-3 text-sm leading-6 text-[var(--merchant-text-muted)]">
-              登录后进入商家售后知识问答与会话工作区。
+              登录后进入即时零售运营总览、AI 客服与效果优化工作区。
             </p>
 
             <button

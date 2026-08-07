@@ -14,12 +14,14 @@ import getpass
 import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 from app.application_core import build_container
 from app.framework.config import Settings, settings
 from app.framework.database import Database
 from app.framework.migrations import upgrade_database
 from app.modules.demo.service import DemoSeedError, DemoSeedService
+from app.modules.commerce.service import RetailDataError, RetailService
 from app.modules.users.models import User
 from app.modules.users.repository import UserRepository
 
@@ -131,6 +133,27 @@ def _clear_demo(*, yes: bool) -> int:
         container.database.engine.dispose()
 
 
+def _import_retail(*, source_dir: str, owner: str, seed: int) -> int:
+    database = Database(Settings().database_url)
+    try:
+        upgrade_database(database)
+        with database.session_factory() as db:
+            user = UserRepository().get_by_username(db, owner)
+            if not user:
+                print(f"[error] User '{owner}' does not exist.", file=sys.stderr)
+                return 2
+            try:
+                result = RetailService().import_baskets(db, user.id, source_dir=Path(source_dir), seed=seed)
+            except (RetailDataError, OSError) as exc:
+                db.rollback()
+                print(f"[error] {exc}", file=sys.stderr)
+                return 1
+        print(f"[retail] rows={result.rows} baskets={result.baskets} products={result.products} rules={result.rules} reused={result.reused}")
+        return 0
+    finally:
+        database.engine.dispose()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="RAGent Python CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -162,6 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         "--yes", action="store_true", help="非交互模式下确认执行清理"
     )
     clear.set_defaults(func=lambda args: _clear_demo(yes=args.yes))
+
+    retail = sub.add_parser("seed-retail", help="导入购物篮并创建即时零售运营演示")
+    retail.add_argument("--source-dir", required=True, help="包含 GoodsOrder.csv 与 GoodsTypes.csv 的目录")
+    retail.add_argument("--owner", default="demo-admin", help="演示数据所属账号")
+    retail.add_argument("--seed", type=int, default=20260807, help="确定性模拟数据种子")
+    retail.set_defaults(func=lambda args: _import_retail(source_dir=args.source_dir, owner=args.owner, seed=args.seed))
 
     args = parser.parse_args(argv)
     result = args.func(args)

@@ -7,21 +7,21 @@ import { useChatStore } from "@/stores/chatStore";
 
 const MERCHANT_PRESETS = [
   {
-    title: "质量问题退款",
-    description: "核对质检不合格后的退款与运费责任",
-    prompt: "商品经质检确认存在质量问题，商家应如何处理退款和退货运费？",
+    title: "搭配购推荐",
+    description: "根据购物篮证据推荐高关联商品",
+    prompt: "牛肉适合搭配哪些商品？请给出推荐依据，并说明不能保证实际优惠。",
     icon: PackageX
   },
   {
-    title: "七天退货边界",
-    description: "判断已拆封商品是否适用七天无理由",
-    prompt: "数码商品已拆封并激活，是否还适用七天无理由退货？请说明判断边界。",
+    title: "即时零售退款",
+    description: "核对生鲜与普通商品退款边界",
+    prompt: "即时零售订单中的生鲜商品不满意时如何申请退款？请说明判断边界。",
     icon: CalendarRange
   },
   {
-    title: "保修期内维修",
-    description: "梳理报修材料、寄修流程与处理时限",
-    prompt: "顾客反馈商品在保修期内故障，请给出需要收集的材料和维修处理流程。",
+    title: "缺货替代规则",
+    description: "明确缺货替换与顾客确认流程",
+    prompt: "即时零售商品缺货时能否自动替换？请说明需要顾客确认的流程。",
     icon: Wrench
   }
 ] as const;
@@ -64,13 +64,13 @@ export function WelcomeScreen() {
         <div className="flex flex-col gap-5 border-b border-[var(--merchant-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--merchant-cyan-strong)]">
-              Merchant after-sales assistant
+              Instant retail AI assistant
             </p>
             <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--merchant-navy)] sm:text-3xl">
-              今天要处理哪类售后问题？
+              今天要处理哪类即时零售问题？
             </h1>
             <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--merchant-text-muted)]">
-              结合商家规则与知识资料，快速核对退款、退货和保修边界。
+              结合活动规则、购物篮洞察与服务知识，回答推荐、配送和售后问题。
             </p>
           </div>
           <div className="flex flex-wrap gap-2" aria-label="当前模型配置">

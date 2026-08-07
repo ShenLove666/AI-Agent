@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from sqlalchemy import event, inspect, text
 
 from app.framework.database import Base, Database
@@ -9,10 +10,16 @@ from app.framework.legacy_schema import adopt_pre_alembic_schema
 from app.framework.migrations import build_alembic_config, upgrade_database
 
 from app.modules.conversations import models as conversation_models  # noqa: F401,E402
+from app.modules.commerce import models as commerce_models  # noqa: F401,E402
 from app.modules.evaluation import models as evaluation_models  # noqa: F401,E402
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
+from app.modules.operations import models as operation_models  # noqa: F401,E402
+from app.modules.optimization import models as optimization_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
+
+
+ALEMBIC_HEAD = ScriptDirectory.from_config(build_alembic_config("sqlite://")).get_current_head()
 
 
 LEGACY_SCHEMA_SQL = (
@@ -415,7 +422,7 @@ def test_upgrade_database_adopts_current_pre_alembic_schema(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert connection.scalar(text("SELECT is_demo FROM users_v2")) == 0
@@ -471,7 +478,7 @@ def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert (
@@ -522,7 +529,7 @@ def test_completed_adoption_without_stamp_is_safe_to_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
         assert connection.scalar(text("SELECT content FROM messages")) == "legacy message"
 
@@ -557,7 +564,7 @@ def test_failed_legacy_rebuild_rolls_back_without_stamp_and_can_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
 
 
@@ -609,7 +616,7 @@ def test_destructive_legacy_rebuild_ddl_is_inside_real_sqlite_transaction(tmp_pa
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
 
 
@@ -628,7 +635,7 @@ def test_programmatic_database_url_wins_over_polluted_environment(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
 
 
@@ -645,7 +652,7 @@ def test_upgrade_database_resolves_alembic_config_outside_repository_cwd(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0004_demo_index_metadata"
+            == ALEMBIC_HEAD
         )
 
 

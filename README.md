@@ -1,6 +1,24 @@
-# RAGent Python
+# 邻里鲜选 AI 运营台
 
-一个面向电商商家服务与私有知识库的 RAG 应用。后端使用 Python 与 FastAPI，前端使用 React 18；整体按模块化单体组织。当前版本优先使用大模型 API，未配置本地 Embedding 时也能以关键词检索运行，适合先把商家 AI 产品流程跑通，再逐步接入向量库和本地模型。
+一个面向即时零售商家的 AI 产品运营项目。后端使用 Python 与 FastAPI，前端使用 React 18；用真实购物篮关系串联运营洞察、搭配购方案、AI 客服、Agent 评测、优化任务和周报输出。
+
+## 最快查看即时零售效果
+
+项目数据库已导入用户授权的购物篮数据时，只需：
+
+```powershell
+.\.venv\Scripts\python.exe server.py
+```
+
+访问 `http://127.0.0.1:8081/login`，点击“填入演示账号”，使用 `demo-admin / AdminDemo@2026` 登录后会自动进入“即时零售运营”。日常启动不需要重复执行 `npm install` 或 `npm run build`。
+
+首次导入授权数据：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.cli seed-retail --source-dir "D:\sdu\晓雨\09-数据分析190个实战项目案例\114-商品零售购物篮分析" --owner demo-admin
+```
+
+数据口径：9,835 个购物篮、43,367 条商品明细和商品关联来自源文件；价格、时间、门店、履约、活动曝光及 AI 使用事件为固定种子生成的模拟数据。项目不以模拟指标声称真实业务增长。原数据目录未发现明确再分发许可证，因此仓库不打包完整原始文件。
 
 ## 目前具备的能力
 
@@ -18,6 +36,8 @@
 - 大模型多供应商优先级、故障转移和三态熔断器
 - RAG Trace：记录改写、检索、Prompt 和生成节点的耗时与状态
 - 商家运营洞察：统计 AI 工具渗透率、反馈覆盖率、回答好评率、知识命中率和高频经营意图
+- 即时零售购物篮分析：计算支持度、置信度、提升度并下钻真实订单证据
+- 从关联规则创建搭配购方案，展示 Agent 评测运行、优化任务状态与证据化周报
 - 规则化质量运营：将负反馈、知识未命中、慢响应和失败运行转化为可导出的诊断报告与优化动作
 - SQLite 默认零配置运行；可选 Milvus 和本地 SentenceTransformer
 - 新版管理界面覆盖对话、知识库、运行追踪和系统状态
@@ -108,7 +128,7 @@ uv run python server.py
 
 浏览器访问 `http://127.0.0.1:8081`。FastAPI 会直接托管 `web/dist`，生产环境不需要再暴露 Vite 的 3000 端口。
 
-应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0004_demo_index_metadata`：
+应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `2fce55de2167`：
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head

@@ -78,8 +78,8 @@ const menuGroups: MenuGroup[] = [
     title: "导航",
     items: [
       {
-        path: "/admin/dashboard",
-        label: "Dashboard",
+        path: "/admin/retail",
+        label: "即时零售运营",
         icon: LayoutDashboard
       },
       {
@@ -188,6 +188,7 @@ const menuGroups: MenuGroup[] = [
 ];
 
 const breadcrumbMap: Record<string, string> = {
+  retail: "即时零售运营",
   dashboard: "Dashboard",
   operations: "商家运营洞察",
   agents: "智能体管理",
@@ -297,7 +298,7 @@ export function AdminLayout() {
   const breadcrumbs = useMemo(() => {
     const segments = location.pathname.split("/").filter(Boolean);
     const items: { label: string; to?: string }[] = [
-      { label: "首页", to: "/admin/dashboard" }
+      { label: "首页", to: "/admin/retail" }
     ];
 
     if (segments[0] !== "admin") return items;
@@ -487,8 +488,8 @@ export function AdminLayout() {
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <h1 className="admin-sidebar__title">Ragent AI 管理后台</h1>
-                <p className="admin-sidebar__subtitle">Knowledge Console</p>
+                <h1 className="admin-sidebar__title">邻里鲜选 AI 运营台</h1>
+                <p className="admin-sidebar__subtitle">Instant Retail Ops</p>
               </div>
             )}
           </div>
