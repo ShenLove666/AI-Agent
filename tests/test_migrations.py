@@ -540,6 +540,58 @@ def test_failed_legacy_rebuild_rolls_back_without_stamp_and_can_retry(tmp_path):
         )
 
 
+def test_destructive_legacy_rebuild_ddl_is_inside_real_sqlite_transaction(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'atomic-rebuild.db'}")
+    _create_legacy_schema(database)
+    legacy_signature = _schema_signature(database)
+    expected_signature = _current_schema_signature(tmp_path)
+    transaction_states = []
+    destructive_drops = []
+
+    def fail_after_first_production_drop(
+        connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        normalized = " ".join(statement.split()).upper()
+        if normalized.startswith("CREATE TABLE _RAGENT_NEW_CONVERSATIONS"):
+            transaction_states.append(
+                connection.connection.driver_connection.in_transaction
+            )
+        if normalized == "DROP TABLE CONVERSATIONS":
+            destructive_drops.append(normalized)
+            raise RuntimeError("injected failure after production table drop")
+
+    event.listen(
+        database.engine, "after_cursor_execute", fail_after_first_production_drop
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="injected failure after production table drop"
+        ):
+            upgrade_database(database)
+    finally:
+        event.remove(
+            database.engine,
+            "after_cursor_execute",
+            fail_after_first_production_drop,
+        )
+
+    assert transaction_states == [True]
+    assert destructive_drops == ["DROP TABLE CONVERSATIONS"]
+    assert "alembic_version" not in set(inspect(database.engine).get_table_names())
+    assert _schema_signature(database) == legacy_signature
+    with database.engine.connect() as connection:
+        assert connection.scalar(text("SELECT content FROM messages")) == "legacy message"
+
+    upgrade_database(database)
+
+    assert _schema_signature(database) == expected_signature
+    with database.engine.connect() as connection:
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "0001_current_schema"
+        )
+
+
 def test_programmatic_database_url_wins_over_polluted_environment(
     tmp_path, monkeypatch
 ):

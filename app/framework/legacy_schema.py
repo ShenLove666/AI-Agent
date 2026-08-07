@@ -642,12 +642,6 @@ def _rebuild_supported_legacy_schema(connection: Connection) -> None:
     violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
     if violations:
         raise RuntimeError(f"Legacy adoption produced foreign-key violations: {violations}")
-    connection.info.pop(REBUILD_CONNECTION_FLAG, None)
-
-
-def _remove_rebuild_artifacts(connection: Connection) -> None:
-    for table_name in REBUILD_TEMPORARY_TABLES:
-        connection.exec_driver_sql(f"DROP TABLE IF EXISTS {table_name}")
 
 
 def _adopt_on_connection(connection: Connection) -> None:
@@ -670,6 +664,36 @@ def _adopt_on_connection(connection: Connection) -> None:
 
 
 @contextmanager
+def _sqlite_atomic_transaction(connection: Connection) -> Iterator[None]:
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
+    driver_connection = connection.connection.driver_connection
+    if not driver_connection.in_transaction:
+        connection.rollback()
+        raise RuntimeError("SQLite refused to enter an explicit migration transaction")
+
+    try:
+        yield
+    except Exception as exc:
+        connection.rollback()
+        rebuild_started = connection.info.pop(REBUILD_CONNECTION_FLAG, False)
+        if rebuild_started:
+            tables = set(inspect(connection).get_table_names())
+            connection.rollback()
+            artifacts = sorted(set(REBUILD_TEMPORARY_TABLES) & tables)
+            if artifacts:
+                raise RuntimeError(
+                    "Atomic SQLite legacy rebuild rollback left artifacts: "
+                    f"{artifacts}"
+                ) from exc
+        raise
+    else:
+        try:
+            connection.commit()
+        finally:
+            connection.info.pop(REBUILD_CONNECTION_FLAG, None)
+
+
+@contextmanager
 def migration_transaction(database: Database) -> Iterator[Connection]:
     with database.engine.connect() as connection:
         restore_foreign_keys = False
@@ -682,14 +706,12 @@ def migration_transaction(database: Database) -> Iterator[Connection]:
                 connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
                 connection.commit()
         try:
-            try:
+            if connection.dialect.name == "sqlite":
+                with _sqlite_atomic_transaction(connection):
+                    yield connection
+            else:
                 with connection.begin():
                     yield connection
-            except Exception:
-                if connection.info.pop(REBUILD_CONNECTION_FLAG, False):
-                    with connection.begin():
-                        _remove_rebuild_artifacts(connection)
-                raise
         finally:
             if restore_foreign_keys:
                 if connection.in_transaction():
