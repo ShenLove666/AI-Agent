@@ -27,10 +27,10 @@
 
 ## 5. Idempotent demo seed and safe reset
 
-- [ ] 5.1 Add failing service tests proving repeat seed reuses stable entities and reset preserves every ordinary user-owned record in a mixed database.
-- [ ] 5.2 Implement deterministic demo upsert, knowledge ingestion, evaluation persistence, browseable historical demo records, and dependency-ordered cleanup in a domain service.
-- [ ] 5.3 Add `seed-demo` and confirmation-protected `clear-demo` CLI adapters without committing passwords or requiring an LLM, Redis, Milvus, or network access.
-- [ ] 5.4 Exercise both commands against a temporary SQLite database and run focused plus full backend tests.
+- [x] 5.1 Add failing service tests proving repeat seed reuses stable entities and reset preserves every ordinary user-owned record in a mixed database.
+- [x] 5.2 Implement deterministic demo upsert, knowledge ingestion, evaluation persistence, browseable historical demo records, and dependency-ordered cleanup in a domain service.
+- [x] 5.3 Add `seed-demo` and confirmation-protected `clear-demo` CLI adapters without committing passwords or requiring an LLM, Redis, Milvus, or network access.
+- [x] 5.4 Exercise both commands against a temporary SQLite database and run focused plus full backend tests.
 
 ## 6. Active frontend API contract
 

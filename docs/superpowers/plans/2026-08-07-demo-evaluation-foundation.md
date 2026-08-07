@@ -470,7 +470,7 @@ git commit -m "feat: add merchant support demo catalog"
 - Produces CLI commands `python -m app.cli seed-demo` and `python -m app.cli clear-demo`.
 - Consumes: `DemoCatalog`, `KnowledgeService.ingest_document`, `EvaluationRepository`, and `User.is_demo`.
 
-- [ ] **Step 1: Write failing idempotency and isolation tests**
+- [x] **Step 1: Write failing idempotency and isolation tests**
 
 ```python
 def test_seed_demo_is_idempotent_and_clear_preserves_real_users(app, db):
@@ -487,19 +487,19 @@ def test_seed_demo_is_idempotent_and_clear_preserves_real_users(app, db):
 
 Add rollback coverage by making the vector indexer fail and asserting no half-created evaluation dataset or indexed document status survives.
 
-- [ ] **Step 2: Run and observe missing-service failure**
+- [x] **Step 2: Run and observe missing-service failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_demo_seed.py -v
 ```
 
-- [ ] **Step 3: Implement deterministic upsert order**
+- [x] **Step 3: Implement deterministic upsert order**
 
 Seed in this order: demo users, knowledge bases, files/documents, ingestion, evaluation dataset/cases, conversations/turns/messages/feedback. Use catalog stable keys in names or dedicated metadata so a second seed reuses records rather than duplicating them.
 
 `clear()` first collects demo-owned file and vector identifiers, deletes dependent request runs/traces/messages/turns/conversations/evaluation cases/datasets/chunks/documents/bases/users inside database-safe dependency order, then removes only collected external resources.
 
-- [ ] **Step 4: Add CLI argument handling without committed passwords**
+- [x] **Step 4: Add CLI argument handling without committed passwords**
 
 ```python
 seed = sub.add_parser("seed-demo")
@@ -509,7 +509,7 @@ seed.add_argument("--password-env", default="DEMO_SEED_PASSWORD")
 
 Read the named environment variable; if absent, use `getpass.getpass`. Reject passwords shorter than 10 characters. `clear-demo` requires an explicit `--yes` flag in non-interactive mode and prints counts of removed records/files.
 
-- [ ] **Step 5: Run CLI against a temporary database**
+- [x] **Step 5: Run CLI against a temporary database**
 
 ```powershell
 $env:DB_URL='sqlite:///./data/demo-seed-smoke.db'
@@ -521,14 +521,14 @@ $env:DEMO_SEED_PASSWORD='StrongDemo123!'
 
 Expected: first seed creates records, second reports reuse without duplicates, clear removes only demo-owned records.
 
-- [ ] **Step 6: Run focused and full tests**
+- [x] **Step 6: Run focused and full tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_demo_seed.py -v
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/modules/demo/service.py app/cli.py tests/test_demo_seed.py
