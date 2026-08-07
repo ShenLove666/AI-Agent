@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -166,17 +167,23 @@ class DemoSeedService:
             raise DemoOwnershipError(
                 "ownership violation: demo username belongs to a non-demo user"
             )
-        if existing_user is not None:
-            try:
-                plan = self._ownership_plan(db)
+        try:
+            plan = self._ownership_plan(db)
+            if existing_user is not None:
                 self._validate_seed_identity(db, existing_user, plan)
                 self._require_vector_cleanup_capability(plan)
                 self._reject_shared_seed_files(plan)
-            except DemoSeedError:
-                db.rollback()
-                raise
-            else:
-                db.rollback()
+            self._preflight_catalog_destinations(plan)
+        except OSError as exc:
+            db.rollback()
+            raise DemoCleanupError(
+                [f"file identity check failed during seed preflight: {exc}"]
+            ) from exc
+        except DemoSeedError:
+            db.rollback()
+            raise
+        else:
+            db.rollback()
 
         if reset:
             self.clear(db)
@@ -314,7 +321,14 @@ class DemoSeedService:
             db.scalars(select(User.id).where(User.is_demo.is_(True)))
         )
         if not demo_user_ids:
-            return _OwnershipPlan()
+            return _OwnershipPlan(
+                ordinary_storage_paths=tuple(
+                    Path(value)
+                    for value in db.scalars(
+                        select(KnowledgeDocument.storage_path)
+                    )
+                )
+            )
         demo_users = set(demo_user_ids)
 
         base_ids = tuple(
@@ -730,10 +744,8 @@ class DemoSeedService:
         deletions: list[Path] = []
         for document in plan.documents:
             path = Path(document.storage_path)
-            if self._is_symlink(path):
-                deletions.append(path)
-                continue
-            if not path.exists():
+            target_stat = self._require_managed_file_target(path)
+            if target_stat is None:
                 continue
             if self._shares_regular_file(path, plan.ordinary_storage_paths):
                 continue
@@ -753,11 +765,28 @@ class DemoSeedService:
         try:
             for document in plan.documents:
                 path = Path(document.storage_path)
-                if not self._is_symlink(path) and self._shares_regular_file(
-                    path, plan.ordinary_storage_paths
-                ):
+                self._require_managed_file_target(path)
+                if self._shares_regular_file(path, plan.ordinary_storage_paths):
                     raise DemoOwnershipError(
                         "ownership violation: managed demo file is shared by ordinary data"
+                    )
+        except OSError as exc:
+            raise DemoCleanupError(
+                [f"file identity check failed during seed preflight: {exc}"]
+            ) from exc
+
+    def _preflight_catalog_destinations(self, plan: _OwnershipPlan) -> None:
+        try:
+            for source in self.catalog.documents:
+                source_path = self.catalog.root / source.local_path
+                suffix = source_path.suffix.lower() or ".txt"
+                destination = self._storage_root() / f"{source.key}{suffix}"
+                self._require_managed_file_target(destination)
+                if self._shares_regular_file(
+                    destination, plan.ordinary_storage_paths
+                ):
+                    raise DemoOwnershipError(
+                        "ownership violation: prospective demo file is shared by ordinary data"
                     )
         except OSError as exc:
             raise DemoCleanupError(
@@ -819,7 +848,7 @@ class DemoSeedService:
         suffix = source_path.suffix.lower() or ".txt"
         filename = f"{source.key}{suffix}"
         destination = self._storage_root() / filename
-        self._require_managed_path(destination)
+        self._require_managed_file_target(destination)
         item = db.scalar(
             select(KnowledgeDocument).where(
                 KnowledgeDocument.knowledge_base_id == base.id,
@@ -829,16 +858,7 @@ class DemoSeedService:
         )
         created = item is None
         previous_path: Path | None = None
-        if item is None:
-            item = self.container.knowledge.create_document(
-                db,
-                base_id=base.id,
-                uploader_id=user.id,
-                filename=filename,
-                storage_path=str(destination),
-                file_size=source_path.stat().st_size,
-            )
-        else:
+        if item is not None:
             previous_path = Path(item.storage_path)
             allowed_paths = {
                 self._lexical_key(destination),
@@ -849,27 +869,29 @@ class DemoSeedService:
                     "ownership identity violation: demo document storage path changed"
                 )
 
+        ordinary_query = select(KnowledgeDocument.storage_path)
+        if item is not None:
+            ordinary_query = ordinary_query.where(KnowledgeDocument.id != item.id)
         ordinary_paths = tuple(
-            Path(value)
-            for value in db.scalars(
-                select(KnowledgeDocument.storage_path).where(
-                    KnowledgeDocument.id != item.id
-                )
-            )
+            Path(value) for value in db.scalars(ordinary_query)
         )
-        if not self._is_symlink(destination) and self._shares_regular_file(
-            destination, ordinary_paths
-        ):
+        if self._shares_regular_file(destination, ordinary_paths):
             raise DemoOwnershipError(
                 "ownership violation: refusing to overwrite shared managed file"
             )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if self._is_symlink(destination):
-            destination.unlink()
-        elif destination.exists() and not destination.is_file():
-            raise DemoOwnershipError(
-                "ownership violation: managed document path is not a regular file"
+        if item is None:
+            item = self.container.knowledge.create_document(
+                db,
+                base_id=base.id,
+                uploader_id=user.id,
+                filename=filename,
+                storage_path=str(destination),
+                file_size=source_path.stat().st_size,
             )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        target_stat = self._require_managed_file_target(destination)
+        if target_stat is not None and self._is_link_or_reparse(target_stat):
+            destination.unlink()
         shutil.copyfile(source_path, destination)
         digest = hashlib.sha256(destination.read_bytes()).hexdigest()
         item.storage_path = str(destination)
@@ -885,7 +907,7 @@ class DemoSeedService:
             previous_path is not None
             and self._lexical_key(previous_path) != self._lexical_key(destination)
         ):
-            self._require_managed_path(previous_path)
+            self._require_managed_file_target(previous_path)
             previous_path.unlink(missing_ok=True)
         return item, created
 
@@ -1151,13 +1173,13 @@ class DemoSeedService:
     def _storage_root(self) -> Path:
         url = self.container.database.engine.url
         if url.database and url.drivername == "sqlite":
-            database_path = Path(url.database).resolve()
-            return (
-                database_path.parent / f"{database_path.stem}-demo-files"
-            ).resolve()
+            database_path = Path(os.path.abspath(url.database))
+            return database_path.parent / f"{database_path.stem}-demo-files"
         normalized_url = url.render_as_string(hide_password=True)
         digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:16]
-        return (Path.cwd() / "data" / f"demo-seed-files-{digest}").resolve()
+        return Path(
+            os.path.abspath(Path.cwd() / "data" / f"demo-seed-files-{digest}")
+        )
 
     @staticmethod
     def _legacy_storage_root() -> Path:
@@ -1166,6 +1188,7 @@ class DemoSeedService:
     def _require_managed_path(self, path: Path) -> None:
         path_key = self._lexical_key(path)
         roots = (self._storage_root(), self._legacy_storage_root())
+        matched_root: Path | None = None
         for root in roots:
             root_key = self._lexical_key(root)
             try:
@@ -1173,12 +1196,71 @@ class DemoSeedService:
             except ValueError:
                 continue
             if common == root_key and path_key != root_key:
-                if root == self._legacy_storage_root() and root.is_symlink():
-                    break
-                return
-        raise DemoOwnershipError(
-            "ownership violation: demo file path escapes managed roots"
+                matched_root = root
+                break
+        if matched_root is None:
+            raise DemoOwnershipError(
+                "ownership violation: demo file path escapes managed roots"
+            )
+
+        root_stat = self._lstat_or_none(matched_root)
+        if root_stat is not None:
+            if self._is_link_or_reparse(root_stat) or not stat.S_ISDIR(
+                root_stat.st_mode
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: managed root is not a regular directory"
+                )
+
+        relative = Path(
+            os.path.relpath(path_key, self._lexical_key(matched_root))
         )
+        ancestor = matched_root
+        for component in relative.parts[:-1]:
+            ancestor /= component
+            ancestor_stat = self._lstat_or_none(ancestor)
+            if ancestor_stat is None:
+                continue
+            if self._is_link_or_reparse(ancestor_stat):
+                raise DemoOwnershipError(
+                    "ownership violation: managed path has a symlink or reparse ancestor"
+                )
+            if not stat.S_ISDIR(ancestor_stat.st_mode):
+                raise DemoOwnershipError(
+                    "ownership violation: managed path ancestor is not a directory"
+                )
+
+        canonical_root = self._canonical_key(matched_root)
+        canonical_path = self._canonical_key(path.parent / ".")
+        try:
+            canonical_common = os.path.commonpath(
+                (canonical_root, canonical_path)
+            )
+        except ValueError as exc:
+            raise DemoOwnershipError(
+                "ownership violation: managed file path is on another volume"
+            ) from exc
+        if canonical_common != canonical_root:
+            raise DemoOwnershipError(
+                "ownership violation: managed file path escapes canonical root"
+            )
+
+    def _require_managed_file_target(self, path: Path):
+        self._require_managed_path(path)
+        target_stat = self._lstat_or_none(path)
+        if target_stat is None:
+            return None
+        if self._is_link_or_reparse(target_stat):
+            if not stat.S_ISLNK(target_stat.st_mode):
+                raise DemoOwnershipError(
+                    "ownership violation: managed document target is a reparse directory"
+                )
+            return target_stat
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise DemoOwnershipError(
+                "ownership violation: managed document path is not a regular file"
+            )
+        return target_stat
 
     @staticmethod
     def _lexical_key(path: Path) -> str:
@@ -1189,17 +1271,31 @@ class DemoSeedService:
         return os.path.normcase(os.fspath(path.resolve(strict=False)))
 
     @staticmethod
-    def _is_symlink(path: Path) -> bool:
-        return os.path.lexists(path) and path.is_symlink()
+    def _lstat_or_none(path: Path):
+        try:
+            return path.lstat()
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _is_link_or_reparse(path_stat) -> bool:
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        return stat.S_ISLNK(path_stat.st_mode) or bool(
+            getattr(path_stat, "st_file_attributes", 0) & reparse_flag
+        )
 
     def _shares_regular_file(
         self, path: Path, ordinary_paths: tuple[Path, ...]
     ) -> bool:
         path_key = self._canonical_key(path)
+        path_stat = self._lstat_or_none(path)
         for ordinary in ordinary_paths:
             if self._canonical_key(ordinary) == path_key:
                 return True
-            if path.exists() and ordinary.exists() and os.path.samefile(path, ordinary):
+            ordinary_stat = self._lstat_or_none(ordinary)
+            if path_stat is not None and ordinary_stat is not None and os.path.samefile(
+                path, ordinary
+            ):
                 return True
         return False
 

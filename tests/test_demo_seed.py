@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 from pydantic import ValidationError
-from sqlalchemy import event, func, inspect, select, text
+from sqlalchemy import delete, event, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 import app.cli as cli
@@ -1190,6 +1190,148 @@ def test_seed_catalog_preflight_rejects_path_mismatch_before_any_mutation(
     assert persisted_base.description == "sentinel base description"
     assert persisted_document.storage_path == str(unexpected_path)
     assert persisted_assistant.vote == -1
+
+
+def _database_contents(db: Session) -> dict[str, list[tuple]]:
+    return {
+        table.name: [
+            tuple(row)
+            for row in db.execute(
+                select(table).order_by(*table.primary_key.columns)
+            )
+        ]
+        for table in sorted(Base.metadata.tables.values(), key=lambda item: item.name)
+    }
+
+
+def _regular_file_contents(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize("failure_mode", ["canonical-conflict", "identity-error"])
+def test_seed_preflights_missing_catalog_document_destination_before_mutation(
+    app, db: Session, tmp_path: Path, monkeypatch, failure_mode: str
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    demo_base = db.scalar(
+        select(KnowledgeBase).where(KnowledgeBase.owner_id == demo_user.id)
+    )
+    missing = db.scalar(
+        select(KnowledgeDocument)
+        .where(KnowledgeDocument.uploader_id == demo_user.id)
+        .order_by(KnowledgeDocument.id)
+    )
+    destination = Path(missing.storage_path)
+    db.execute(
+        delete(KnowledgeChunk).where(KnowledgeChunk.document_id == missing.id)
+    )
+    db.delete(missing)
+    demo_base.description = "prospective preflight sentinel"
+    db.commit()
+
+    ordinary_user = User(username=f"prospective-{failure_mode}", password_hash="hash")
+    db.add(ordinary_user)
+    db.flush()
+    ordinary_base = KnowledgeBase(owner_id=ordinary_user.id, name="ordinary base")
+    db.add(ordinary_base)
+    db.flush()
+    if failure_mode == "canonical-conflict":
+        alias_directory = destination.parent / "ordinary-alias"
+        alias_directory.mkdir()
+        ordinary_path = alias_directory / ".." / destination.name
+    else:
+        ordinary_path = tmp_path / "ordinary-identity-check.txt"
+        ordinary_path.write_text("ordinary identity bytes", encoding="utf-8")
+        real_samefile = demo_service.os.path.samefile
+
+        def fail_only_for_prospective(left, right):
+            if service._lexical_key(Path(left)) == service._lexical_key(destination):
+                raise PermissionError("injected prospective identity failure")
+            return real_samefile(left, right)
+
+        monkeypatch.setattr(
+            demo_service.os.path, "samefile", fail_only_for_prospective
+        )
+    ordinary_document = KnowledgeDocument(
+        knowledge_base_id=ordinary_base.id,
+        uploader_id=ordinary_user.id,
+        filename="ordinary-prospective.txt",
+        file_type="txt",
+        storage_path=str(ordinary_path),
+    )
+    db.add(ordinary_document)
+    db.commit()
+
+    password_hash = demo_user.password_hash
+    database_before = _database_contents(db)
+    files_before = _regular_file_contents(destination.parent)
+    ordinary_bytes_before = Path(ordinary_path).read_bytes()
+
+    with pytest.raises(DemoSeedError, match="ownership|identity|cleanup"):
+        service.seed(db, password="DifferentStrongDemo456!")
+
+    assert _database_contents(db) == database_before
+    assert _regular_file_contents(destination.parent) == files_before
+    assert Path(ordinary_path).read_bytes() == ordinary_bytes_before
+    assert db.get(User, demo_user.id).password_hash == password_hash
+    assert db.get(KnowledgeBase, demo_base.id).description == (
+        "prospective preflight sentinel"
+    )
+    assert db.get(KnowledgeDocument, ordinary_document.id) is not None
+
+
+def test_clear_rejects_nested_reparse_ancestor_before_real_unlink(
+    app, db: Session, tmp_path: Path, monkeypatch
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    document = db.scalar(
+        select(KnowledgeDocument).order_by(KnowledgeDocument.id)
+    )
+    original = Path(document.storage_path)
+    nested = original.parent / "nested-reparse"
+    nested.mkdir()
+    nested_target = nested / original.name
+    original.replace(nested_target)
+    external_victim = tmp_path / "external-victim.md"
+    demo_service.os.link(nested_target, external_victim)
+    document.storage_path = str(nested_target)
+    db.commit()
+
+    real_lstat = Path.lstat
+
+    def lstat_with_reparse_ancestor(path: Path):
+        result = real_lstat(path)
+        if service._lexical_key(path) == service._lexical_key(nested):
+            return SimpleNamespace(
+                st_mode=result.st_mode,
+                st_file_attributes=(
+                    getattr(result, "st_file_attributes", 0)
+                    | getattr(
+                        demo_service.stat,
+                        "FILE_ATTRIBUTE_REPARSE_POINT",
+                        0x400,
+                    )
+                ),
+            )
+        return result
+
+    monkeypatch.setattr(Path, "lstat", lstat_with_reparse_ancestor)
+    database_before = _database_contents(db)
+    victim_before = external_victim.read_bytes()
+
+    with pytest.raises(DemoSeedError, match="ownership|reparse|managed"):
+        service.clear(db)
+
+    assert _database_contents(db) == database_before
+    assert nested_target.read_bytes() == victim_before
+    assert external_victim.read_bytes() == victim_before
 
 
 class _PartialWriteThenFailStore:
