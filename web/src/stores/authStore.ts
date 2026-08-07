@@ -7,11 +7,14 @@ import { setAuthToken } from "@/services/api";
 import { useChatStore } from "@/stores/chatStore";
 import { storage } from "@/utils/storage";
 
+let initializationPromise: Promise<void> | null = null;
+
 interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  isInitialized: boolean;
   login: (username: string, password: string, remember?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
@@ -23,6 +26,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   token: storage.getToken(),
   isAuthenticated: Boolean(storage.getToken()),
   isLoading: false,
+  isInitialized: false,
   login: async (username, password, remember = true) => {
     set({ isLoading: true });
     try {
@@ -88,20 +92,29 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ user: null, token: null, isAuthenticated: false });
     toast.success("已退出登录");
   },
-  checkAuth: async () => {
-    const token = storage.getToken();
-    const user = storage.getUser();
-    setAuthToken(token);
-    set({ token, user, isAuthenticated: Boolean(token) });
-    if (token) {
-      try {
-        await get().fetchCurrentUser();
-      } catch {
-        storage.clearAuth();
-        setAuthToken(null);
-        set({ token: null, user: null, isAuthenticated: false });
+  checkAuth: () => {
+    if (initializationPromise) return initializationPromise;
+
+    initializationPromise = (async () => {
+      const token = storage.getToken();
+      const user = storage.getUser();
+      setAuthToken(token);
+      set({ token, user, isAuthenticated: Boolean(token) });
+      if (token) {
+        try {
+          await get().fetchCurrentUser();
+        } catch {
+          storage.clearAuth();
+          setAuthToken(null);
+          set({ token: null, user: null, isAuthenticated: false });
+        }
       }
-    }
+    })().finally(() => {
+      set({ isInitialized: true });
+      initializationPromise = null;
+    });
+
+    return initializationPromise;
   },
   fetchCurrentUser: async () => {
     const token = get().token || storage.getToken();
