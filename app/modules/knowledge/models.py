@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.framework.database import Base
+
+
+CONTENT_ORIGINS = frozenset({"user_upload", "public_summary", "synthetic"})
 
 
 class KnowledgeBase(Base):
@@ -32,6 +35,23 @@ class KnowledgeDocument(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    content_origin: Mapped[str] = mapped_column(
+        String(30),
+        default="user_upload",
+        server_default=text("'user_upload'"),
+        nullable=False,
+    )
+    source_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    source_publisher: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_retrieved_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_usage_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @validates("content_origin")
+    def validate_content_origin(self, _key: str, value: str) -> str:
+        if value not in CONTENT_ORIGINS:
+            allowed = ", ".join(sorted(CONTENT_ORIGINS))
+            raise ValueError(f"content_origin must be one of: {allowed}")
+        return value
 
 
 class KnowledgeChunk(Base):

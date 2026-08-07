@@ -369,6 +369,15 @@ def _current_schema_signature(tmp_path) -> dict:
     return _schema_signature(reference)
 
 
+def _revision_schema_signature(tmp_path, revision: str) -> dict:
+    reference = Database(f"sqlite:///{tmp_path / f'{revision}.db'}")
+    config = build_alembic_config(
+        reference.engine.url.render_as_string(hide_password=False)
+    )
+    command.upgrade(config, revision)
+    return _schema_signature(reference)
+
+
 def test_upgrade_database_builds_empty_sqlite_schema(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'empty.db'}")
 
@@ -381,8 +390,12 @@ def test_upgrade_database_builds_empty_sqlite_schema(tmp_path):
 
 def test_upgrade_database_adopts_current_pre_alembic_schema(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'legacy.db'}")
-    Base.metadata.create_all(database.engine)
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+    command.upgrade(config, "0001_current_schema")
     with database.engine.begin() as connection:
+        connection.execute(text("DROP TABLE alembic_version"))
         connection.execute(
             text(
                 """
@@ -401,9 +414,10 @@ def test_upgrade_database_adopts_current_pre_alembic_schema(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
+        assert connection.scalar(text("SELECT is_demo FROM users_v2")) == 0
 
 
 @pytest.mark.parametrize(
@@ -456,7 +470,7 @@ def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert (
@@ -469,6 +483,11 @@ def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp
         )
         assert connection.scalar(text("SELECT enabled FROM knowledge_documents")) == 1
         assert connection.scalar(text("SELECT enabled FROM knowledge_chunks")) == 1
+        assert connection.scalar(text("SELECT is_demo FROM users_v2")) == 0
+        assert (
+            connection.scalar(text("SELECT content_origin FROM knowledge_documents"))
+            == "user_upload"
+        )
 
 
 def test_upgrade_database_rejects_legacy_schema_with_missing_index(tmp_path):
@@ -489,19 +508,20 @@ def test_upgrade_database_rejects_legacy_schema_with_missing_index(tmp_path):
 def test_completed_adoption_without_stamp_is_safe_to_retry(tmp_path):
     database = Database(f"sqlite:///{tmp_path / 'retry.db'}")
     _create_legacy_schema(database)
+    revision_signature = _revision_schema_signature(tmp_path, "0001_current_schema")
     expected_signature = _current_schema_signature(tmp_path)
 
     adopt_pre_alembic_schema(database)
 
     assert "alembic_version" not in set(inspect(database.engine).get_table_names())
-    assert _schema_signature(database) == expected_signature
+    assert _schema_signature(database) == revision_signature
 
     upgrade_database(database)
 
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
         assert connection.scalar(text("SELECT content FROM messages")) == "legacy message"
 
@@ -536,7 +556,7 @@ def test_failed_legacy_rebuild_rolls_back_without_stamp_and_can_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
 
 
@@ -588,7 +608,7 @@ def test_destructive_legacy_rebuild_ddl_is_inside_real_sqlite_transaction(tmp_pa
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
 
 
@@ -607,7 +627,7 @@ def test_programmatic_database_url_wins_over_polluted_environment(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
 
 
@@ -624,7 +644,7 @@ def test_upgrade_database_resolves_alembic_config_outside_repository_cwd(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0001_current_schema"
+            == "0002_demo_source_metadata"
         )
 
 
