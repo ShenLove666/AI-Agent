@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import urllib.request
 from datetime import date
@@ -10,6 +11,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+import app.modules.demo.catalog as demo_catalog
 from app.framework.database import Base, Database
 from app.modules.demo.catalog import DemoCatalogError, load_demo_catalog
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
@@ -200,6 +202,20 @@ def _write_catalog_fixture(
     return root
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=False)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314 or exc.errno in {
+            errno.EACCES,
+            errno.EPERM,
+        }:
+            pytest.skip(
+                f"file symlink permission unavailable on this Windows environment: {exc}"
+            )
+        raise
+
+
 def test_demo_catalog_has_unique_stable_keys_and_valid_local_files():
     catalog = load_demo_catalog(PROJECT_ROOT / "resources" / "demo")
 
@@ -210,6 +226,58 @@ def test_demo_catalog_has_unique_stable_keys_and_valid_local_files():
         for item in catalog.documents
         if item.content_origin == "public_summary"
     )
+
+
+def test_demo_catalog_rejects_manifest_symlink_escape(tmp_path: Path):
+    root = _write_catalog_fixture(tmp_path / "demo")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_manifest = outside / "catalog.json"
+    outside_payload = _valid_catalog_payload()
+    outside_payload["account"]["username"] = "outside-manifest"
+    outside_manifest.write_text(
+        json.dumps(outside_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    manifest_link = root / "catalog.json"
+    manifest_link.unlink()
+    _symlink_or_skip(manifest_link, outside_manifest)
+
+    with pytest.raises(DemoCatalogError, match="manifest|catalog.json|escapes"):
+        load_demo_catalog(root)
+
+
+def test_demo_catalog_rejects_cases_replaced_after_validation(
+    tmp_path: Path, monkeypatch
+):
+    root = _write_catalog_fixture(tmp_path / "demo")
+    outside_cases = tmp_path / "outside-cases.json"
+    outside_payload = _valid_cases_payload()
+    outside_payload["cases"][0]["key"] = "outside-case"
+    outside_payload["cases"][0]["question"] = "EXTERNAL CONTENT"
+    outside_cases.write_text(
+        json.dumps(outside_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    local_cases = root / "evaluation" / "cases.json"
+    real_resolve = demo_catalog._resolve_local_file
+    swapped = False
+
+    def resolve_then_swap(
+        catalog_root: Path, relative_path: Path, *, field_name: str
+    ):
+        nonlocal swapped
+        resolved = real_resolve(
+            catalog_root, relative_path, field_name=field_name
+        )
+        if field_name == "cases_path" and not swapped:
+            outside_cases.replace(local_cases)
+            swapped = True
+        return resolved
+
+    monkeypatch.setattr(demo_catalog, "_resolve_local_file", resolve_then_swap)
+
+    with pytest.raises(DemoCatalogError, match="cases_path|changed|identity|symlink"):
+        load_demo_catalog(root)
+    assert swapped is True
 
 
 @pytest.mark.parametrize(

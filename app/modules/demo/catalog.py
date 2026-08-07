@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal
@@ -30,6 +33,13 @@ class DemoCatalogError(ValueError):
 
 class _ImmutableModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedLocalFile:
+    path: Path
+    device: int
+    inode: int
 
 
 def _validate_relative_path(value: object, field_name: str) -> Path:
@@ -157,13 +167,72 @@ class DemoCatalog(_ImmutableModel):
     evaluation_cases: tuple[DemoEvaluationCase, ...]
 
 
-def _read_json(path: Path, *, label: str) -> object:
+def _read_local_text(
+    root: Path,
+    relative_path: Path,
+    *,
+    field_name: str,
+    label: str,
+) -> str:
+    validated = _resolve_local_file(
+        root, relative_path, field_name=field_name
+    )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        descriptor = os.open(validated.path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino)
+            != (validated.device, validated.inode)
+        ):
+            raise DemoCatalogError(
+                f"{field_name} changed between validation and open: {relative_path}"
+            )
+        with os.fdopen(descriptor, "rb") as file_handle:
+            descriptor = -1
+            content = file_handle.read()
     except OSError as exc:
-        raise DemoCatalogError(f"cannot read {label} at {path}: {exc}") from exc
+        raise DemoCatalogError(
+            f"cannot safely read {label} at {relative_path}: {exc}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DemoCatalogError(
+            f"cannot decode {label} at {relative_path} as UTF-8: {exc}"
+        ) from exc
+
+
+def _read_json(
+    root: Path,
+    relative_path: Path,
+    *,
+    field_name: str,
+    label: str,
+) -> object:
+    try:
+        return json.loads(
+            _read_local_text(
+                root,
+                relative_path,
+                field_name=field_name,
+                label=label,
+            )
+        )
     except json.JSONDecodeError as exc:
-        raise DemoCatalogError(f"invalid JSON in {label} at {path}: {exc}") from exc
+        raise DemoCatalogError(
+            f"invalid JSON in {label} at {relative_path}: {exc}"
+        ) from exc
 
 
 def _require_unique_keys(items: tuple[object, ...], *, label: str) -> None:
@@ -175,17 +244,41 @@ def _require_unique_keys(items: tuple[object, ...], *, label: str) -> None:
         seen.add(key)
 
 
-def _resolve_local_file(root: Path, relative_path: Path, *, field_name: str) -> Path:
-    candidate = (root / relative_path).resolve()
+def _resolve_local_file(
+    root: Path, relative_path: Path, *, field_name: str
+) -> _ValidatedLocalFile:
     try:
-        candidate.relative_to(root)
+        safe_relative_path = _validate_relative_path(relative_path, field_name)
+    except ValueError as exc:
+        raise DemoCatalogError(str(exc)) from exc
+    candidate = root / safe_relative_path
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise DemoCatalogError(
+            f"{field_name} does not reference a local file: {relative_path}"
+        ) from exc
+    try:
+        resolved.relative_to(root)
     except ValueError as exc:
         raise DemoCatalogError(
             f"{field_name} escapes demo catalog root: {relative_path}"
         ) from exc
-    if not candidate.is_file():
-        raise DemoCatalogError(f"{field_name} does not reference a local file: {relative_path}")
-    return candidate
+    try:
+        file_status = os.lstat(resolved)
+    except OSError as exc:
+        raise DemoCatalogError(
+            f"cannot inspect {field_name} at {relative_path}: {exc}"
+        ) from exc
+    if not stat.S_ISREG(file_status.st_mode):
+        raise DemoCatalogError(
+            f"{field_name} does not reference a regular local file: {relative_path}"
+        )
+    return _ValidatedLocalFile(
+        path=resolved,
+        device=file_status.st_dev,
+        inode=file_status.st_ino,
+    )
 
 
 def _validate_document_references(
@@ -213,10 +306,15 @@ def load_demo_catalog(root: Path) -> DemoCatalog:
     """Load and validate the demo catalog using local files only."""
 
     resolved_root = Path(root).resolve()
-    manifest_path = resolved_root / "catalog.json"
+    manifest_path = Path("catalog.json")
     try:
         manifest = _DemoManifest.model_validate(
-            _read_json(manifest_path, label="demo manifest")
+            _read_json(
+                resolved_root,
+                manifest_path,
+                field_name="manifest_path",
+                label="demo manifest",
+            )
         )
     except ValidationError as exc:
         raise DemoCatalogError(f"invalid demo manifest: {exc}") from exc
@@ -224,18 +322,21 @@ def load_demo_catalog(root: Path) -> DemoCatalog:
     _require_unique_keys(manifest.documents, label="document")
     _require_unique_keys(manifest.knowledge_bases, label="knowledge base")
     for source in manifest.documents:
-        _resolve_local_file(
-            resolved_root, source.local_path, field_name="local_path"
+        _read_local_text(
+            resolved_root,
+            source.local_path,
+            field_name="local_path",
+            label=f"demo document {source.key}",
         )
 
-    cases_path = _resolve_local_file(
-        resolved_root,
-        manifest.evaluation_dataset.cases_path,
-        field_name="cases_path",
-    )
     try:
         evaluation_file = _DemoEvaluationFile.model_validate(
-            _read_json(cases_path, label="demo evaluation cases")
+            _read_json(
+                resolved_root,
+                manifest.evaluation_dataset.cases_path,
+                field_name="cases_path",
+                label="demo evaluation cases",
+            )
         )
     except ValidationError as exc:
         raise DemoCatalogError(f"invalid demo evaluation cases: {exc}") from exc
