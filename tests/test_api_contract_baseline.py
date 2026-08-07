@@ -8,6 +8,7 @@ from app.main import create_app
 from scripts.check_api_contracts import (
     ACTIVE_SERVICE_PATHS,
     ApiCall,
+    ContractExtractionError,
     compare_with_openapi,
     extract_service_calls,
     main,
@@ -26,9 +27,22 @@ def test_active_frontend_service_calls_exist_in_openapi():
     assert missing == set()
 
 
+def test_real_multiline_generic_call_is_extracted_from_active_session_service():
+    """A semicolon inside a multiline generic must not hide GET /conversations."""
+    calls = extract_service_calls(ACTIVE_SERVICE_PATHS)
+
+    assert ApiCall("GET", "/conversations") in calls
+    assert len(calls) == 47
+
+    calls.add(ApiCall("POST", "/rag/v3/chat"))
+    assert len(calls) == 48
+
+
 def test_template_parameters_are_normalized():
     """Changing a template parameter name must not create a false mismatch."""
     assert normalize_path("/conversations/${conversationId}/messages") == "/conversations/{}/messages"
+    assert normalize_path("users") == "/users"
+    assert normalize_path("api/v1/users") == "/users"
 
 
 def test_extraction_handles_type_arguments_and_api_prefix(tmp_path: Path):
@@ -38,7 +52,6 @@ def test_extraction_handles_type_arguments_and_api_prefix(tmp_path: Path):
         '''
         api.get<Array<Record<string, unknown>>>("/api/v1/users");
         api.patch(`/api/v1/conversations/${conversationId}`, payload);
-        api.post(url, payload);
         ''',
         encoding="utf-8",
     )
@@ -49,6 +62,23 @@ def test_extraction_handles_type_arguments_and_api_prefix(tmp_path: Path):
         ApiCall("GET", "/users"),
         ApiCall("PATCH", "/conversations/{}"),
     }
+
+
+def test_dynamic_first_argument_fails_with_filename_line_and_method(tmp_path: Path):
+    """A dynamic active endpoint cannot be verified and must never be silently skipped."""
+    service = tmp_path / "dynamicService.ts"
+    service.write_text('api.post(url, payload);', encoding="utf-8")
+
+    try:
+        extract_service_calls([service])
+    except ContractExtractionError as error:
+        message = str(error)
+    else:
+        raise AssertionError("dynamic active call was silently ignored")
+
+    assert "dynamicService.ts:1" in message
+    assert "POST" in message
+    assert "first argument must be a string or template literal" in message
 
 
 def test_checker_cli_validates_the_real_fastapi_application():

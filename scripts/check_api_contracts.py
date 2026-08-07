@@ -32,16 +32,7 @@ ACTIVE_SERVICE_PATHS = tuple(
     )
 )
 
-API_CALL_RE = re.compile(
-    r"""
-    \bapi\.(?P<method>get|post|put|patch|delete)\s*
-    (?:<[^;]*?>\s*)?
-    \(\s*(?P<quote>[\"'`])
-    (?P<path>(?:\\.|(?! (?P=quote) ).)*?)
-    (?P=quote)
-    """,
-    re.DOTALL | re.VERBOSE,
-)
+API_METHOD_RE = re.compile(r"\bapi\.(?P<method>get|post|put|patch|delete)\b")
 TEMPLATE_PARAMETER_RE = re.compile(r"\$\{[^}]+\}")
 OPENAPI_PARAMETER_RE = re.compile(r"\{[^}]+\}")
 
@@ -52,11 +43,17 @@ class ApiCall:
     path: str
 
 
+class ContractExtractionError(ValueError):
+    """Raised when an active frontend API call cannot be verified statically."""
+
+
 def normalize_path(path: str) -> str:
     """Normalize frontend and OpenAPI paths into a common comparison form."""
     normalized = path.split("?", 1)[0].split("#", 1)[0]
     normalized = TEMPLATE_PARAMETER_RE.sub("{}", normalized)
     normalized = OPENAPI_PARAMETER_RE.sub("{}", normalized)
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
     if normalized == API_PREFIX:
         return "/"
     if normalized.startswith(f"{API_PREFIX}/"):
@@ -64,13 +61,85 @@ def normalize_path(path: str) -> str:
     return normalized
 
 
+def _skip_whitespace(source: str, index: int) -> int:
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index
+
+
+def _skip_balanced_type_arguments(source: str, index: int, path: Path) -> int:
+    """Skip nested TypeScript ``<...>`` while preserving quoted string contents."""
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    while index < len(source):
+        character = source[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+        elif character in {"'", '"', "`"}:
+            quote = character
+        elif character == "<":
+            depth += 1
+        elif character == ">":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    line = source.count("\n", 0, index) + 1
+    raise ContractExtractionError(f"{path}:{line}: unclosed TypeScript type arguments")
+
+
+def _read_literal_argument(source: str, index: int, path: Path, method: str) -> tuple[str, int]:
+    """Read the literal first argument after a verified axios method call."""
+    line = source.count("\n", 0, index) + 1
+    if index >= len(source) or source[index] not in {"'", '"', "`"}:
+        raise ContractExtractionError(
+            f"{path}:{line}: {method}: first argument must be a string or template literal"
+        )
+
+    quote = source[index]
+    start = index + 1
+    index = start
+    escaped = False
+    while index < len(source):
+        character = source[index]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            return source[start:index], index + 1
+        index += 1
+    raise ContractExtractionError(f"{path}:{line}: {method}: unclosed string or template literal")
+
+
+def _extract_source_calls(source: str, path: Path) -> set[ApiCall]:
+    calls: set[ApiCall] = set()
+    for match in API_METHOD_RE.finditer(source):
+        method = match.group("method").upper()
+        index = _skip_whitespace(source, match.end())
+        if index < len(source) and source[index] == "<":
+            index = _skip_balanced_type_arguments(source, index, path)
+            index = _skip_whitespace(source, index)
+        if index >= len(source) or source[index] != "(":
+            continue
+        literal_path, _ = _read_literal_argument(
+            source, _skip_whitespace(source, index + 1), path, method
+        )
+        calls.add(ApiCall(method, normalize_path(literal_path)))
+    return calls
+
+
 def extract_service_calls(paths: Sequence[Path]) -> set[ApiCall]:
     """Extract literal axios calls from the deliberately scoped active services."""
     calls: set[ApiCall] = set()
     for path in paths:
-        source = path.read_text(encoding="utf-8")
-        for match in API_CALL_RE.finditer(source):
-            calls.add(ApiCall(match.group("method").upper(), normalize_path(match.group("path"))))
+        calls.update(_extract_source_calls(path.read_text(encoding="utf-8"), path))
     return calls
 
 
