@@ -19,7 +19,7 @@ from app.application_core import build_container
 from app.framework.config import Settings, settings
 from app.framework.database import Database
 from app.framework.migrations import upgrade_database
-from app.modules.demo.service import DemoSeedService
+from app.modules.demo.service import DemoSeedError, DemoSeedService
 from app.modules.users.models import User
 from app.modules.users.repository import UserRepository
 
@@ -82,9 +82,13 @@ def _seed_demo(*, password_env: str, reset: bool) -> int:
     try:
         upgrade_database(container.database)
         with container.database.session_factory() as db:
-            result = DemoSeedService(container).seed(
-                db, password=password, reset=reset
-            )
+            try:
+                result = DemoSeedService(container).seed(
+                    db, password=password, reset=reset
+                )
+            except DemoSeedError as exc:
+                print(f"[error] {exc}", file=sys.stderr)
+                return 1
         _print_counts("seed-demo", result)
         return 0
     finally:
@@ -108,7 +112,11 @@ def _clear_demo(*, yes: bool) -> int:
     try:
         upgrade_database(container.database)
         with container.database.session_factory() as db:
-            result = DemoSeedService(container).clear(db)
+            try:
+                result = DemoSeedService(container).clear(db)
+            except DemoSeedError as exc:
+                print(f"[error] {exc}", file=sys.stderr)
+                return 1
         _print_counts("clear-demo", result)
         print(
             f"[clear-demo] removed_records={result.removed_records} "

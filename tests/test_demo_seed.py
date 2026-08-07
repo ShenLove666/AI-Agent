@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select, text
 from sqlalchemy.orm import Session
 
 import app.cli as cli
@@ -28,6 +28,7 @@ from app.modules.conversations.models import (
 from app.modules.demo.catalog import DemoCatalogError, load_demo_catalog
 from app.modules.demo.service import DemoSeedError, DemoSeedService
 from app.modules.evaluation.models import EvaluationCase, EvaluationDataset
+from app.modules.evaluation.repository import EvaluationRepository
 from app.modules.knowledge.models import (
     KnowledgeBase,
     KnowledgeChunk,
@@ -46,6 +47,11 @@ def app(tmp_path, monkeypatch):
     monkeypatch.delenv("EMBED_MODEL_PATH", raising=False)
     database_url = f"sqlite:///{tmp_path / 'demo-metadata.db'}"
     item = create_app(Settings(database_url=database_url))
+    event.listen(
+        item.state.container.database.engine,
+        "connect",
+        lambda connection, _record: connection.execute("PRAGMA foreign_keys=ON"),
+    )
     Base.metadata.create_all(item.state.container.database.engine)
     try:
         yield item
@@ -761,3 +767,381 @@ def test_demo_cli_prompts_with_getpass_when_named_env_is_absent(
         ["seed-demo", "--password-env", "ABSENT_DEMO_PASSWORD"]
     ) == 0
     assert prompts == ["Demo password: "]
+
+
+def test_demo_cli_reports_cleanup_failure_without_losing_retry_metadata(
+    tmp_path: Path, monkeypatch, capsys
+):
+    database_url = f"sqlite:///{tmp_path / 'cleanup-failure.db'}"
+    monkeypatch.setenv("DB_URL", database_url)
+    monkeypatch.setenv("DEMO_SEED_PASSWORD", "StrongDemo123!")
+    assert cli.main(["seed-demo"]) == 0
+    database = Database(database_url)
+    with database.session_factory() as db:
+        document = db.scalar(select(KnowledgeDocument))
+        document.vector_indexed = True
+        db.commit()
+
+    assert cli.main(["clear-demo", "--yes"]) == 1
+
+    assert "cleanup" in capsys.readouterr().err
+    with database.session_factory() as db:
+        assert db.scalar(
+            select(func.count(User.id)).where(User.is_demo.is_(True))
+        ) == 1
+    database.engine.dispose()
+
+
+def test_demo_sqlite_fixture_enforces_foreign_keys(db: Session):
+    assert db.scalar(text("PRAGMA foreign_keys")) == 1
+
+
+@pytest.mark.parametrize(
+    "cross_owner_link",
+    [
+        "ordinary-document-in-demo-base",
+        "demo-document-in-ordinary-base",
+        "ordinary-message-in-demo-conversation",
+        "demo-dataset-in-ordinary-owner",
+    ],
+)
+def test_clear_fails_closed_before_mutation_for_cross_owner_graphs(
+    app, db: Session, tmp_path: Path, cross_owner_link: str
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    demo_base = db.scalar(
+        select(KnowledgeBase).where(KnowledgeBase.owner_id == demo_user.id)
+    )
+    demo_conversation = db.scalar(
+        select(Conversation).where(Conversation.user_id == demo_user.id)
+    )
+    real = User(username=f"real-{cross_owner_link}", password_hash="hash")
+    db.add(real)
+    db.flush()
+    real_base = KnowledgeBase(owner_id=real.id, name="ordinary base")
+    db.add(real_base)
+    db.flush()
+
+    if cross_owner_link == "ordinary-document-in-demo-base":
+        item = KnowledgeDocument(
+            knowledge_base_id=demo_base.id,
+            uploader_id=real.id,
+            filename="ordinary-cross-owner.txt",
+            file_type="txt",
+            storage_path=str(tmp_path / "ordinary-cross-owner.txt"),
+        )
+    elif cross_owner_link == "demo-document-in-ordinary-base":
+        item = KnowledgeDocument(
+            knowledge_base_id=real_base.id,
+            uploader_id=demo_user.id,
+            filename="demo-cross-owner.txt",
+            file_type="txt",
+            storage_path=str(tmp_path / "demo-cross-owner.txt"),
+        )
+    elif cross_owner_link == "ordinary-message-in-demo-conversation":
+        item = Message(
+            conversation_id=demo_conversation.id,
+            user_id=real.id,
+            role="assistant",
+            content="ordinary cross-owner message",
+            vote=-1,
+        )
+    else:
+        item = EvaluationDataset(
+            owner_id=real.id,
+            name="cross-owner demo dataset",
+            is_demo=True,
+        )
+    db.add(item)
+    db.commit()
+    item_id = item.id
+    demo_count_before = db.scalar(
+        select(func.count(User.id)).where(User.is_demo.is_(True))
+    )
+
+    with pytest.raises(DemoSeedError, match="ownership"):
+        service.clear(db)
+
+    assert db.get(type(item), item_id) is not None
+    assert db.get(User, real.id) is not None
+    assert db.scalar(
+        select(func.count(User.id)).where(User.is_demo.is_(True))
+    ) == demo_count_before
+
+
+def test_seed_reuse_rejects_mismatched_assistant_without_changing_ordinary_vote(
+    app, db: Session
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    conversation = db.scalar(
+        select(Conversation).where(Conversation.user_id == demo_user.id)
+    )
+    turn = db.scalar(
+        select(ConversationTurn).where(
+            ConversationTurn.conversation_id == conversation.id
+        )
+    )
+    real = User(username="ordinary-vote-owner", password_hash="hash")
+    db.add(real)
+    db.flush()
+    ordinary_assistant = Message(
+        conversation_id=conversation.id,
+        user_id=real.id,
+        turn_id=turn.id,
+        version=2,
+        role="assistant",
+        content="ordinary assistant",
+        vote=-1,
+    )
+    db.add(ordinary_assistant)
+    db.flush()
+    turn.active_assistant_message_id = ordinary_assistant.id
+    db.commit()
+
+    with pytest.raises(DemoSeedError, match="ownership|identity"):
+        service.seed(db, password="StrongDemo123!")
+
+    db.refresh(ordinary_assistant)
+    assert ordinary_assistant.vote == -1
+
+
+def test_clear_rejects_orphan_demo_dataset_without_any_demo_user(
+    app, db: Session
+):
+    real = User(username="orphan-demo-dataset-owner", password_hash="hash")
+    db.add(real)
+    db.flush()
+    dataset = EvaluationDataset(
+        owner_id=real.id,
+        name="orphan demo dataset",
+        is_demo=True,
+    )
+    db.add(dataset)
+    db.commit()
+
+    with pytest.raises(DemoSeedError, match="ownership"):
+        DemoSeedService(app.state.container).clear(db)
+
+    assert db.get(EvaluationDataset, dataset.id) is not None
+
+
+class _RetryableVectorStore:
+    def __init__(self):
+        self.records = {}
+        self.upsert_calls = 0
+        self.fail_document_id: int | None = None
+        self.fail_cleanup_after_upserts = False
+        self.failed_once = False
+
+    async def upsert(self, records) -> None:
+        self.upsert_calls += 1
+        self.records.update({record.id: record for record in records})
+
+    async def delete_document(self, document_id: int) -> None:
+        should_fail = document_id == self.fail_document_id or (
+            self.fail_cleanup_after_upserts
+            and self.upsert_calls >= 3
+            and not self.failed_once
+        )
+        if should_fail:
+            self.failed_once = True
+            raise RuntimeError(f"injected cleanup failure for {document_id}")
+        self.records = {
+            key: record
+            for key, record in self.records.items()
+            if record.document_id != document_id
+        }
+
+
+def _install_retryable_vectors(app) -> _RetryableVectorStore:
+    store = _RetryableVectorStore()
+    app.state.container.knowledge.vector_indexer = VectorIndexer(
+        _OfflineEmbeddingModel(), store
+    )
+    return store
+
+
+def test_clear_external_partial_failure_rolls_back_db_and_retry_succeeds(
+    app, db: Session
+):
+    store = _install_retryable_vectors(app)
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_documents = list(
+        db.scalars(select(KnowledgeDocument).order_by(KnowledgeDocument.id))
+    )
+    store.fail_document_id = demo_documents[1].id
+
+    with pytest.raises(DemoSeedError, match="cleanup"):
+        service.clear(db)
+
+    assert db.get(KnowledgeDocument, demo_documents[0].id) is not None
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+
+    store.fail_document_id = None
+    service.clear(db)
+
+    assert store.records == {}
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
+
+
+def test_reset_stops_when_external_cleanup_fails(app, db: Session):
+    store = _install_retryable_vectors(app)
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    store.fail_cleanup_after_upserts = True
+
+    with pytest.raises(DemoSeedError, match="cleanup"):
+        service.seed(db, password="StrongDemo123!", reset=True)
+
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+
+
+def test_clear_fails_closed_when_vector_cleanup_capability_is_unavailable(
+    app, db: Session
+):
+    _install_retryable_vectors(app)
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    app.state.container.knowledge.vector_indexer = None
+
+    with pytest.raises(DemoSeedError, match="vector.*cleanup|cleanup.*vector"):
+        service.clear(db)
+
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+
+
+def test_seed_reconciles_managed_bytes_and_missing_chunks(app, db: Session):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    document = db.scalar(
+        select(KnowledgeDocument).order_by(KnowledgeDocument.id)
+    )
+    managed_path = Path(document.storage_path)
+    managed_path.write_text("stale managed bytes", encoding="utf-8")
+    db.query(KnowledgeChunk).filter(
+        KnowledgeChunk.document_id == document.id
+    ).delete()
+    db.commit()
+
+    second = service.seed(db, password="StrongDemo123!")
+
+    source = service.catalog.documents[0]
+    assert second.reused_documents == 3
+    assert managed_path.read_bytes() == (
+        service.catalog.root / source.local_path
+    ).read_bytes()
+    assert db.scalar(
+        select(func.count(KnowledgeChunk.id)).where(
+            KnowledgeChunk.document_id == document.id
+        )
+    ) > 0
+
+
+def test_seed_rebuilds_missing_vector_generation(app, db: Session):
+    store = _install_retryable_vectors(app)
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    assert store.records
+    store.records.clear()
+
+    service.seed(db, password="StrongDemo123!")
+
+    assert store.records
+    assert {record.document_id for record in store.records.values()} == set(
+        db.scalars(select(KnowledgeDocument.id))
+    )
+
+
+class _FailingEvaluationRepository(EvaluationRepository):
+    def create_dataset_with_cases(self, *args, **kwargs):
+        raise RuntimeError("injected evaluation failure")
+
+
+@pytest.mark.parametrize("failure_stage", ["evaluation", "history"])
+def test_seed_compensation_cleanup_failure_preserves_retry_metadata(
+    app, db: Session, monkeypatch, failure_stage: str
+):
+    store = _install_retryable_vectors(app)
+    store.fail_cleanup_after_upserts = True
+    repository = (
+        _FailingEvaluationRepository()
+        if failure_stage == "evaluation"
+        else EvaluationRepository()
+    )
+    if failure_stage == "history":
+        monkeypatch.setattr(
+            app.state.container.conversations,
+            "add_assistant_version",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("injected history failure")
+            ),
+        )
+    service = DemoSeedService(
+        app.state.container, evaluation_repository=repository
+    )
+
+    with pytest.raises(DemoSeedError, match="cleanup"):
+        service.seed(db, password="StrongDemo123!")
+
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 3
+
+
+def test_clear_preserves_regular_file_with_canonical_ordinary_alias(
+    app, db: Session
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_document = db.scalar(
+        select(KnowledgeDocument).order_by(KnowledgeDocument.id)
+    )
+    managed_path = Path(demo_document.storage_path)
+    alias_directory = managed_path.parent / "alias"
+    alias_directory.mkdir()
+    aliased_path = alias_directory / ".." / managed_path.name
+    real = User(username="canonical-alias-owner", password_hash="hash")
+    db.add(real)
+    db.flush()
+    real_base = KnowledgeBase(owner_id=real.id, name="alias base")
+    db.add(real_base)
+    db.flush()
+    real_document = KnowledgeDocument(
+        knowledge_base_id=real_base.id,
+        uploader_id=real.id,
+        filename="ordinary-alias.txt",
+        file_type="txt",
+        storage_path=str(aliased_path),
+    )
+    db.add(real_document)
+    db.commit()
+
+    service.clear(db)
+
+    assert db.get(KnowledgeDocument, real_document.id) is not None
+    assert managed_path.is_file()
+
+
+def test_clear_unlinks_managed_symlink_without_following_shared_target(
+    app, db: Session, tmp_path: Path
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_document = db.scalar(
+        select(KnowledgeDocument).order_by(KnowledgeDocument.id)
+    )
+    managed_path = Path(demo_document.storage_path)
+    shared_target = tmp_path / "ordinary-shared-target.txt"
+    shared_target.write_text("ordinary shared bytes", encoding="utf-8")
+    managed_path.unlink()
+    _symlink_or_skip(managed_path, shared_target)
+
+    result = service.clear(db)
+
+    assert result.removed_files == 3
+    assert not managed_path.exists()
+    assert shared_target.read_text(encoding="utf-8") == "ordinary shared bytes"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, false, text
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.framework.database import Base
@@ -45,6 +45,15 @@ class KnowledgeDocument(Base):
     source_publisher: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source_retrieved_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     source_usage_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    demo_content_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    demo_indexed_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    vector_indexed: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
 
     @validates("content_origin")
     def validate_content_origin(self, _key: str, value: str) -> str:

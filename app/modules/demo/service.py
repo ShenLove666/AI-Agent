@@ -1,14 +1,16 @@
-"""Deterministic, offline demo data seeding and ownership-safe cleanup."""
+"""Deterministic demo seeding with fail-closed ownership and cleanup."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.conversations.models import (
@@ -30,7 +32,19 @@ from app.modules.users.models import User
 
 
 class DemoSeedError(RuntimeError):
-    """Raised when seeding cannot finish without leaving partial demo data."""
+    """Base error for a demo operation that could not complete safely."""
+
+
+class DemoOwnershipError(DemoSeedError):
+    """Raised before mutation when a demo/non-demo ownership edge is unsafe."""
+
+
+class DemoCleanupError(DemoSeedError):
+    """Raised after rolling back DB deletion when external cleanup is incomplete."""
+
+    def __init__(self, errors: list[str] | tuple[str, ...]):
+        self.errors = tuple(errors)
+        super().__init__("demo cleanup failed: " + "; ".join(self.errors))
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +105,33 @@ class DemoClearResult:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _OwnershipPlan:
+    user_ids: tuple[int, ...] = ()
+    base_ids: tuple[int, ...] = ()
+    documents: tuple[KnowledgeDocument, ...] = ()
+    chunk_ids: tuple[int, ...] = ()
+    dataset_ids: tuple[int, ...] = ()
+    case_ids: tuple[int, ...] = ()
+    conversation_ids: tuple[str, ...] = ()
+    turn_ids: tuple[int, ...] = ()
+    message_ids: tuple[int, ...] = ()
+    request_run_ids: tuple[int, ...] = ()
+    trace_run_ids: tuple[str, ...] = ()
+    trace_node_ids: tuple[int, ...] = ()
+    ordinary_storage_paths: tuple[Path, ...] = ()
+
+    @property
+    def document_ids(self) -> tuple[int, ...]:
+        return tuple(item.id for item in self.documents)
+
+    @property
+    def vector_document_ids(self) -> tuple[int, ...]:
+        return tuple(item.id for item in self.documents if item.vector_indexed)
+
+
 class DemoSeedService:
-    """Create and remove the bundled demo strictly within ``User.is_demo``."""
+    """Create and clear one catalog while preserving every non-demo owner."""
 
     _conversation_title = "七日无理由退货咨询示例"
     _question = "订单签收后，七天无理由退货期限从哪天开始计算？"
@@ -118,29 +157,52 @@ class DemoSeedService:
     ) -> DemoSeedResult:
         if len(password) < 10:
             raise ValueError("demo password must contain at least 10 characters")
+
+        existing_user = self.container.user_repository.get_by_username(
+            db, self.catalog.account.username
+        )
+        if existing_user is not None and not existing_user.is_demo:
+            db.rollback()
+            raise DemoOwnershipError(
+                "ownership violation: demo username belongs to a non-demo user"
+            )
+        if existing_user is not None:
+            try:
+                plan = self._ownership_plan(db)
+                self._validate_seed_identity(db, existing_user, plan)
+                self._require_vector_cleanup_capability(plan)
+                self._reject_shared_seed_files(plan)
+            except DemoSeedError:
+                db.rollback()
+                raise
+            else:
+                db.rollback()
+
         if reset:
             self.clear(db)
 
-        counts = {
-            field: 0
-            for field in DemoSeedResult.__dataclass_fields__
-        }
+        counts = {field: 0 for field in DemoSeedResult.__dataclass_fields__}
+        mutated = False
         try:
             user, created = self._upsert_user(db, password)
+            mutated = True
             counts["created_users" if created else "reused_users"] += 1
 
             bases_by_key: dict[str, KnowledgeBase] = {}
             for catalog_base in self.catalog.knowledge_bases:
                 item, created = self._upsert_knowledge_base(
-                    db, user, catalog_base.key, catalog_base.name, catalog_base.description
+                    db,
+                    user,
+                    catalog_base.key,
+                    catalog_base.name,
+                    catalog_base.description,
                 )
                 bases_by_key[catalog_base.key] = item
-                key = (
+                counts[
                     "created_knowledge_bases"
                     if created
                     else "reused_knowledge_bases"
-                )
-                counts[key] += 1
+                ] += 1
 
             documents_by_key: dict[str, KnowledgeDocument] = {}
             for source in self.catalog.documents:
@@ -158,19 +220,11 @@ class DemoSeedService:
                 ] += 1
 
             for document in documents_by_key.values():
-                if document.status == "indexed":
-                    continue
-                ingested = self.container.knowledge.ingest_document(db, document.id)
-                if ingested.status != "indexed":
-                    raise DemoSeedError(
-                        ingested.error_message
-                        or f"failed to index demo document {ingested.filename}"
-                    )
+                self._reconcile_ingestion(db, document)
 
-            dataset, dataset_created, created_cases, reused_cases = (
+            _, dataset_created, created_cases, reused_cases = (
                 self._upsert_evaluation_dataset(db, user, bases_by_key)
             )
-            del dataset
             counts[
                 "created_evaluation_datasets"
                 if dataset_created
@@ -179,193 +233,445 @@ class DemoSeedService:
             counts["created_evaluation_cases"] += created_cases
             counts["reused_evaluation_cases"] += reused_cases
 
-            history_counts = self._upsert_history(db, user, bases_by_key)
-            for key, value in history_counts.items():
+            for key, value in self._upsert_history(db, user, bases_by_key).items():
                 counts[key] += value
             return DemoSeedResult(**counts)
+        except DemoOwnershipError:
+            db.rollback()
+            raise
         except Exception as exc:
             db.rollback()
-            self.clear(db)
+            if mutated:
+                try:
+                    self.clear(db)
+                except DemoCleanupError as cleanup_exc:
+                    raise DemoCleanupError(
+                        [f"seed failure: {exc}", *cleanup_exc.errors]
+                    ) from exc
             if isinstance(exc, DemoSeedError):
                 raise
             raise DemoSeedError(str(exc)) from exc
 
     def clear(self, db: Session) -> DemoClearResult:
-        """Delete demo-owned rows first, then only their collected external IDs."""
+        """Plan ownership, delete in DB, clean externals, then commit once."""
 
-        demo_user_ids = list(
+        try:
+            plan = self._ownership_plan(db)
+            self._require_vector_cleanup_capability(plan)
+        except DemoSeedError:
+            db.rollback()
+            raise
+        if not plan.user_ids:
+            db.rollback()
+            return DemoClearResult()
+
+        try:
+            counts = self._delete_planned_rows(db, plan)
+            removed_vectors, removed_files, cleanup_errors = self._cleanup_externals(
+                plan
+            )
+            if cleanup_errors:
+                db.rollback()
+                raise DemoCleanupError(cleanup_errors)
+            db.commit()
+        except DemoCleanupError:
+            raise
+        except Exception:
+            db.rollback()
+            raise
+
+        try:
+            self._storage_root().rmdir()
+        except OSError:
+            pass
+        return DemoClearResult(
+            **counts,
+            removed_files=removed_files,
+            removed_vectors=removed_vectors,
+        )
+
+    def _ownership_plan(self, db: Session) -> _OwnershipPlan:
+        cross_owner_dataset = db.scalar(
+            select(EvaluationDataset.id)
+            .join(User, EvaluationDataset.owner_id == User.id)
+            .where(
+                EvaluationDataset.is_demo.is_(True),
+                User.is_demo.is_(False),
+            )
+            .limit(1)
+        )
+        if cross_owner_dataset is not None:
+            raise DemoOwnershipError(
+                "ownership violation: demo dataset belongs to ordinary user"
+            )
+        demo_user_ids = tuple(
             db.scalars(select(User.id).where(User.is_demo.is_(True)))
         )
         if not demo_user_ids:
-            return DemoClearResult()
+            return _OwnershipPlan()
+        demo_users = set(demo_user_ids)
 
-        base_ids = list(
+        base_ids = tuple(
             db.scalars(
                 select(KnowledgeBase.id).where(
                     KnowledgeBase.owner_id.in_(demo_user_ids)
                 )
             )
         )
-        document_rows = list(
-            db.execute(
-                select(KnowledgeDocument.id, KnowledgeDocument.storage_path).where(
-                    KnowledgeDocument.uploader_id.in_(demo_user_ids)
-                )
-            )
-        )
-        document_ids = [row.id for row in document_rows]
-        storage_paths = [Path(row.storage_path) for row in document_rows]
-        dataset_ids = list(
+        demo_bases = set(base_ids)
+        candidate_documents = list(
             db.scalars(
-                select(EvaluationDataset.id).where(
-                    EvaluationDataset.owner_id.in_(demo_user_ids)
+                select(KnowledgeDocument).where(
+                    or_(
+                        KnowledgeDocument.uploader_id.in_(demo_user_ids),
+                        KnowledgeDocument.knowledge_base_id.in_(base_ids),
+                    )
                 )
             )
         )
-        conversation_ids = list(
+        for item in candidate_documents:
+            if not (
+                item.uploader_id in demo_users
+                and item.knowledge_base_id in demo_bases
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: knowledge document crosses demo boundary"
+                )
+            self._require_managed_path(Path(item.storage_path))
+        document_ids = tuple(item.id for item in candidate_documents)
+        demo_documents = set(document_ids)
+
+        candidate_chunks = list(
+            db.scalars(
+                select(KnowledgeChunk).where(
+                    or_(
+                        KnowledgeChunk.document_id.in_(document_ids),
+                        KnowledgeChunk.knowledge_base_id.in_(base_ids),
+                    )
+                )
+            )
+        ) if document_ids or base_ids else []
+        documents_by_id = {item.id: item for item in candidate_documents}
+        for chunk in candidate_chunks:
+            document = documents_by_id.get(chunk.document_id)
+            if (
+                document is None
+                or chunk.knowledge_base_id not in demo_bases
+                or chunk.knowledge_base_id != document.knowledge_base_id
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: knowledge chunk crosses demo boundary"
+                )
+
+        candidate_datasets = list(
+            db.scalars(
+                select(EvaluationDataset).where(
+                    or_(
+                        EvaluationDataset.owner_id.in_(demo_user_ids),
+                        EvaluationDataset.is_demo.is_(True),
+                    )
+                )
+            )
+        )
+        for dataset in candidate_datasets:
+            if dataset.is_demo and dataset.owner_id not in demo_users:
+                raise DemoOwnershipError(
+                    "ownership violation: demo dataset belongs to ordinary user"
+                )
+        dataset_ids = tuple(
+            item.id
+            for item in candidate_datasets
+            if item.owner_id in demo_users
+        )
+        case_ids = tuple(
+            db.scalars(
+                select(EvaluationCase.id).where(
+                    EvaluationCase.dataset_id.in_(dataset_ids)
+                )
+            )
+        ) if dataset_ids else ()
+
+        conversation_ids = tuple(
             db.scalars(
                 select(Conversation.id).where(
                     Conversation.user_id.in_(demo_user_ids)
                 )
             )
         )
-        turn_ids = list(
+        demo_conversations = set(conversation_ids)
+        turns = list(
             db.scalars(
-                select(ConversationTurn.id).where(
+                select(ConversationTurn).where(
                     ConversationTurn.conversation_id.in_(conversation_ids)
                 )
             )
         ) if conversation_ids else []
-        trace_ids = list(
+        turn_ids = tuple(item.id for item in turns)
+        demo_turns = set(turn_ids)
+
+        messages = list(
             db.scalars(
-                select(RagTraceRun.id).where(
-                    RagTraceRun.user_id.in_(demo_user_ids)
+                select(Message).where(
+                    or_(
+                        Message.user_id.in_(demo_user_ids),
+                        Message.conversation_id.in_(conversation_ids),
+                    )
                 )
             )
         )
+        for message in messages:
+            if not (
+                message.user_id in demo_users
+                and message.conversation_id in demo_conversations
+                and (message.turn_id is None or message.turn_id in demo_turns)
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: message crosses demo boundary"
+                )
+        messages_by_id = {item.id: item for item in messages}
+        message_ids = tuple(messages_by_id)
+        self._validate_turn_message_identity(
+            turns, messages_by_id, demo_user_ids
+        )
 
+        request_runs = list(db.scalars(select(ChatRequestRun)))
+        planned_requests: list[int] = []
+        for run in request_runs:
+            touches_demo = (
+                run.user_id in demo_users
+                or run.conversation_id in demo_conversations
+                or run.turn_id in demo_turns
+                or run.user_message_id in messages_by_id
+                or run.assistant_message_id in messages_by_id
+            )
+            if not touches_demo:
+                continue
+            if not (
+                run.user_id in demo_users
+                and (
+                    run.conversation_id is None
+                    or run.conversation_id in demo_conversations
+                )
+                and (run.turn_id is None or run.turn_id in demo_turns)
+                and (
+                    run.user_message_id is None
+                    or run.user_message_id in messages_by_id
+                )
+                and (
+                    run.assistant_message_id is None
+                    or run.assistant_message_id in messages_by_id
+                )
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: request run crosses demo boundary"
+                )
+            planned_requests.append(run.id)
+
+        trace_runs = list(db.scalars(select(RagTraceRun)))
+        planned_traces: list[str] = []
+        for run in trace_runs:
+            touches_demo = (
+                run.user_id in demo_users
+                or run.conversation_id in demo_conversations
+                or run.turn_id in demo_turns
+            )
+            if not touches_demo:
+                continue
+            if not (
+                run.user_id in demo_users
+                and (
+                    run.conversation_id is None
+                    or run.conversation_id in demo_conversations
+                )
+                and (run.turn_id is None or run.turn_id in demo_turns)
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: trace run crosses demo boundary"
+                )
+            planned_traces.append(run.id)
+        trace_node_ids = tuple(
+            db.scalars(
+                select(RagTraceNode.id).where(
+                    RagTraceNode.run_id.in_(planned_traces)
+                )
+            )
+        ) if planned_traces else ()
+
+        ordinary_paths = tuple(
+            Path(value)
+            for value in db.scalars(
+                select(KnowledgeDocument.storage_path).where(
+                    KnowledgeDocument.id.not_in(document_ids)
+                )
+            )
+        )
+        return _OwnershipPlan(
+            user_ids=demo_user_ids,
+            base_ids=base_ids,
+            documents=tuple(candidate_documents),
+            chunk_ids=tuple(item.id for item in candidate_chunks),
+            dataset_ids=dataset_ids,
+            case_ids=case_ids,
+            conversation_ids=conversation_ids,
+            turn_ids=turn_ids,
+            message_ids=message_ids,
+            request_run_ids=tuple(planned_requests),
+            trace_run_ids=tuple(planned_traces),
+            trace_node_ids=trace_node_ids,
+            ordinary_storage_paths=ordinary_paths,
+        )
+
+    @staticmethod
+    def _validate_turn_message_identity(
+        turns: list[ConversationTurn],
+        messages_by_id: dict[int, Message],
+        demo_user_ids: tuple[int, ...],
+    ) -> None:
+        demo_users = set(demo_user_ids)
+        for turn in turns:
+            pairs = (
+                (turn.user_message_id, "user"),
+                (turn.active_assistant_message_id, "assistant"),
+            )
+            for message_id, expected_role in pairs:
+                if message_id is None:
+                    continue
+                message = messages_by_id.get(message_id)
+                if (
+                    message is None
+                    or message.user_id not in demo_users
+                    or message.conversation_id != turn.conversation_id
+                    or message.turn_id != turn.id
+                    or message.role != expected_role
+                ):
+                    raise DemoOwnershipError(
+                        "ownership identity violation: turn points to mismatched message"
+                    )
+
+    def _validate_seed_identity(
+        self, db: Session, user: User, plan: _OwnershipPlan
+    ) -> None:
+        if user.id not in plan.user_ids:
+            raise DemoOwnershipError(
+                "ownership identity violation: reused demo user is outside closure"
+            )
+        conversations = list(
+            db.scalars(
+                select(Conversation).where(
+                    Conversation.user_id == user.id,
+                    Conversation.title == self._conversation_title,
+                )
+            )
+        )
+        if len(conversations) > 1:
+            raise DemoOwnershipError(
+                "ownership identity violation: ambiguous demo conversation"
+            )
+
+    def _delete_planned_rows(
+        self, db: Session, plan: _OwnershipPlan
+    ) -> dict[str, int]:
         counts = {
-            "removed_request_runs": self._delete_count(
-                db, ChatRequestRun, ChatRequestRun.user_id.in_(demo_user_ids)
+            "removed_request_runs": self._delete_ids(
+                db, ChatRequestRun, ChatRequestRun.id, plan.request_run_ids
             ),
-            "removed_trace_nodes": self._delete_count(
-                db, RagTraceNode, RagTraceNode.run_id.in_(trace_ids)
-            ) if trace_ids else 0,
-            "removed_trace_runs": self._delete_count(
-                db, RagTraceRun, RagTraceRun.id.in_(trace_ids)
-            ) if trace_ids else 0,
+            "removed_trace_nodes": self._delete_ids(
+                db, RagTraceNode, RagTraceNode.id, plan.trace_node_ids
+            ),
+            "removed_trace_runs": self._delete_ids(
+                db, RagTraceRun, RagTraceRun.id, plan.trace_run_ids
+            ),
         }
-
-        if turn_ids:
+        if plan.turn_ids:
             db.execute(
                 update(ConversationTurn)
-                .where(ConversationTurn.id.in_(turn_ids))
+                .where(ConversationTurn.id.in_(plan.turn_ids))
                 .values(user_message_id=None, active_assistant_message_id=None)
             )
             db.execute(
                 update(Message)
-                .where(Message.turn_id.in_(turn_ids))
+                .where(Message.turn_id.in_(plan.turn_ids))
                 .values(turn_id=None)
             )
-        counts["removed_messages"] = (
-            self._delete_count(
-                db, Message, Message.conversation_id.in_(conversation_ids)
-            )
-            if conversation_ids
-            else 0
+        counts.update(
+            removed_messages=self._delete_ids(
+                db, Message, Message.id, plan.message_ids
+            ),
+            removed_turns=self._delete_ids(
+                db, ConversationTurn, ConversationTurn.id, plan.turn_ids
+            ),
+            removed_conversations=self._delete_ids(
+                db, Conversation, Conversation.id, plan.conversation_ids
+            ),
+            removed_evaluation_cases=self._delete_ids(
+                db, EvaluationCase, EvaluationCase.id, plan.case_ids
+            ),
+            removed_evaluation_datasets=self._delete_ids(
+                db, EvaluationDataset, EvaluationDataset.id, plan.dataset_ids
+            ),
+            removed_chunks=self._delete_ids(
+                db, KnowledgeChunk, KnowledgeChunk.id, plan.chunk_ids
+            ),
+            removed_documents=self._delete_ids(
+                db, KnowledgeDocument, KnowledgeDocument.id, plan.document_ids
+            ),
+            removed_knowledge_bases=self._delete_ids(
+                db, KnowledgeBase, KnowledgeBase.id, plan.base_ids
+            ),
+            removed_users=self._delete_ids(db, User, User.id, plan.user_ids),
         )
-        counts["removed_turns"] = (
-            self._delete_count(
-                db, ConversationTurn, ConversationTurn.id.in_(turn_ids)
-            )
-            if turn_ids
-            else 0
-        )
-        counts["removed_conversations"] = (
-            self._delete_count(
-                db, Conversation, Conversation.id.in_(conversation_ids)
-            )
-            if conversation_ids
-            else 0
-        )
-        counts["removed_evaluation_cases"] = (
-            self._delete_count(
-                db, EvaluationCase, EvaluationCase.dataset_id.in_(dataset_ids)
-            )
-            if dataset_ids
-            else 0
-        )
-        counts["removed_evaluation_datasets"] = (
-            self._delete_count(
-                db, EvaluationDataset, EvaluationDataset.id.in_(dataset_ids)
-            )
-            if dataset_ids
-            else 0
-        )
-        counts["removed_chunks"] = (
-            self._delete_count(
-                db, KnowledgeChunk, KnowledgeChunk.document_id.in_(document_ids)
-            )
-            if document_ids
-            else 0
-        )
-        counts["removed_documents"] = (
-            self._delete_count(
-                db, KnowledgeDocument, KnowledgeDocument.id.in_(document_ids)
-            )
-            if document_ids
-            else 0
-        )
-        counts["removed_knowledge_bases"] = (
-            self._delete_count(
-                db, KnowledgeBase, KnowledgeBase.id.in_(base_ids)
-            )
-            if base_ids
-            else 0
-        )
-        counts["removed_users"] = self._delete_count(
-            db, User, User.id.in_(demo_user_ids)
-        )
-        db.commit()
+        db.flush()
+        return counts
 
+    def _cleanup_externals(
+        self, plan: _OwnershipPlan
+    ) -> tuple[int, int, list[str]]:
+        errors: list[str] = []
         removed_vectors = 0
-        removed_files = 0
-        cleanup_errors: list[str] = []
-        vector_indexer = self.container.knowledge.vector_indexer
-        if vector_indexer is not None:
-            for document_id in document_ids:
+        indexer = self.container.knowledge.vector_indexer
+        if indexer is not None:
+            for document_id in plan.vector_document_ids:
                 try:
-                    asyncio.run(vector_indexer.store.delete_document(document_id))
+                    asyncio.run(indexer.store.delete_document(document_id))
                     removed_vectors += 1
-                except Exception as exc:  # external cleanup is best-effort and reported
-                    cleanup_errors.append(f"vector document {document_id}: {exc}")
+                except Exception as exc:  # aggregate every retryable failure
+                    errors.append(f"vector cleanup {document_id}: {exc}")
 
-        storage_root = self._storage_root()
-        for path in storage_paths:
+        removed_files = 0
+        for document in plan.documents:
+            path = Path(document.storage_path)
             try:
-                resolved = path.resolve()
-                resolved.relative_to(storage_root)
-                still_referenced = db.scalar(
-                    select(func.count(KnowledgeDocument.id)).where(
-                        KnowledgeDocument.storage_path == str(path)
-                    )
-                )
-                if not still_referenced and resolved.is_file():
-                    resolved.unlink()
+                if self._is_symlink(path):
+                    path.unlink(missing_ok=True)
                     removed_files += 1
-            except (OSError, ValueError) as exc:
-                cleanup_errors.append(f"file {path}: {exc}")
-        try:
-            storage_root.rmdir()
-        except OSError:
-            pass
+                    continue
+                if self._shares_regular_file(path, plan.ordinary_storage_paths):
+                    continue
+                if path.is_file():
+                    path.unlink()
+                    removed_files += 1
+            except OSError as exc:
+                errors.append(f"file cleanup {path}: {exc}")
+        return removed_vectors, removed_files, errors
 
-        return DemoClearResult(
-            **counts,
-            removed_files=removed_files,
-            removed_vectors=removed_vectors,
-            external_cleanup_errors=tuple(cleanup_errors),
-        )
+    def _require_vector_cleanup_capability(self, plan: _OwnershipPlan) -> None:
+        if (
+            plan.vector_document_ids
+            and self.container.knowledge.vector_indexer is None
+        ):
+            raise DemoCleanupError(
+                ["vector cleanup capability is unavailable for indexed demo documents"]
+            )
+
+    def _reject_shared_seed_files(self, plan: _OwnershipPlan) -> None:
+        for document in plan.documents:
+            path = Path(document.storage_path)
+            if not self._is_symlink(path) and self._shares_regular_file(
+                path, plan.ordinary_storage_paths
+            ):
+                raise DemoOwnershipError(
+                    "ownership violation: managed demo file is shared by ordinary data"
+                )
 
     def _upsert_user(self, db: Session, password: str) -> tuple[User, bool]:
         user = self.container.user_repository.get_by_username(
@@ -373,8 +679,8 @@ class DemoSeedService:
         )
         if user is not None:
             if not user.is_demo:
-                raise DemoSeedError(
-                    "refusing to adopt an existing non-demo user with the demo username"
+                raise DemoOwnershipError(
+                    "ownership violation: refusing to adopt non-demo user"
                 )
             if not self.container.auth.passwords.verify(password, user.password_hash):
                 user.password_hash = self.container.auth.passwords.hash(password)
@@ -422,6 +728,7 @@ class DemoSeedService:
         suffix = source_path.suffix.lower() or ".txt"
         filename = f"{source.key}{suffix}"
         destination = self._storage_root() / filename
+        self._require_managed_path(destination)
         item = db.scalar(
             select(KnowledgeDocument).where(
                 KnowledgeDocument.knowledge_base_id == base.id,
@@ -439,9 +746,36 @@ class DemoSeedService:
                 storage_path=str(destination),
                 file_size=source_path.stat().st_size,
             )
+        elif self._lexical_key(Path(item.storage_path)) != self._lexical_key(
+            destination
+        ):
+            raise DemoOwnershipError(
+                "ownership identity violation: demo document storage path changed"
+            )
+
+        ordinary_paths = tuple(
+            Path(value)
+            for value in db.scalars(
+                select(KnowledgeDocument.storage_path).where(
+                    KnowledgeDocument.id != item.id
+                )
+            )
+        )
+        if not self._is_symlink(destination) and self._shares_regular_file(
+            destination, ordinary_paths
+        ):
+            raise DemoOwnershipError(
+                "ownership violation: refusing to overwrite shared managed file"
+            )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if not destination.is_file():
-            shutil.copyfile(source_path, destination)
+        if self._is_symlink(destination):
+            destination.unlink()
+        elif destination.exists() and not destination.is_file():
+            raise DemoOwnershipError(
+                "ownership violation: managed document path is not a regular file"
+            )
+        shutil.copyfile(source_path, destination)
+        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
         item.storage_path = str(destination)
         item.file_size = destination.stat().st_size
         item.content_origin = source.content_origin
@@ -449,8 +783,44 @@ class DemoSeedService:
         item.source_publisher = source.source_publisher
         item.source_retrieved_at = source.source_retrieved_at
         item.source_usage_note = source.source_usage_note
+        item.demo_content_sha256 = digest
         db.commit()
         return item, created
+
+    def _reconcile_ingestion(
+        self, db: Session, document: KnowledgeDocument
+    ) -> None:
+        ingested = self.container.knowledge.ingest_document(db, document.id)
+        if ingested.status != "indexed":
+            raise DemoSeedError(
+                ingested.error_message
+                or f"failed to index demo document {ingested.filename}"
+            )
+        path = Path(ingested.storage_path)
+        expected_chunks = self.container.knowledge.chunker.split(
+            self.container.knowledge.parser.parse(path)
+        )
+        persisted_chunks = list(
+            db.scalars(
+                select(KnowledgeChunk.content)
+                .where(KnowledgeChunk.document_id == ingested.id)
+                .order_by(KnowledgeChunk.position)
+            )
+        )
+        if persisted_chunks != expected_chunks:
+            raise DemoSeedError(
+                f"demo index generation mismatch for {ingested.filename}"
+            )
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != ingested.demo_content_sha256:
+            raise DemoSeedError(
+                f"managed demo content changed during indexing: {ingested.filename}"
+            )
+        ingested.demo_indexed_sha256 = digest
+        ingested.vector_indexed = (
+            self.container.knowledge.vector_indexer is not None
+        )
+        db.commit()
 
     def _upsert_evaluation_dataset(
         self,
@@ -481,7 +851,9 @@ class DemoSeedService:
             )
             return dataset, True, len(inputs), 0
         if not dataset.is_demo:
-            raise DemoSeedError("refusing to adopt a non-demo evaluation dataset")
+            raise DemoOwnershipError(
+                "ownership violation: refusing to adopt non-demo evaluation dataset"
+            )
         dataset.description = catalog_dataset.description
         existing = {
             case.case_key: case
@@ -558,12 +930,19 @@ class DemoSeedService:
             "created_messages": 0,
             "reused_messages": 0,
         }
-        conversation = db.scalar(
-            select(Conversation).where(
-                Conversation.user_id == user.id,
-                Conversation.title == self._conversation_title,
+        conversations = list(
+            db.scalars(
+                select(Conversation).where(
+                    Conversation.user_id == user.id,
+                    Conversation.title == self._conversation_title,
+                )
             )
         )
+        if len(conversations) > 1:
+            raise DemoOwnershipError(
+                "ownership identity violation: ambiguous demo conversation"
+            )
+        conversation = conversations[0] if conversations else None
         if conversation is None:
             conversation = self.container.conversations.create(
                 db, user.id, self._conversation_title
@@ -591,7 +970,14 @@ class DemoSeedService:
             counts["created_messages"] = 1
         else:
             counts["reused_turns"] = 1
-            user_message = db.get(Message, turn.user_message_id)
+            user_message = (
+                db.get(Message, turn.user_message_id)
+                if turn.user_message_id is not None
+                else None
+            )
+            self._require_history_message(
+                user_message, turn, user, "user", allow_missing=True
+            )
             if user_message is None:
                 user_message = self.container.conversations.add_message(
                     db,
@@ -610,6 +996,9 @@ class DemoSeedService:
             db.get(Message, turn.active_assistant_message_id)
             if turn.active_assistant_message_id is not None
             else None
+        )
+        self._require_history_message(
+            assistant, turn, user, "assistant", allow_missing=True
         )
         if assistant is None:
             assistant = self.container.conversations.add_assistant_version(
@@ -632,14 +1021,82 @@ class DemoSeedService:
         db.commit()
         return counts
 
+    @staticmethod
+    def _require_history_message(
+        message: Message | None,
+        turn: ConversationTurn,
+        user: User,
+        role: str,
+        *,
+        allow_missing: bool,
+    ) -> None:
+        if message is None and allow_missing:
+            return
+        if (
+            message is None
+            or message.user_id != user.id
+            or message.conversation_id != turn.conversation_id
+            or message.turn_id != turn.id
+            or message.role != role
+        ):
+            raise DemoOwnershipError(
+                "ownership identity violation: reused history message mismatch"
+            )
+
     def _storage_root(self) -> Path:
-        database_path = self.container.database.engine.url.database
-        if database_path and self.container.database.engine.url.drivername == "sqlite":
-            path = Path(database_path).resolve()
-            return (path.parent / f"{path.stem}-demo-files").resolve()
-        return (Path.cwd() / "data" / "demo-seed-files").resolve()
+        url = self.container.database.engine.url
+        if url.database and url.drivername == "sqlite":
+            database_path = Path(url.database).resolve()
+            return (
+                database_path.parent / f"{database_path.stem}-demo-files"
+            ).resolve()
+        normalized_url = url.render_as_string(hide_password=True)
+        digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:16]
+        return (Path.cwd() / "data" / f"demo-seed-files-{digest}").resolve()
+
+    def _require_managed_path(self, path: Path) -> None:
+        root_key = self._lexical_key(self._storage_root())
+        path_key = self._lexical_key(path)
+        try:
+            common = os.path.commonpath((root_key, path_key))
+        except ValueError as exc:
+            raise DemoOwnershipError(
+                "ownership violation: managed file path is on another volume"
+            ) from exc
+        if common != root_key or path_key == root_key:
+            raise DemoOwnershipError(
+                "ownership violation: demo file path escapes managed root"
+            )
 
     @staticmethod
-    def _delete_count(db: Session, model, condition) -> int:
-        result = db.execute(delete(model).where(condition))
+    def _lexical_key(path: Path) -> str:
+        return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+    @staticmethod
+    def _canonical_key(path: Path) -> str:
+        return os.path.normcase(os.fspath(path.resolve(strict=False)))
+
+    @staticmethod
+    def _is_symlink(path: Path) -> bool:
+        return os.path.lexists(path) and path.is_symlink()
+
+    def _shares_regular_file(
+        self, path: Path, ordinary_paths: tuple[Path, ...]
+    ) -> bool:
+        path_key = self._canonical_key(path)
+        for ordinary in ordinary_paths:
+            if self._canonical_key(ordinary) == path_key:
+                return True
+            try:
+                if path.exists() and ordinary.exists() and os.path.samefile(path, ordinary):
+                    return True
+            except OSError:
+                continue
+        return False
+
+    @staticmethod
+    def _delete_ids(db: Session, model, column, identifiers) -> int:
+        if not identifiers:
+            return 0
+        result = db.execute(delete(model).where(column.in_(identifiers)))
         return int(result.rowcount or 0)

@@ -415,7 +415,7 @@ def test_upgrade_database_adopts_current_pre_alembic_schema(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert connection.scalar(text("SELECT is_demo FROM users_v2")) == 0
@@ -471,7 +471,7 @@ def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert (
@@ -522,7 +522,7 @@ def test_completed_adoption_without_stamp_is_safe_to_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
         assert connection.scalar(text("SELECT content FROM messages")) == "legacy message"
 
@@ -557,7 +557,7 @@ def test_failed_legacy_rebuild_rolls_back_without_stamp_and_can_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
 
 
@@ -609,7 +609,7 @@ def test_destructive_legacy_rebuild_ddl_is_inside_real_sqlite_transaction(tmp_pa
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
 
 
@@ -628,7 +628,7 @@ def test_programmatic_database_url_wins_over_polluted_environment(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
 
 
@@ -645,7 +645,7 @@ def test_upgrade_database_resolves_alembic_config_outside_repository_cwd(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0003_evaluation_datasets"
+            == "0004_demo_index_metadata"
         )
 
 
