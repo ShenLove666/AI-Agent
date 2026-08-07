@@ -48,6 +48,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 @pytest.fixture
 def app(tmp_path, monkeypatch):
     monkeypatch.delenv("EMBED_MODEL_PATH", raising=False)
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
     database_url = f"sqlite:///{tmp_path / 'demo-metadata.db'}"
     item = create_app(Settings(database_url=database_url))
     event.listen(
@@ -600,12 +601,14 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
     first = service.seed(db, password="StrongDemo123!")
     second = service.seed(db, password="StrongDemo123!")
 
-    assert first.created_documents == 3
+    assert first.created_documents == len(service.catalog.documents)
     assert second.created_documents == 0
-    assert second.reused_documents == 3
+    assert second.reused_documents == len(service.catalog.documents)
     assert second.reused_evaluation_cases == 14
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
-    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 4
+    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 1 + len(
+        service.catalog.documents
+    )
     assert db.scalar(select(func.count(EvaluationDataset.id))) == 2
     assert db.scalar(select(func.count(EvaluationCase.id))) == 15
 
@@ -639,13 +642,13 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
             ).where(User.is_demo.is_(True))
         )
     }
-    assert len(demo_files) == 3
+    assert len(demo_files) == len(service.catalog.documents)
     assert all(path.is_file() for path in demo_files)
 
     cleared = service.clear(db)
 
-    assert cleared.removed_documents == 3
-    assert cleared.removed_files == 3
+    assert cleared.removed_documents == len(service.catalog.documents)
+    assert cleared.removed_files == len(service.catalog.documents)
     assert cleared.removed_users == 1
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
     for model, identifier in real_ids.items():
@@ -707,6 +710,7 @@ def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_cl
     database_url = f"sqlite:///{tmp_path / 'cli-demo.db'}"
     monkeypatch.setenv("DB_URL", database_url)
     monkeypatch.setenv("CUSTOM_DEMO_PASSWORD", "StrongDemo123!")
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
 
     assert cli.main(
         ["seed-demo", "--password-env", "CUSTOM_DEMO_PASSWORD"]
@@ -715,8 +719,8 @@ def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_cl
         ["seed-demo", "--password-env", "CUSTOM_DEMO_PASSWORD"]
     ) == 0
     seed_output = capsys.readouterr().out
-    assert "created_documents=3" in seed_output
-    assert "reused_documents=3" in seed_output
+    assert "created_documents=12" in seed_output
+    assert "reused_documents=12" in seed_output
 
     monkeypatch.setattr(
         cli.sys, "stdin", SimpleNamespace(isatty=lambda: False)
@@ -731,7 +735,7 @@ def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_cl
     assert cli.main(["clear-demo", "--yes"]) == 0
     clear_output = capsys.readouterr().out
     assert "removed_records=" in clear_output
-    assert "removed_files=3" in clear_output
+    assert "removed_files=12" in clear_output
     with database.session_factory() as db:
         assert db.scalar(
             select(func.count(User.id)).where(User.is_demo.is_(True))
@@ -778,6 +782,7 @@ def test_demo_cli_reports_cleanup_failure_without_losing_retry_metadata(
     database_url = f"sqlite:///{tmp_path / 'cleanup-failure.db'}"
     monkeypatch.setenv("DB_URL", database_url)
     monkeypatch.setenv("DEMO_SEED_PASSWORD", "StrongDemo123!")
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
     assert cli.main(["seed-demo"]) == 0
     database = Database(database_url)
     with database.session_factory() as db:
@@ -945,9 +950,13 @@ class _RetryableVectorStore:
         self.records.update({record.id: record for record in records})
 
     async def delete_document(self, document_id: int) -> None:
+        document_was_indexed = any(
+            record.document_id == document_id for record in self.records.values()
+        )
         should_fail = document_id == self.fail_document_id or (
             self.fail_cleanup_after_upserts
             and self.upsert_calls >= 3
+            and document_was_indexed
             and not self.failed_once
         )
         if should_fail:
@@ -1034,7 +1043,7 @@ def test_seed_reconciles_managed_bytes_and_missing_chunks(app, db: Session):
     second = service.seed(db, password="StrongDemo123!")
 
     source = service.catalog.documents[0]
-    assert second.reused_documents == 3
+    assert second.reused_documents == len(service.catalog.documents)
     assert managed_path.read_bytes() == (
         service.catalog.root / source.local_path
     ).read_bytes()
@@ -1092,7 +1101,9 @@ def test_seed_compensation_cleanup_failure_preserves_retry_metadata(
         service.seed(db, password="StrongDemo123!")
 
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
-    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 3
+    assert db.scalar(select(func.count(KnowledgeDocument.id))) == len(
+        service.catalog.documents
+    )
 
 
 def test_clear_preserves_regular_file_with_canonical_ordinary_alias(
@@ -1491,6 +1502,10 @@ def test_pre0004_indexed_demo_upgrades_and_clears_without_vector_store(
                 "SELECT vector_indexed FROM knowledge_documents WHERE id = 1"
             )
         ) == 0
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+    command.upgrade(config, "head")
     database.engine.dispose()
     item = create_app(Settings(database_url=database_url))
     with item.state.container.database.session_factory() as db:
@@ -1526,6 +1541,10 @@ def test_seed_migrates_pre0004_legacy_managed_document_to_db_root(
     database_url = f"sqlite:///{tmp_path / 'pre0004-seed.db'}"
     legacy_path = tmp_path / "data" / "demo-seed-files" / "seven-day-return.md"
     database = _prepare_pre0004_demo_database(database_url, legacy_path)
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+    command.upgrade(config, "head")
     database.engine.dispose()
     item = create_app(Settings(database_url=database_url))
     with item.state.container.database.session_factory() as db:
@@ -1543,7 +1562,7 @@ def test_seed_migrates_pre0004_legacy_managed_document_to_db_root(
             )
         )
         assert result.reused_documents == 1
-        assert result.created_documents == 2
+        assert result.created_documents == 11
         assert Path(migrated.storage_path).parent == (
             tmp_path / "pre0004-seed-demo-files"
         )

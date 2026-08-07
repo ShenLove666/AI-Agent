@@ -78,6 +78,15 @@ class SqlKeywordSearchChannel(BaseSearchChannel):
                         "knowledge_base_id": chunk.knowledge_base_id,
                         "position": chunk.position,
                         "matched_terms": matched_terms,
+                        "publisher": document.source_publisher,
+                        "canonical_url": document.source_url,
+                        "retrieved_at": document.source_retrieved_at.isoformat() if document.source_retrieved_at else None,
+                        "source_title": document.source_title or document.filename,
+                        "applicability": __import__("json").loads(document.applicability_json or "[]"),
+                        "exclusions": __import__("json").loads(document.exclusions_json or "[]"),
+                        "review_status": document.review_status,
+                        "next_review_at": document.next_review_at.isoformat() if document.next_review_at else None,
+                        "content_origin": document.content_origin,
                     },
                 )
             )

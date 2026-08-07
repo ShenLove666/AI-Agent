@@ -12,7 +12,16 @@
       "document_keys": [
         "seven-day-return",
         "consumer-rights",
-        "demo-store-after-sales"
+        "demo-store-after-sales",
+        "ecommerce-disclosure",
+        "platform-dispute",
+        "live-commerce",
+        "promotion-claims",
+        "complaint-handling",
+        "fresh-food-return",
+        "refund-benefits",
+        "food-safety-escalation",
+        "merchant-evidence-sop"
       ]
     }
   ],
@@ -42,6 +51,41 @@
       "title": "云桥优选虚构售后政策",
       "local_path": "documents/demo-store-after-sales.md",
       "content_origin": "synthetic"
+    },
+    {
+      "key": "ecommerce-disclosure", "title": "电子商务经营者信息披露摘要", "local_path": "documents/ecommerce-disclosure-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.npc.gov.cn/npc/c2/c30834/201908/t20190829_311675.html", "source_publisher": "全国人民代表大会", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "platform-dispute", "title": "平台争议协助与交易记录摘要", "local_path": "documents/platform-dispute-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.npc.gov.cn/npc/c2/c30834/201908/t20190829_311675.html", "source_publisher": "全国人民代表大会", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "live-commerce", "title": "网络直播营销消费者保护摘要", "local_path": "documents/live-commerce-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html", "source_publisher": "国家市场监督管理总局", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "promotion-claims", "title": "价格促销与服务承诺摘要", "local_path": "documents/promotion-claims-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html", "source_publisher": "国家市场监督管理总局", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "complaint-handling", "title": "消费投诉处理与证据留存摘要", "local_path": "documents/complaint-handling-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html", "source_publisher": "国家市场监督管理总局", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "fresh-food-return", "title": "鲜活易腐商品退货边界摘要", "local_path": "documents/fresh-food-return-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html", "source_publisher": "国家市场监督管理总局", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "refund-benefits", "title": "退款与优惠权益重算摘要", "local_path": "documents/refund-benefits-summary.md", "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html", "source_publisher": "国家市场监督管理总局", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创摘要，以官方原文为准。"
+    },
+    {
+      "key": "food-safety-escalation", "title": "食品安全客诉升级摘要", "local_path": "documents/food-safety-escalation-summary.md", "content_origin": "public_summary",
+      "source_url": "https://sjfg.samr.gov.cn/law/file/pdf/3235243/1663322301314.pdf", "source_publisher": "国家市场监督管理总局法规数据库", "source_retrieved_at": "2026-08-07", "source_usage_note": "项目原创操作摘要，以官方原文为准。"
+    },
+    {
+      "key": "merchant-evidence-sop", "title": "邻里零售客服举证与升级 SOP", "local_path": "documents/merchant-evidence-sop.md", "content_origin": "synthetic"
     }
   ],
   "evaluation_dataset": {

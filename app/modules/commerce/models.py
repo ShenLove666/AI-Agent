@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.framework.database import Base
@@ -35,6 +35,10 @@ class CommerceImport(Base):
     product_count: Mapped[int] = mapped_column(Integer)
     error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    data_source_id: Mapped[int | None] = mapped_column(ForeignKey("data_sources.id", name="fk_commerce_import_data_source"), nullable=True, index=True)
+    accepted_row_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    rejected_row_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    quality_report_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
 
 
 class Product(Base):
@@ -47,6 +51,8 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(100), default="未分类")
     data_origin: Mapped[str] = mapped_column(String(20), default="source")
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
+    provenance: Mapped[str] = mapped_column(String(20), default="observed", server_default="observed")
+    lineage_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
 
 
 class Basket(Base):
@@ -61,6 +67,11 @@ class Basket(Base):
     channel: Mapped[str | None] = mapped_column(String(30), nullable=True)
     data_origin: Mapped[str] = mapped_column(String(20), default="source")
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
+    provenance: Mapped[str] = mapped_column(String(20), default="observed", server_default="observed")
+    lineage_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
+    customer_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    invoice_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 
 class BasketItem(Base):
@@ -73,6 +84,8 @@ class BasketItem(Base):
     unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     source_row_key: Mapped[str] = mapped_column(String(50))
     data_origin: Mapped[str] = mapped_column(String(20), default="source")
+    provenance: Mapped[str] = mapped_column(String(20), default="observed", server_default="observed")
+    lineage_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
 
 
 class AssociationRule(Base):

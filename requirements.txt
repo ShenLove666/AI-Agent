@@ -12,7 +12,9 @@ pymysql
 
 # ---- LLM / Vector ----
 openai>=1.0
-pymilvus>=2.3.0
+pymilvus>=3.0.1
+milvus-lite>=3.2.0
+langgraph>=1.0,<2
 
 # ---- 本地模型 (GPU 需要) ----
 sentence-transformers>=2.3.0

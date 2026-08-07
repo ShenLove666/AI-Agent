@@ -54,6 +54,14 @@ class KnowledgeDocument(Base):
     vector_indexed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    source_title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_jurisdiction: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    source_effective_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    next_review_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    review_status: Mapped[str] = mapped_column(String(30), default="current", server_default="current")
+    applicability_json: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
+    exclusions_json: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
+    license_or_usage_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     @validates("content_origin")
     def validate_content_origin(self, _key: str, value: str) -> str:

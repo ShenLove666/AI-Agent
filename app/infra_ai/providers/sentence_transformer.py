@@ -26,7 +26,12 @@ class SentenceTransformerEmbeddingModel:
                 self._model = await asyncio.to_thread(
                     SentenceTransformer, self.model_path, device=self.device
                 )
-                self.dimension = int(self._model.get_sentence_embedding_dimension())
+                dimension_getter = getattr(self._model, "get_embedding_dimension", None)
+                self.dimension = int(
+                    dimension_getter()
+                    if dimension_getter is not None
+                    else self._model.get_sentence_embedding_dimension()
+                )
         return self._model
 
     async def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:

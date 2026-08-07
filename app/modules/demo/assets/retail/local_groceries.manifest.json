@@ -1,0 +1,48 @@
+{
+  "dataset_key": "local-groceries-shopping-baskets",
+  "version": "2026-08-05-v1",
+  "title": "商品零售购物篮分析（匿名交易篮）",
+  "source_kind": "user_authorized_local",
+  "source_uri": "user-authorized-local://GoodsOrder.csv+GoodsTypes.csv",
+  "publisher": "用户提供的教学案例数据包",
+  "license": "仅限本项目演示；不得再分发原始文件",
+  "retrieved_at": "2026-08-07",
+  "encoding": "UTF-8 gzip（源文件 GB18030）",
+  "transform_version": "local-groceries-v1",
+  "source_sha256": {
+    "GoodsOrder.csv": "3c2bc957540e94a8d97c42198d771f527c8fe02f2e92c1ceaaa94115dbb85c83",
+    "GoodsTypes.csv": "1d14594acca3b4149c7b1ed5b62b14648b7c8bba6e7caa44a6015e1549a10e4b"
+  },
+  "schema": {
+    "source_row_key": "observed row number",
+    "basket_key": "observed anonymized basket id",
+    "product_name": "observed",
+    "category": "observed mapping when available"
+  },
+  "limitations": [
+    "不包含订单时间",
+    "不包含价格和金额",
+    "不包含顾客身份",
+    "不包含门店、渠道和履约",
+    "每行只表示商品出现在购物篮中",
+    "分类映射缺少 1 个商品（保管产品），该分类保持空值"
+  ],
+  "selection_rules": [
+    "保留全部有效购物篮明细",
+    "按购物篮编号和原始行号确定性排序",
+    "不补造源数据不存在的字段"
+  ],
+  "counts": {
+    "baskets": 9835,
+    "lines": 43367,
+    "products": 169,
+    "categories": 10
+  },
+  "files": [
+    {
+      "path": "local_groceries.csv.gz",
+      "sha256": "dbfc4848d1bcfe75fba9f7843f9e6e3dfc4df155b9ff9098479e804891d66b8c",
+      "rows": 43367
+    }
+  ]
+}

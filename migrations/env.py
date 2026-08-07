@@ -13,6 +13,7 @@ from app.modules.evaluation import models as evaluation_models  # noqa: F401,E40
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.operations import models as operation_models  # noqa: F401,E402
+from app.modules.provenance import models as provenance_models  # noqa: F401,E402
 from app.modules.optimization import models as optimization_models  # noqa: F401,E402
 from app.modules.support import models as support_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402

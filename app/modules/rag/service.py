@@ -21,6 +21,7 @@ from app.modules.rag.prompt_budget import count_tokens, truncate_to_tokens
 from app.modules.rag.rewrite import QueryRewriteService, RewriteResult
 from app.modules.rag.schemas import ChatRequest, ChatResponse
 from app.modules.rag.trace_service import RagTraceService, TraceExecution
+from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import RetrievalRequest, SearchResult
 
@@ -50,6 +51,7 @@ class RagChatService:
         retrieval_context_limit: int = 6,
         history_token_budget: int = 3000,
         context_token_budget: int = 4000,
+        agentic: AgenticRagCoordinator | None = None,
     ):
         self.model_router = model_router
         self.conversations = conversations
@@ -61,6 +63,7 @@ class RagChatService:
         self.retrieval_context_limit = retrieval_context_limit
         self.history_token_budget = history_token_budget
         self.context_token_budget = context_token_budget
+        self.agentic = agentic
 
     def _budget_history(
         self, history: list[tuple[Message, Message]]
@@ -325,7 +328,20 @@ class RagChatService:
 
         documents: list[SearchResult] = []
         with self.traces.node(db, trace, "retrieval") as attributes:
-            if request.rag_enabled and self.retrieval is not None:
+            if request.rag_enabled and self.agentic is not None:
+                agent_run = await self.agentic.run(
+                    db, user_id=user_id, question=rewrite.rewritten_query,
+                    knowledge_base_ids=tuple(request.knowledge_base_ids),
+                )
+                documents = self._budget_documents(list(agent_run.results))
+                attributes.update(
+                    agentic=True, mode=agent_run.decision.mode,
+                    selected_tools=list(agent_run.decision.tools),
+                    rationale=agent_run.decision.rationale,
+                    evidence_review=agent_run.review,
+                    react_steps=list(agent_run.steps), result_count=len(documents),
+                )
+            elif request.rag_enabled and self.retrieval is not None:
                 response = await self.retrieval.retrieve(
                     RetrievalRequest(
                         query=rewrite.rewritten_query,
@@ -375,7 +391,7 @@ class RagChatService:
             messages = [
                 ChatMessage(
                     "system",
-                    "你是企业知识库助手。优先依据资料回答；资料不足时明确说明，不得编造来源。",
+                    "你是零售运营 Agent。依据 ReAct 工具返回的资料回答，并区分 observed/derived/synthetic；资料不足时明确说明，不得编造来源、销量、价格或政策。",
                 )
             ]
             messages.extend(budgeted_history)

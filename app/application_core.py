@@ -40,6 +40,7 @@ from app.modules.knowledge.search import SqlKeywordSearchChannel
 from app.modules.knowledge.service import KnowledgeService
 from app.modules.rag.rewrite import QueryRewriteService
 from app.modules.rag.service import RagChatService
+from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.rag.trace_service import RagTraceService
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.postprocessors import (
@@ -60,6 +61,7 @@ from app.modules.evaluation import models as evaluation_models  # noqa: F401,E40
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.operations import models as operation_models  # noqa: F401,E402
+from app.modules.provenance import models as provenance_models  # noqa: F401,E402
 from app.modules.optimization import models as optimization_models  # noqa: F401,E402
 from app.modules.support import models as support_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
@@ -79,17 +81,21 @@ class ApplicationContainer:
 
 
 def build_vector_components():
-    model_path = os.getenv("EMBED_MODEL_PATH")
+    backend = os.getenv("VECTOR_BACKEND", "milvus").lower()
+    if backend in {"disabled", "none", "off"}:
+        return None, None, None
+    project_root = Path(__file__).resolve().parents[1]
+    bundled_model = project_root / "models" / "bge-small-zh-v1.5"
+    model_path = os.getenv("EMBED_MODEL_PATH") or (str(bundled_model) if bundled_model.is_dir() else None)
     if not model_path:
         return None, None, None
     embeddings = SentenceTransformerEmbeddingModel(
         model_path=model_path,
         device=os.getenv("EMBED_DEVICE", "cpu"),
     )
-    backend = os.getenv("VECTOR_BACKEND", "memory").lower()
     if backend == "milvus":
         store = MilvusVectorStore(
-            uri=os.getenv("MILVUS_URI", "http://127.0.0.1:19530"),
+            uri=os.getenv("MILVUS_URI", str(project_root / "data" / "milvus-ragent.db")),
             token=os.getenv("MILVUS_TOKEN"),
             dimension=int(os.getenv("EMBED_DIMENSION", "512")),
             collection_name=os.getenv("MILVUS_COLLECTION", "ragent_chunks_v2"),
@@ -131,6 +137,7 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
     )
     traces = RagTraceService()
     rewrite = QueryRewriteService(ai.chat_router)
+    agentic = AgenticRagCoordinator(ai.chat_router, retrieval)
     return ApplicationContainer(
         settings=app_settings,
         database=database,
@@ -150,6 +157,7 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
             retrieval_context_limit=app_settings.retrieval_context_limit,
             history_token_budget=app_settings.prompt_history_token_budget,
             context_token_budget=app_settings.prompt_context_token_budget,
+            agentic=agentic,
         ),
     )
 

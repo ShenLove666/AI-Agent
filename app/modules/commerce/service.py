@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 from collections import Counter, defaultdict
@@ -21,6 +22,8 @@ from app.modules.evaluation.models import (
 )
 from app.modules.operations.models import OperationEvent
 from app.modules.optimization.models import OptimizationTask
+from app.modules.provenance.catalog import DataManifest, canonical_json, validate_lineage
+from app.modules.provenance.models import DataSource
 
 
 class RetailDataError(ValueError):
@@ -75,6 +78,159 @@ def _stable_int(seed: int, *parts: object) -> int:
 class RetailService:
     MIN_COUNT = 60
     MIN_SUPPORT = 0.005
+
+    def import_managed_snapshots(self, db: Session, owner_id: int, asset_root: Path | None = None, *, commit: bool = True) -> list[ImportResult]:
+        """Load verified project assets without inventing unavailable dimensions."""
+        root = (asset_root or Path(__file__).resolve().parents[1] / "demo/assets/retail").resolve(strict=True)
+        manifests = [
+            DataManifest.load(root / "local_groceries.manifest.json"),
+            DataManifest.load(root / "uci_online_retail_ii.manifest.json"),
+        ]
+        try:
+            profile = db.scalar(select(MerchantProfile).where(MerchantProfile.owner_id == owner_id))
+            if profile is None:
+                db.add(MerchantProfile(
+                    owner_id=owner_id, name="邻里零售 AI 运营演示", business_type="零售与即时零售",
+                    store_count=0, goal="用可核验证据提升客服解决率并发现搭配购机会", stage="grounded_demo", is_demo=True,
+                ))
+            results = [self._import_manifest(db, owner_id, root, manifest) for manifest in manifests]
+            if commit:
+                db.commit()
+            else:
+                db.flush()
+            return results
+        except Exception:
+            db.rollback()
+            raise
+
+    def clear_managed_snapshots(self, db: Session, owner_id: int, *, commit: bool = True) -> int:
+        """Remove only project-managed retail snapshots in FK-safe order."""
+        source_ids = tuple(db.scalars(select(DataSource.id).where(
+            DataSource.owner_id == owner_id,
+            DataSource.dataset_key.in_(("local-groceries-shopping-baskets", "uci-online-retail-ii")),
+            DataSource.is_demo.is_(True),
+        )))
+        if not source_ids:
+            return 0
+        import_ids = tuple(db.scalars(select(CommerceImport.id).where(CommerceImport.owner_id == owner_id, CommerceImport.data_source_id.in_(source_ids))))
+        rule_ids = tuple(db.scalars(select(AssociationRule.id).where(AssociationRule.import_id.in_(import_ids)))) if import_ids else ()
+        campaign_ids = tuple(db.scalars(select(Campaign.id).where(Campaign.rule_id.in_(rule_ids)))) if rule_ids else ()
+        basket_ids = tuple(db.scalars(select(Basket.id).where(Basket.import_id.in_(import_ids)))) if import_ids else ()
+        removed = 0
+        for model, predicate in (
+            (CampaignVersion, CampaignVersion.campaign_id.in_(campaign_ids)),
+            (Campaign, Campaign.id.in_(campaign_ids)),
+            (AssociationRule, AssociationRule.id.in_(rule_ids)),
+            (BasketItem, BasketItem.basket_id.in_(basket_ids)),
+            (Basket, Basket.id.in_(basket_ids)),
+            (CommerceImport, CommerceImport.id.in_(import_ids)),
+            (Product, (Product.owner_id == owner_id) & (Product.is_demo.is_(True)) & (Product.source_key.like("local-groceries-shopping-baskets:%") | Product.source_key.like("uci-online-retail-ii:%"))),
+            (DataSource, DataSource.id.in_(source_ids)),
+        ):
+            result = db.execute(delete(model).where(predicate)); removed += int(result.rowcount or 0)
+        if commit: db.commit()
+        else: db.flush()
+        return removed
+
+    def _import_manifest(self, db: Session, owner_id: int, root: Path, manifest: DataManifest) -> ImportResult:
+        existing_source = db.scalar(select(DataSource).where(
+            DataSource.owner_id == owner_id, DataSource.dataset_key == manifest.dataset_key, DataSource.version == manifest.version,
+        ))
+        if existing_source and existing_source.manifest_sha256 != manifest.manifest_sha256:
+            raise RetailDataError(f"来源清单发生漂移：{manifest.dataset_key}")
+        source = existing_source or DataSource(
+            owner_id=owner_id, dataset_key=manifest.dataset_key, version=manifest.version, title=manifest.title,
+            source_kind=manifest.source_kind, source_uri=manifest.source_uri, publisher=manifest.publisher,
+            license=manifest.license, retrieved_at=manifest.retrieved_at, encoding=manifest.encoding,
+            schema_json=canonical_json(manifest.schema), limitations_json=canonical_json(manifest.limitations),
+            transform_version=manifest.transform_version, manifest_sha256=manifest.manifest_sha256, is_demo=True,
+        )
+        if not existing_source:
+            db.add(source); db.flush()
+        fingerprint = manifest.manifest_sha256
+        existing = db.scalar(select(CommerceImport).where(CommerceImport.owner_id == owner_id, CommerceImport.fingerprint == fingerprint))
+        if existing:
+            rules = db.scalar(select(func.count()).select_from(AssociationRule).where(AssociationRule.import_id == existing.id)) or 0
+            return ImportResult(existing.id, existing.source_row_count, existing.basket_count, existing.product_count, int(rules), True)
+
+        with gzip.open(root / manifest.files[0].path, "rt", encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        is_uci = manifest.dataset_key == "uci-online-retail-ii"
+        grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
+        for row in rows:
+            grouped[row["invoice" if is_uci else "basket_key"]].append(row)
+        product_names = sorted({row["description" if is_uci else "product_name"] for row in rows})
+        record = CommerceImport(
+            owner_id=owner_id, source_key=manifest.dataset_key, fingerprint=fingerprint, data_source_id=source.id,
+            source_row_count=len(rows), accepted_row_count=len(rows), rejected_row_count=0,
+            basket_count=len(grouped), product_count=len(product_names), quality_report_json=canonical_json({
+                "counts": manifest.counts, "limitations": manifest.limitations, "selectionRules": manifest.selection_rules,
+            }),
+        )
+        db.add(record); db.flush()
+        categories = {row["product_name"]: row.get("category") or "未提供" for row in rows} if not is_uci else {}
+        product_lineage = canonical_json(validate_lineage({
+            "name": {"provenance": "observed", "source_field": "description" if is_uci else "product_name"},
+            "category": ({"provenance": "synthetic", "method": "unavailable"} if is_uci else {"provenance": "observed", "source_field": "category"}),
+        }))
+        products = [Product(
+            owner_id=owner_id, source_key=f"{manifest.dataset_key}:{hashlib.sha1(name.encode()).hexdigest()[:16]}",
+            name=name, category=categories.get(name, "未提供"), data_origin="source", provenance="observed",
+            lineage_json=product_lineage, is_demo=True,
+        ) for name in product_names]
+        db.add_all(products); db.flush(); product_ids = {item.name: item.id for item in products}
+        baskets: list[Basket] = []
+        for key, group in grouped.items():
+            first = group[0]
+            baskets.append(Basket(
+                owner_id=owner_id, import_id=record.id, source_basket_key=key,
+                ordered_at=datetime.fromisoformat(first["invoice_at"]) if is_uci else None,
+                store_key=None, channel=None, customer_key=first.get("customer_key") or None,
+                country=first.get("country") or None, invoice_status=first.get("invoice_status") or None,
+                data_origin="source", provenance="observed", is_demo=True,
+                lineage_json=canonical_json({
+                    "source_basket_key": {"provenance": "observed", "source_field": "invoice" if is_uci else "basket_key"},
+                    "ordered_at": ({"provenance": "observed", "source_field": "invoice_at"} if is_uci else {"provenance": "synthetic", "method": "unavailable-null"}),
+                }),
+            ))
+        db.add_all(baskets); db.flush(); basket_ids = {item.source_basket_key: item.id for item in baskets}
+        items = []
+        for row in rows:
+            basket_key = row["invoice" if is_uci else "basket_key"]
+            name = row["description" if is_uci else "product_name"]
+            items.append(BasketItem(
+                basket_id=basket_ids[basket_key], product_id=product_ids[name], source_row_key=row["source_row_key"],
+                quantity=int(row["quantity"]) if is_uci else 1,
+                unit_price=float(row["unit_price_gbp"]) if is_uci else None,
+                data_origin="source", provenance="observed",
+                lineage_json=canonical_json({
+                    "product": {"provenance": "observed", "source_field": "description" if is_uci else "product_name"},
+                    "quantity": ({"provenance": "observed", "source_field": "quantity"} if is_uci else {"provenance": "derived", "method": "one presence row"}),
+                    "unit_price": ({"provenance": "observed", "source_field": "unit_price_gbp"} if is_uci else {"provenance": "synthetic", "method": "unavailable-null"}),
+                }),
+            ))
+        db.add_all(items); db.flush()
+        # Rules are derived only from positive-presence baskets; cancellations are excluded.
+        positive_grouped = {key: group for key, group in grouped.items() if not is_uci or group[0]["invoice_status"] == "completed"}
+        item_counts = Counter(row["description" if is_uci else "product_name"] for group in positive_grouped.values() for row in group)
+        pair_counts: Counter[tuple[str, str]] = Counter()
+        evidence: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for key, group in positive_grouped.items():
+            unique = sorted({row["description" if is_uci else "product_name"] for row in group})
+            for left, right in combinations(unique, 2):
+                pair_counts[(left, right)] += 1
+                if len(evidence[(left, right)]) < 20: evidence[(left, right)].append(key)
+        rules = []
+        denominator = len(positive_grouped)
+        for (left, right), count in pair_counts.items():
+            support = count / denominator if denominator else 0
+            if count < self.MIN_COUNT or support < self.MIN_SUPPORT: continue
+            for antecedent, consequent in ((left, right), (right, left)):
+                confidence = count / item_counts[antecedent]
+                lift = confidence / (item_counts[consequent] / denominator)
+                rules.append(AssociationRule(owner_id=owner_id, import_id=record.id, antecedent_product_id=product_ids[antecedent], consequent_product_id=product_ids[consequent], cooccurrence_count=count, support=support, confidence=confidence, lift=lift, min_count=self.MIN_COUNT, fingerprint=fingerprint, evidence_json=canonical_json(evidence[(left, right)])))
+        db.add_all(rules); db.flush()
+        return ImportResult(record.id, len(rows), len(grouped), len(product_names), len(rules), False)
 
     def import_baskets(self, db: Session, owner_id: int, source_dir: Path, seed: int = 20260807) -> ImportResult:
         root = source_dir.resolve(strict=True)
@@ -204,17 +360,39 @@ class RetailService:
                 return profile.owner_id
         return int(user.id)
 
+    def data_sources(self, db: Session, owner_id: int) -> list[dict]:
+        rows = db.execute(
+            select(DataSource, CommerceImport)
+            .outerjoin(CommerceImport, CommerceImport.data_source_id == DataSource.id)
+            .where(DataSource.owner_id == owner_id)
+            .order_by(DataSource.id)
+        ).all()
+        return [{
+            "id": source.id, "datasetKey": source.dataset_key, "version": source.version,
+            "title": source.title, "sourceKind": source.source_kind, "sourceUri": source.source_uri,
+            "publisher": source.publisher, "license": source.license,
+            "retrievedAt": source.retrieved_at.isoformat(), "encoding": source.encoding,
+            "transformVersion": source.transform_version, "manifestSha256": source.manifest_sha256,
+            "limitations": json.loads(source.limitations_json or "[]"),
+            "counts": json.loads(record.quality_report_json or "{}").get("counts", {}) if record else {},
+            "acceptedRows": record.accepted_row_count if record else 0,
+            "rejectedRows": record.rejected_row_count if record else 0,
+            "isDemo": source.is_demo,
+        } for source, record in rows]
+
     def overview(self, db: Session, owner_id: int) -> dict:
         profile = db.scalar(select(MerchantProfile).where(MerchantProfile.owner_id == owner_id))
         latest = db.scalar(select(CommerceImport).where(CommerceImport.owner_id == owner_id).order_by(CommerceImport.id.desc()))
         if not profile or not latest:
             return {"ready": False, "profile": None, "summary": None, "rules": [], "campaigns": [], "metrics": [], "tasks": [], "evaluations": [], "dataState": "empty"}
-        avg = db.scalar(select(func.count(BasketItem.id) * 1.0 / func.count(func.distinct(Basket.id))).join(Basket, Basket.id == BasketItem.basket_id).where(Basket.import_id == latest.id)) or 0
+        imports = list(db.scalars(select(CommerceImport).where(CommerceImport.owner_id == owner_id)))
+        import_ids = [item.id for item in imports]
+        avg = db.scalar(select(func.count(BasketItem.id) * 1.0 / func.count(func.distinct(Basket.id))).join(Basket, Basket.id == BasketItem.basket_id).where(Basket.import_id.in_(import_ids))) or 0
         product_alias_a = Product.__table__.alias("antecedent")
         product_alias_b = Product.__table__.alias("consequent")
         rows = db.execute(select(AssociationRule, product_alias_a.c.name, product_alias_b.c.name).join(product_alias_a, product_alias_a.c.id == AssociationRule.antecedent_product_id).join(product_alias_b, product_alias_b.c.id == AssociationRule.consequent_product_id).where(AssociationRule.owner_id == owner_id).order_by(AssociationRule.lift.desc()).limit(20)).all()
         total_rules = int(db.scalar(select(func.count()).select_from(AssociationRule).where(AssociationRule.owner_id == owner_id)) or 0)
-        rules = [{"id": rule.id, "from": left, "to": right, "count": rule.cooccurrence_count, "support": round(rule.support * 100, 2), "confidence": round(rule.confidence * 100, 2), "lift": round(rule.lift, 2), "evidence": json.loads(rule.evidence_json), "origin": "source"} for rule, left, right in rows]
+        rules = [{"id": rule.id, "from": left, "to": right, "count": rule.cooccurrence_count, "support": round(rule.support * 100, 2), "confidence": round(rule.confidence * 100, 2), "lift": round(rule.lift, 2), "evidence": json.loads(rule.evidence_json), "origin": "derived"} for rule, left, right in rows]
         campaigns = [{"id": item.id, "name": item.name, "status": item.status, "version": item.current_version} for item in db.scalars(select(Campaign).where(Campaign.owner_id == owner_id).order_by(Campaign.id))]
         event_counts = dict(db.execute(select(OperationEvent.event_type, func.count()).where(OperationEvent.owner_id == owner_id).group_by(OperationEvent.event_type)).all())
         answers = int(event_counts.get("assistant_answered", 0)); hits = int(event_counts.get("knowledge_hit", 0)); resolved = int(event_counts.get("resolved", 0)); escalated = int(event_counts.get("escalated", 0)); positive = int(event_counts.get("positive_feedback", 0))
@@ -224,7 +402,7 @@ class RetailService:
         tasks = [{"id": task.id, "title": task.title, "status": task.status, "targetMetric": task.target_metric} for task in db.scalars(select(OptimizationTask).where(OptimizationTask.owner_id == owner_id))]
         runs = [{"id": run.id, "status": run.status, "startedAt": run.started_at.isoformat(), "isDemo": run.is_demo} for run in db.scalars(select(EvaluationRun).where(EvaluationRun.owner_id == owner_id).order_by(EvaluationRun.id.desc()).limit(5))]
         checklist = [{"key": "data", "label": "购物篮数据", "done": True}, {"key": "knowledge", "label": "活动知识", "done": bool(campaigns)}, {"key": "evaluation", "label": "标准评测", "done": bool(runs)}, {"key": "model", "label": "实时模型", "done": False, "optional": True}]
-        return {"ready": all(item["done"] for item in checklist if not item.get("optional")), "profile": {"name": profile.name, "businessType": profile.business_type, "storeCount": profile.store_count, "goal": profile.goal, "stage": profile.stage}, "checklist": checklist, "summary": {"orders": latest.basket_count, "rows": latest.source_row_count, "products": latest.product_count, "averageBasketSize": round(float(avg), 2), "rules": total_rules, "sourceFingerprint": latest.fingerprint[:12], "origin": "source"}, "rules": rules, "campaigns": campaigns, "metrics": metrics, "tasks": tasks, "evaluations": runs, "dataState": "ready"}
+        return {"ready": all(item["done"] for item in checklist if not item.get("optional")), "profile": {"name": profile.name, "businessType": profile.business_type, "storeCount": profile.store_count, "goal": profile.goal, "stage": profile.stage}, "checklist": checklist, "summary": {"orders": sum(item.basket_count for item in imports), "rows": sum(item.source_row_count for item in imports), "products": sum(item.product_count for item in imports), "averageBasketSize": round(float(avg), 2), "rules": total_rules, "sources": len(imports), "sourceFingerprint": latest.fingerprint[:12], "origin": "observed+derived"}, "rules": rules, "campaigns": campaigns, "metrics": metrics, "tasks": tasks, "evaluations": runs, "dataState": "ready"}
 
     def create_campaign(self, db: Session, owner_id: int, rule_id: int) -> Campaign:
         rule = db.scalar(select(AssociationRule).where(AssociationRule.id == rule_id, AssociationRule.owner_id == owner_id))
@@ -249,10 +427,13 @@ class RetailService:
         data = self.overview(db, owner_id)
         if data["dataState"] != "ready":
             raise RetailDataError("暂无足够数据生成报告")
-        lines = ["# 即时零售 AI 运营周报", "", "> 数据说明：购物篮商品关系来自授权源文件；时间、价格、履约、曝光与使用效果均为可复现模拟数据。", "", "## 核心数据"]
+        lines = ["# 即时零售 AI 运营周报", "", "> 数据说明：授权购物篮与 UCI 交易均为 observed；支持度、置信度、提升度为 derived；客服状态、曝光与 AI 使用效果为 synthetic。两份交易来源分别保留，缺失字段不补造。", "", "## 核心数据"]
         for key, value in data["summary"].items():
             if key not in {"sourceFingerprint", "origin"}: lines.append(f"- {key}: {value}")
         lines += ["", "## 运营指标"]
         for item in data["metrics"]: lines.append(f"- {item['label']}: {item['value'] if item['value'] is not None else '数据不足'}{item['unit']}（{item['numerator']}/{item['denominator']}，模拟事件）")
-        lines += ["", "## 下一步", "- 复盘高提升度关联规则，确认活动毛利与库存约束。", "- 对活动咨询失败样本进行人工标注并重新评测。", "", "本报告不声称真实销售增长；效果数据仅用于产品演示。"]
+        lines += ["", "## 来源边界"]
+        for source in self.data_sources(db, owner_id):
+            lines.append(f"- {source['title']}（{source['license']}，版本 {source['version']}）：{source['acceptedRows']} 条；限制：{'；'.join(source['limitations'])}")
+        lines += ["", "## 下一步", "- 复盘高提升度关联规则，另行核验当前库存、毛利和门店约束。", "- 对 synthetic 客服案例的失败样本进行人工标注并重新评测。", "", "本报告不声称真实销售增长；synthetic 效果指标仅用于产品演示。"]
         return "\n".join(lines)

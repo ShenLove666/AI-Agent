@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -25,6 +25,7 @@ from app.modules.support.models import (
     SupportReleaseDecision,
 )
 from app.modules.users.models import User
+from app.modules.provenance.models import DataSource
 
 
 CASE_STATUSES = {"pending", "in_progress", "resolved", "escalated"}
@@ -99,6 +100,7 @@ class SupportService:
 
     def detail(self, db: Session, owner_id: int, case_id: int) -> dict:
         case = self.require_case(db, owner_id, case_id)
+        source = db.get(DataSource, case.source_data_id) if case.source_data_id else None
         messages = list(
             db.scalars(
                 select(SupportMessage)
@@ -128,6 +130,17 @@ class SupportService:
             **self._case_summary(db, case),
             "resolutionCode": case.resolution_code,
             "resolutionNote": case.resolution_note,
+            "provenance": {
+                "sourceRecordKey": case.source_record_key,
+                "generatorVersion": case.generator_version,
+                "generatorSeed": case.generator_seed,
+                "fieldLineage": _json(case.field_lineage_json, {}),
+                "dataSource": ({
+                    "id": source.id, "datasetKey": source.dataset_key, "version": source.version,
+                    "title": source.title, "publisher": source.publisher, "sourceUri": source.source_uri,
+                    "license": source.license, "limitations": _json(source.limitations_json, []),
+                } if source else None),
+            },
             "messages": [
                 {
                     "id": item.id,
@@ -394,6 +407,20 @@ class SupportService:
         releases = list(db.scalars(select(KnowledgeRelease).where(KnowledgeRelease.owner_id == owner_id).order_by(KnowledgeRelease.id.desc())))
         return [self._release(db, item) for item in releases]
 
+    def knowledge_sources(self, db: Session, owner_id: int) -> list[dict]:
+        documents = list(db.scalars(
+            select(KnowledgeDocument).where(KnowledgeDocument.uploader_id == owner_id).order_by(KnowledgeDocument.id)
+        ))
+        return [{
+            "id": item.id, "title": item.source_title or item.filename, "filename": item.filename,
+            "contentOrigin": item.content_origin, "publisher": item.source_publisher,
+            "canonicalUrl": item.source_url, "retrievedAt": item.source_retrieved_at.isoformat() if item.source_retrieved_at else None,
+            "jurisdiction": item.source_jurisdiction, "nextReviewAt": item.next_review_at.isoformat() if item.next_review_at else None,
+            "reviewStatus": item.review_status, "applicability": _json(item.applicability_json, []),
+            "exclusions": _json(item.exclusions_json, []), "usageNote": item.license_or_usage_note or item.source_usage_note,
+            "status": item.status, "enabled": item.enabled, "checksum": item.demo_content_sha256,
+        } for item in documents]
+
     def create_release(self, db: Session, owner_id: int, actor_id: int, version: str, title: str, document_ids: list[int]) -> dict:
         version, title = version.strip(), title.strip()
         if not version or not title or not document_ids:
@@ -421,6 +448,20 @@ class SupportService:
         if not memberships:
             raise AppError("EMPTY_KNOWLEDGE_RELEASE", "知识版本没有可发布文档", 422)
         document_ids = [item.document_id for item in memberships]
+        documents = list(db.scalars(select(KnowledgeDocument).where(KnowledgeDocument.id.in_(document_ids))))
+        stale = [item.filename for item in documents if item.review_status != "current" or (item.next_review_at is not None and item.next_review_at < date.today())]
+        unattributed = [item.filename for item in documents if item.content_origin == "public_summary" and (not item.source_url or not item.source_publisher or not item.source_retrieved_at)]
+        hash_drift = []
+        for membership in memberships:
+            document = db.get(KnowledgeDocument, membership.document_id)
+            current_hash = document.demo_content_sha256 or hashlib.sha256(
+                f"{document.id}:{document.filename}:{document.file_size}".encode()
+            ).hexdigest()
+            if current_hash != membership.document_hash:
+                hash_drift.append(membership.filename_snapshot)
+        if stale or unattributed or hash_drift:
+            release.processing_status = "blocked"; db.commit()
+            raise AppError("KNOWLEDGE_PROVENANCE_INVALID", "知识版本存在过期、缺少来源或内容漂移的文档", 409, {"stale": stale, "unattributed": unattributed, "hashDrift": hash_drift})
         ready = int(db.scalar(select(func.count(KnowledgeDocument.id)).where(KnowledgeDocument.id.in_(document_ids), KnowledgeDocument.status.in_(("ready", "indexed")), KnowledgeDocument.enabled.is_(True))) or 0)
         chunk_count = int(db.scalar(select(func.count(KnowledgeChunk.id)).where(KnowledgeChunk.document_id.in_(document_ids), KnowledgeChunk.enabled.is_(True))) or 0)
         if ready != len(document_ids) or chunk_count == 0:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.framework.database import Base
@@ -29,6 +29,11 @@ class SupportCase(Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+    source_data_id: Mapped[int | None] = mapped_column(ForeignKey("data_sources.id", name="fk_support_case_data_source"), nullable=True, index=True)
+    source_record_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    generator_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    generator_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    field_lineage_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
 
 
 class SupportMessage(Base):

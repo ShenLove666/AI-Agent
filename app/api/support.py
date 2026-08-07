@@ -157,6 +157,11 @@ def knowledge_releases(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.list_releases(db, _owner(db, user)), traceId=current_trace_id())
 
 
+@router.get("/knowledge/sources")
+def knowledge_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.knowledge_sources(db, _owner(db, user)), traceId=current_trace_id())
+
+
 @router.post("/knowledge/releases")
 def create_knowledge_release(payload: KnowledgeReleaseRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.create_release(db, _owner(db, user), int(user.id), payload.version, payload.title, payload.document_ids), traceId=current_trace_id())

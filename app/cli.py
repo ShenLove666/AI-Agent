@@ -85,13 +85,22 @@ def _seed_demo(*, password_env: str, reset: bool) -> int:
         upgrade_database(container.database)
         with container.database.session_factory() as db:
             try:
-                result = DemoSeedService(container).seed(
+                demo_service = DemoSeedService(container)
+                result = demo_service.seed(
                     db, password=password, reset=reset
                 )
-            except DemoSeedError as exc:
+                user = UserRepository().get_by_username(db, demo_service.catalog.account.username)
+                retail_results = RetailService().import_managed_snapshots(db, user.id)
+                created_grounded, reused_grounded = demo_service.expand_grounded_support(db, target_cases=360)
+            except (DemoSeedError, RetailDataError) as exc:
                 print(f"[error] {exc}", file=sys.stderr)
                 return 1
         _print_counts("seed-demo", result)
+        print(
+            "[retail-snapshots] "
+            + " ".join(f"{item.rows}rows/{item.baskets}baskets/reused={item.reused}" for item in retail_results)
+        )
+        print(f"[grounded-support] created={created_grounded} reused={reused_grounded} total=360")
         return 0
     finally:
         container.database.engine.dispose()

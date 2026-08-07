@@ -9,7 +9,7 @@ import os
 import shutil
 import stat
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import delete, func, inspect, or_, select, update
@@ -43,6 +43,9 @@ from app.modules.support.models import (
     SupportReleaseDecision,
 )
 from app.modules.users.models import User
+from app.modules.commerce.service import RetailService
+from app.modules.commerce.models import Basket, BasketItem, CommerceImport, Product
+from app.modules.provenance.models import DataSource
 
 
 class DemoSeedError(RuntimeError):
@@ -688,6 +691,8 @@ class DemoSeedService:
         self, db: Session, plan: _OwnershipPlan
     ) -> dict[str, int]:
         support_removed = self._delete_support_rows(db, plan.user_ids)
+        for owner_id in plan.user_ids:
+            RetailService().clear_managed_snapshots(db, owner_id, commit=False)
         counts = {
             "removed_request_runs": self._delete_ids(
                 db, ChatRequestRun, ChatRequestRun.id, plan.request_run_ids
@@ -958,6 +963,23 @@ class DemoSeedService:
         item.source_publisher = source.source_publisher
         item.source_retrieved_at = source.source_retrieved_at
         item.source_usage_note = source.source_usage_note
+        item.source_title = source.title
+        item.source_jurisdiction = "中国大陆" if source.content_origin == "public_summary" else "虚构演示商家"
+        item.source_effective_at = None
+        item.next_review_at = (
+            source.source_retrieved_at + timedelta(days=365)
+            if source.source_retrieved_at is not None else None
+        )
+        item.review_status = "current"
+        item.applicability_json = json.dumps(
+            ["中国大陆网络零售客服"] if source.content_origin == "public_summary" else ["本项目虚构商家演示"],
+            ensure_ascii=False,
+        )
+        item.exclusions_json = json.dumps(
+            ["不替代官方法律原文", "不构成法律意见"] if source.content_origin == "public_summary" else ["不代表真实商家承诺"],
+            ensure_ascii=False,
+        )
+        item.license_or_usage_note = source.source_usage_note or "项目原创演示材料"
         item.demo_content_sha256 = digest
         db.commit()
         if (
@@ -1210,6 +1232,8 @@ class DemoSeedService:
         db: Session,
         user: User,
         documents_by_key: dict[str, KnowledgeDocument],
+        *,
+        target_cases: int = 36,
     ) -> tuple[int, int]:
         """Seed a realistic, deterministic support queue backed by demo policies."""
 
@@ -1274,11 +1298,66 @@ class DemoSeedService:
             ("赠品缺失", "活动页面写了赠品，但订单里没有收到。", "promotion", "normal"),
             ("重复扣款", "同一个订单银行卡显示扣了两次款。", "payment", "urgent"),
         )
+        local_source = db.scalar(select(DataSource).where(
+            DataSource.owner_id == user.id,
+            DataSource.dataset_key == "local-groceries-shopping-baskets",
+        ))
+        uci_source = db.scalar(select(DataSource).where(
+            DataSource.owner_id == user.id,
+            DataSource.dataset_key == "uci-online-retail-ii",
+        ))
+        grounded_rows: list[tuple[int, str, str, str, str]] = []
+        if local_source is not None:
+            local_rows = db.execute(
+                select(Basket.source_basket_key, Product.name, Product.category)
+                .join(CommerceImport, CommerceImport.id == Basket.import_id)
+                .join(BasketItem, BasketItem.basket_id == Basket.id)
+                .join(Product, Product.id == BasketItem.product_id)
+                .where(CommerceImport.data_source_id == local_source.id)
+                .order_by(Basket.id, BasketItem.id)
+                .limit(300)
+            ).all()
+            grounded_rows.extend((local_source.id, key, product, product_category, "basket") for key, product, product_category in local_rows)
+        if uci_source is not None:
+            uci_rows = db.execute(
+                select(Basket.source_basket_key, Product.name, Basket.country)
+                .join(CommerceImport, CommerceImport.id == Basket.import_id)
+                .join(BasketItem, BasketItem.basket_id == Basket.id)
+                .join(Product, Product.id == BasketItem.product_id)
+                .where(CommerceImport.data_source_id == uci_source.id, Basket.invoice_status == "cancelled")
+                .order_by(Basket.id, BasketItem.id)
+                .limit(60)
+            ).all()
+            grounded_rows.extend((uci_source.id, key, product, country or "unknown", "cancellation") for key, product, country in uci_rows)
         created = 0
         reused = 0
         now = datetime.utcnow()
-        for index in range(36):
-            title, question, category, priority = scenarios[index % len(scenarios)]
+        for index in range(target_cases):
+            context_source_id, source_record_key, observed_product, observed_category, context_kind = (
+                grounded_rows[index % len(grounded_rows)] if grounded_rows else (None, None, None, "未提供", "basket")
+            )
+            if context_kind == "cancellation":
+                title, question, category, priority = (
+                    "公开取消单状态核验",
+                    "这条公开交易记录标记为取消，但数据不包含退款原因或到账状态，能确认到什么程度？",
+                    "cancellation",
+                    "high",
+                )
+            else:
+                fresh = observed_category in {"果蔬", "肉类", "熟食"}
+                allowed = (0, 4, 8, 9) if fresh else (1, 2, 3, 5, 6, 7, 9, 10, 11)
+                title, question, category, priority = scenarios[allowed[index % len(allowed)]]
+            if observed_product:
+                title = f"{title}｜{observed_product}"
+                question = f"我的订单里有“{observed_product}”。{question}"
+            lineage = {
+                "product": {"provenance": "observed", "source_field": "description" if context_kind == "cancellation" else "product_name"},
+                "source_record_key": {"provenance": "observed", "source_field": "invoice" if context_kind == "cancellation" else "basket_key"},
+                "question": {"provenance": "synthetic", "method": "scenario-template-v3"},
+                "status": {"provenance": "synthetic", "method": "coverage-matrix"},
+            }
+            if context_kind == "cancellation":
+                lineage["invoice_status"] = {"provenance": "derived", "method": "invoice C prefix or negative quantity"}
             case_key = f"support-demo-{index + 1:03d}"
             support_case = db.scalar(
                 select(SupportCase).where(
@@ -1303,6 +1382,11 @@ class DemoSeedService:
                     resolution_note="已依据规则完成答复" if status == "resolved" else None,
                     version=1,
                     is_demo=True,
+                    source_data_id=context_source_id,
+                    source_record_key=source_record_key,
+                    generator_version="retail-support-v3",
+                    generator_seed=20260807,
+                    field_lineage_json=json.dumps(lineage, ensure_ascii=False),
                     created_at=now,
                     updated_at=now,
                 )
@@ -1311,6 +1395,14 @@ class DemoSeedService:
                 created += 1
             else:
                 reused += 1
+                if context_source_id is not None:
+                    support_case.source_data_id = context_source_id
+                    support_case.source_record_key = source_record_key
+                    support_case.generator_version = "retail-support-v3"
+                    support_case.generator_seed = 20260807
+                    support_case.subject = title
+                    support_case.labels_json = json.dumps([category, "即时零售"], ensure_ascii=False)
+                    support_case.field_lineage_json = json.dumps(lineage, ensure_ascii=False)
             first_message = db.scalar(
                 select(SupportMessage).where(
                     SupportMessage.case_id == support_case.id,
@@ -1337,6 +1429,8 @@ class DemoSeedService:
                         occurred_at=now,
                     )
                 )
+            elif context_source_id is not None:
+                first_message.content = question
             if index < 12 and db.scalar(
                 select(ReplySuggestion.id).where(ReplySuggestion.case_id == support_case.id)
             ) is None:
@@ -1434,6 +1528,18 @@ class DemoSeedService:
                 )
         db.commit()
         return created, reused
+
+    def expand_grounded_support(self, db: Session, *, target_cases: int = 360) -> tuple[int, int]:
+        """Expand only the complete CLI demo after verified retail snapshots exist."""
+        user = self.container.user_repository.get_by_username(db, self.catalog.account.username)
+        if user is None or not user.is_demo:
+            raise DemoOwnershipError("demo user is missing or not demo-owned")
+        documents = list(db.scalars(select(KnowledgeDocument).join(KnowledgeBase).where(
+            KnowledgeBase.owner_id == user.id, KnowledgeDocument.demo_content_sha256.is_not(None),
+        )))
+        return self._upsert_support_workflow(
+            db, user, {f"document-{item.id}": item for item in documents}, target_cases=target_cases,
+        )
 
     @staticmethod
     def _require_history_message(

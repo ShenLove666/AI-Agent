@@ -10,15 +10,18 @@
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，点击“填入演示账号”，使用 `demo-admin / AdminDemo@2026` 登录后会自动进入“即时零售运营”。日常启动不需要重复执行 `npm install` 或 `npm run build`。
+访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026` 登录后进入“即时零售运营”。日常启动不需要重复执行 `npm install` 或 `npm run build`。
 
-首次导入授权数据：
+首次完整初始化（会导入项目内已校验快照、12 篇知识和 360 条来源关联案例）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m app.cli seed-retail --source-dir "D:\sdu\晓雨\09-数据分析190个实战项目案例\114-商品零售购物篮分析" --owner demo-admin
+uv pip install --python .\.venv\Scripts\python.exe -r requirements-api.txt
+.\.venv\Scripts\python.exe scripts\setup_local_ai.py
+$env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
+.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
 ```
 
-数据口径：9,835 个购物篮、43,367 条商品明细和商品关联来自源文件；价格、时间、门店、履约、活动曝光及 AI 使用事件为固定种子生成的模拟数据。项目不以模拟指标声称真实业务增长。原数据目录未发现明确再分发许可证，因此仓库不打包完整原始文件。
+数据口径：授权数据贡献 9,835 个匿名购物篮和 43,367 条商品出现记录，不含价格、时间、顾客、门店或履约；UCI Online Retail II 的 CC BY 4.0 固定快照贡献 5,000 条带时间、数量、英镑单价、国家和取消标记的公开交易。两份数据分别记录 lineage，不混合声称销售增长。授权原始目录只读，仓库保存确定性 gzip 快照与 SHA256 清单。
 
 ## 目前具备的能力
 
@@ -27,7 +30,7 @@
 - 文档解析、结构化切块与向量索引；Pipeline 模块保留为后续演进基础，当前上传链路使用直接分块
 - 关键词与向量检索通道并发执行，单个通道异常不会拖垮整次请求
 - 基于数据库 Chunk ID 的 Weighted RRF 真正融合、可选 CrossEncoder 重排和元数据补全
-- 查询改写、引用生成、同步回答与 SSE 流式回答
+- LangGraph ReAct 查询规划、工具自主路由、证据审查、受限重试、引用生成、同步回答与 SSE 流式回答
 - 对话可选择全部或指定知识库作为检索范围，关键词与向量通道使用同一 Scope
 - 深度思考模式：按供应商切换推理模型/思考开关，并流式展示、持久化思考过程
 - SSE 请求幂等、首 Token/空闲/总生成超时和即时取消传播
@@ -39,7 +42,7 @@
 - 即时零售购物篮分析：计算支持度、置信度、提升度并下钻真实订单证据
 - 从关联规则创建搭配购方案，展示 Agent 评测运行、优化任务状态与证据化周报
 - 规则化质量运营：将负反馈、知识未命中、慢响应和失败运行转化为可导出的诊断报告与优化动作
-- SQLite 默认零配置运行；可选 Milvus 和本地 SentenceTransformer
+- SQLite 业务库 + 项目内 Milvus Lite 3.2 持久化向量库；本地 BGE-small-zh-v1.5 已下载并实测 512 维检索
 - 新版管理界面覆盖对话、知识库、运行追踪和系统状态
 
 ## 技术结构
@@ -51,10 +54,11 @@ Browser
             └─ FastAPI
                  ├─ users / conversations / knowledge
                  ├─ ingestion pipeline
-                 ├─ retrieval engine
-                 │    ├─ keyword
-                 │    └─ vector (optional)
-                 ├─ query rewrite / RAG chat / trace
+                 ├─ LangGraph ReAct coordinator
+                 │    ├─ knowledge_search (keyword + Milvus)
+                 │    ├─ commerce_data (verified SQL snapshots)
+                 │    └─ support_cases (provenance-aware SQL)
+                 ├─ evidence review / bounded retry / trace
                  └─ model router
                       ├─ primary API
                       └─ backup API (optional)
@@ -245,7 +249,7 @@ $env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
 .\.venv\Scripts\python.exe -m app.cli seed-demo
 ```
 
-`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、3 份文档、评测集、14 个评测用例和演示会话，不会重复创建稳定实体。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
+`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、12 份文档、两份交易快照、360 条客服案例、评测集、14 个评测用例和演示会话。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
 
 如需只清理演示数据，非交互环境必须显式确认：
 
@@ -253,13 +257,14 @@ $env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
 .\.venv\Scripts\python.exe -m app.cli clear-demo --yes
 ```
 
-演示知识库固定包含 3 份项目内置文本，并在数据库记录来源类型与 provenance：
+演示知识库固定包含 12 份项目原创摘要/决策表，并在数据库记录来源、适用范围、排除项、复核日期和 provenance；核心来源包括：
 
 - 国家市场监督管理总局的[《网络购买商品七日无理由退货暂行办法》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html)：项目原创简短摘要；
 - 国家市场监督管理总局的[《中华人民共和国消费者权益保护法实施条例》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html)：项目原创简短摘要；
-- “云桥优选”售后政策：明确标记为 `synthetic` 的虚构演示内容。
+- 全国人大《电子商务法》、市场监管总局食品安全法规库的项目原创主题摘要；
+- 两份虚构商家 SOP，明确标记为 `synthetic`，不冒充法律或真实商家承诺。
 
-两份 `public_summary` 均保存官方 URL、发布方、检索日期和用途说明；仓库内容是为演示撰写的原创摘要，不是官方页面副本，如有差异以官方原文为准。seed/reset 全程读取本地文件，不需要 LLM、Redis、Milvus 或网络访问。
+十份 `public_summary` 均保存官方 URL、发布方、检索日期和用途说明；仓库内容不是官方页面副本，如有差异以官方原文为准。seed/reset 全程读取本地文件，不需要联网；已配置的本地 BGE 模型与 Milvus Lite 会建立持久化向量索引。
 
 ### AI 客服质量闭环演示
 
@@ -276,15 +281,15 @@ $env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，使用 `support-admin / AdminDemo@2026`。建议按“客服工作台 → 质量与缺口 → 知识发布 → 上线前评测 → 客服运营报告”的顺序演示。数据包含 36 个工单、14 个固定评测用例、人工回复决策和 3 个知识缺口；报告会明确标注 demo provenance。
+访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、14 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
 
-Embedding 是可选增强，不是启动前置条件。不设置 `EMBED_MODEL_PATH` 时使用 SQLite + jieba 关键词检索，完整业务闭环仍可运行；设置本地模型目录后才启用向量检索。模型不可用时 AI 建议返回可操作的 provider-unavailable 状态，人工回复、工单处理、质检、知识发布和报告不受影响。
+仓库默认发现 `models/bge-small-zh-v1.5` 后启用本地 Embedding，并把向量写入 `data/milvus-ragent.db`；`VECTOR_BACKEND=memory` 可显式切换为测试内存模式。模型不可用时关键词检索和人工工作台仍可运行。Milvus Lite 用于本地演示；生产环境应在有足够磁盘的 Linux 主机上部署 Milvus Standalone。
 
 ## 当前阶段的能力边界
 
 当前评测能力只提供输入基础：租户所有的 `evaluation_datasets`、结构化 `evaluation_cases` 及其问题、知识范围、预期答案要点、预期文档、拒答期望和可选参考答案。它不会执行用例、调用 LLM judge、生成分数、运行状态或仪表盘结果。
 
-Agent 运行时、MCP、知识图谱、意图体系、完整评测执行/诊断闭环，以及重新设计的运营仪表盘均属于后续阶段；本阶段没有为隐藏的未来前端服务添加占位 API。
+当前 Agent 运行时采用 LangGraph ReAct 状态图，支持知识、交易与客服案例工具；联网搜索只在配置真实 `YDC_API_KEY` 后才应注册，当前不展示不可用的假功能。知识图谱和自动执行高风险运营动作仍不在本阶段范围内。
 
 ## 测试
 

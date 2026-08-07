@@ -1,0 +1,53 @@
+{
+  "dataset_key": "uci-online-retail-ii",
+  "version": "archive-502-bounded-v1",
+  "title": "UCI Online Retail II bounded offline snapshot",
+  "source_kind": "public_research_dataset",
+  "source_uri": "https://doi.org/10.24432/C5CG6D",
+  "publisher": "UCI Machine Learning Repository",
+  "license": "CC BY 4.0",
+  "retrieved_at": "2026-08-07",
+  "encoding": "UTF-8 gzip",
+  "transform_version": "uci-online-retail-ii-bounded-v1",
+  "source_sha256": {
+    "online+retail+ii.zip": "572e36277c2390fbfde10664750731e0a86f55e33470d91919085f0408e67bfb"
+  },
+  "schema": {
+    "invoice": "observed",
+    "stock_code": "observed",
+    "description": "observed",
+    "quantity": "observed",
+    "invoice_at": "observed",
+    "unit_price_gbp": "observed",
+    "customer_key": "derived one-way pseudonym",
+    "country": "observed",
+    "invoice_status": "derived from cancellation marker/negative quantity"
+  },
+  "limitations": [
+    "仅为固定的 5,000 行分层演示快照，不代表全量分布",
+    "商品描述为英文",
+    "顾客标识已单向脱敏",
+    "取消状态由发票 C 前缀或负数量确定",
+    "不包含客服对话或退款原因"
+  ],
+  "selection_rules": [
+    "从两个年度工作表各读取前 150,000 行候选",
+    "按交易时间稳定排序",
+    "保留最早 4,500 条非取消明细与最早 500 条取消明细",
+    "缺少核心交易字段的行排除"
+  ],
+  "counts": {
+    "lines": 5000,
+    "invoices": 354,
+    "products": 1631,
+    "countries": 13,
+    "cancelled_lines": 500
+  },
+  "files": [
+    {
+      "path": "uci_online_retail_ii.csv.gz",
+      "sha256": "7c506d72df3c7f0d0f95750acc70d1792739fea946fb882671183e41a1186655",
+      "rows": 5000
+    }
+  ]
+}

@@ -45,6 +45,11 @@ def retail_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.overview(db, _owner(db, user)), traceId=current_trace_id())
 
 
+@router.get("/data-sources")
+def retail_data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.data_sources(db, _owner(db, user)), traceId=current_trace_id())
+
+
 @router.post("/imports")
 def import_retail_data(payload: ImportRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
     if user.role != "admin":
