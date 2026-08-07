@@ -37,6 +37,7 @@ export function FeedbackButtons({
   const submitFeedback = useChatStore((state) => state.submitFeedback);
   const [held, setHeld] = React.useState(false);
   const [copyOpen, setCopyOpen] = React.useState(false);
+  const [feedbackPending, setFeedbackPending] = React.useState(false);
   const hideTimerRef = React.useRef<number | null>(null);
   const copyTimerRef = React.useRef<number | null>(null);
 
@@ -94,10 +95,16 @@ export function FeedbackButtons({
     }, COPY_MENU_CLOSE_DELAY_MS);
   }, [cancelCopyTimer]);
 
-  const handleFeedback = (value: FeedbackValue) => {
+  const handleFeedback = async (value: FeedbackValue) => {
+    if (feedbackPending) return;
     markInteracted();
     const next = feedback === value ? null : value;
-    submitFeedback(messageId, next).catch(() => null);
+    setFeedbackPending(true);
+    try {
+      await submitFeedback(messageId, next);
+    } finally {
+      setFeedbackPending(false);
+    }
   };
 
   const handleCopy = async (mode: "text" | "markdown") => {
@@ -174,8 +181,9 @@ export function FeedbackButtons({
       <Button
         variant="ghost"
         size="icon"
-        onClick={() => handleFeedback("like")}
-        aria-label="点赞"
+        disabled={feedbackPending}
+        onClick={() => void handleFeedback("like")}
+        aria-label={feedback === "like" ? "取消点赞" : "点赞"}
         className={cn(
           "h-7 w-7 rounded-md hover:bg-[#F5F5F5]",
           feedback === "like" ? "text-[#1A1A1A]" : "text-[#999999] hover:text-[#666666]"
@@ -190,8 +198,9 @@ export function FeedbackButtons({
       <Button
         variant="ghost"
         size="icon"
-        onClick={() => handleFeedback("dislike")}
-        aria-label="点踩"
+        disabled={feedbackPending}
+        onClick={() => void handleFeedback("dislike")}
+        aria-label={feedback === "dislike" ? "取消点踩" : "点踩"}
         className={cn(
           "h-7 w-7 rounded-md hover:bg-[#F5F5F5]",
           feedback === "dislike" ? "text-[#1A1A1A]" : "text-[#999999] hover:text-[#666666]"

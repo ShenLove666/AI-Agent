@@ -71,9 +71,7 @@ function mapVoteToFeedback(vote?: number | null): FeedbackValue {
   return null;
 }
 
-function mapPersistedMessageStatus(
-  status?: Message["messageStatus"] | null
-): Message["status"] {
+function mapPersistedMessageStatus(status?: Message["messageStatus"] | null): Message["status"] {
   if (status === "INTERRUPTED") return "cancelled";
   if (status === "ERROR" || status === "REJECTED") return "error";
   return "done";
@@ -98,6 +96,29 @@ function computeThinkingDuration(startAt?: number | null) {
   if (!startAt) return undefined;
   const seconds = Math.round((Date.now() - startAt) / 1000);
   return Math.max(1, seconds);
+}
+
+function feedbackForMessage(messages: Message[], messageId: string): FeedbackValue {
+  for (const message of messages) {
+    if (message.id === messageId) return message.feedback ?? null;
+    const version = message.answerVersions?.find((item) => item.id === messageId);
+    if (version) return version.feedback ?? null;
+  }
+  return null;
+}
+
+function withMessageFeedback(
+  messages: Message[],
+  messageId: string,
+  feedback: FeedbackValue
+): Message[] {
+  return messages.map((message) => ({
+    ...message,
+    feedback: message.id === messageId ? feedback : message.feedback,
+    answerVersions: message.answerVersions?.map((version) =>
+      version.id === messageId ? { ...version, feedback } : version
+    )
+  }));
 }
 
 function mapConversationMessages(data: ConversationMessageVO[]): Message[] {
@@ -153,9 +174,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const data = await listSessions();
       const sessions = data
         .map((item) => ({
-        id: item.conversationId,
-        title: item.title || "新对话",
-        lastTime: item.lastTime
+          id: item.conversationId,
+          title: item.title || "新对话",
+          lastTime: item.lastTime
         }))
         .sort((a, b) => {
           const timeA = a.lastTime ? new Date(a.lastTime).getTime() : 0;
@@ -352,7 +373,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamTaskId: payload.taskId,
           messages: state.messages.map((message) => {
             if (message.id === userMessage.id && payload.userMessageId) {
-              return { ...message, id: String(payload.userMessageId), turnId: payload.turnId ?? undefined };
+              return {
+                ...message,
+                id: String(payload.userMessageId),
+                turnId: payload.turnId ?? undefined
+              };
             }
             if (message.id === assistantId) {
               return { ...message, turnId: payload.turnId ?? undefined };
@@ -500,8 +525,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             message.id === state.streamingMessageId
               ? {
                   ...message,
-                  id:
-                    (error as Error & { messageId?: string }).messageId || message.id,
+                  id: (error as Error & { messageId?: string }).messageId || message.id,
                   status: "error",
                   messageStatus: "ERROR",
                   isThinking: false,
@@ -574,7 +598,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: message.content + delta,
             isThinking: shouldFinalizeThinking ? false : message.isThinking,
             thinkingDuration:
-              shouldFinalizeThinking && !message.thinkingDuration ? duration : message.thinkingDuration
+              shouldFinalizeThinking && !message.thinkingDuration
+                ? duration
+                : message.thinkingDuration
           };
         })
       };
@@ -599,11 +625,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
   submitFeedback: async (messageId, feedback) => {
     const vote = feedback === "like" ? 1 : feedback === "dislike" ? -1 : null;
-    const prev = get().messages.find((message) => message.id === messageId)?.feedback ?? null;
+    const prev = feedbackForMessage(get().messages, messageId);
     set((state) => ({
-      messages: state.messages.map((message) =>
-        message.id === messageId ? { ...message, feedback } : message
-      )
+      messages: withMessageFeedback(state.messages, messageId, feedback)
     }));
     try {
       if (vote === null) {
@@ -615,9 +639,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toast.success(feedback === "like" ? "点赞成功" : "点踩成功");
     } catch (error) {
       set((state) => ({
-        messages: state.messages.map((message) =>
-          message.id === messageId ? { ...message, feedback: prev } : message
-        )
+        messages: withMessageFeedback(state.messages, messageId, prev)
       }));
       toast.error((error as Error).message || (vote === null ? "取消反馈失败" : "反馈保存失败"));
     }
