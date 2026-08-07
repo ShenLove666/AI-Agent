@@ -77,7 +77,7 @@
 - Consumes: current project tree with no `.git` directory.
 - Produces: a local `main` branch whose first commit excludes secrets, runtime data, dependencies, caches, and build output.
 
-- [ ] **Step 1: Add missing generated-output exclusions**
+- [x] **Step 1: Add missing generated-output exclusions**
 
 Append these exact rules to `.gitignore`:
 
@@ -98,7 +98,7 @@ web/dist/
 openapi.generated.json
 ```
 
-- [ ] **Step 2: Initialize the repository**
+- [x] **Step 2: Initialize the repository**
 
 Run:
 
@@ -109,7 +109,7 @@ git status --short
 
 Expected: Git initializes successfully and lists project files as untracked.
 
-- [ ] **Step 3: Prove sensitive and generated paths are ignored**
+- [x] **Step 3: Prove sensitive and generated paths are ignored**
 
 Run:
 
@@ -119,7 +119,7 @@ git check-ignore -v .env data .venv node_modules web/dist
 
 Expected: every path is matched by `.gitignore`. Stop if `.env` is not ignored.
 
-- [ ] **Step 4: Stage and inspect the baseline**
+- [x] **Step 4: Stage and inspect the baseline**
 
 Run:
 
@@ -131,7 +131,7 @@ git status --short
 
 Expected: `git diff --cached --check` exits 0; `.env`, runtime databases, dependencies, caches, and `web/dist` are absent from staged files.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git commit -m "chore: establish safe project baseline"
