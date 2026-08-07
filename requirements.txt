@@ -1,0 +1,39 @@
+# 本地模型模式 (LLM_PROVIDER=local) 完整依赖
+# 包含 torch / sentence-transformers / paddleocr 等本地模型依赖, 体积较大
+
+# ---- Web 框架 ----
+fastapi
+uvicorn
+python-multipart
+
+# ---- 数据库 ----
+sqlalchemy
+pymysql
+
+# ---- LLM / Vector ----
+openai>=1.0
+pymilvus>=2.3.0
+
+# ---- 本地模型 (GPU 需要) ----
+sentence-transformers>=2.3.0
+paddleocr>=2.7.0
+
+# ---- 文档解析 ----
+pypdf
+pandas
+openpyxl
+pymupdf
+Pillow
+numpy
+
+# ---- 认证 ----
+python-jose[cryptography]
+passlib
+bcrypt
+argon2-cffi
+
+# ---- 工具 ----
+httpx
+jieba
+tiktoken
+python-docx

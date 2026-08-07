@@ -1,0 +1,53 @@
+# Logs
+*.log
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 环境变量 (含 API Key)
+.env
+
+# Node 依赖
+node_modules/
+
+# Python 虚拟环境
+.venv/
+
+# 本地数据 (Milvus Lite 向量库)
+data/
+
+# Frontend and TypeScript build artifacts
+web/dist/
+*.tsbuildinfo
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local migration/runtime artifacts
+*.db
+*.db-shm
+*.db-wal
+openapi.generated.json
+
+# Local project archive
+rag-project.zip

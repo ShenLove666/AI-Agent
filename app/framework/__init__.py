@@ -1,0 +1,1 @@
+"""Cross-cutting framework capabilities."""

@@ -1,0 +1,102 @@
+"""RAGent 前端契约兼容路由: 停止生成 / 消息反馈 / 推荐问题
+
+对应 chatService.ts 的 stopTask / submitFeedback / cancelFeedback /
+generateRecommendedQuestions。
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from app.api.dependencies import CurrentUser, DbSession
+from app.framework.errors import AppError
+from app.framework.response import ApiResponse
+from app.framework.trace import current_trace_id
+from app.modules.conversations.models import Message
+from app.modules.rag.task_registry import registry as task_registry
+
+
+router = APIRouter(prefix="", tags=["chat-compat"])
+
+
+@router.post("/rag/v3/stop", response_model=ApiResponse)
+def stop_task(
+    taskId: str, db: DbSession, user: CurrentUser, request: Request
+) -> ApiResponse:
+    """停止生成: 取消注册表中的流式任务 (幂等)"""
+    cancelled = task_registry.cancel(taskId)
+    return ApiResponse(data={"cancelled": cancelled}, traceId=current_trace_id())
+
+
+class FeedbackRequest(BaseModel):
+    vote: int = Field(ge=-1, le=1)  # 1 赞 / -1 踩 / 0 取消
+
+
+def _require_owned_message(db, message_id: int, user) -> Message:
+    message = db.get(Message, message_id)
+    if not message or message.user_id != user.id:
+        raise AppError("MESSAGE_NOT_FOUND", "消息不存在或无权操作", 404)
+    if message.role != "assistant":
+        raise AppError("MESSAGE_NOT_FOUND", "仅可对助手消息反馈", 404)
+    return message
+
+
+@router.post("/conversations/messages/{message_id}/feedback", response_model=ApiResponse)
+def submit_feedback(
+    message_id: int, payload: FeedbackRequest, db: DbSession, user: CurrentUser, request: Request
+) -> ApiResponse:
+    message = _require_owned_message(db, message_id, user)
+    message.vote = payload.vote
+    db.commit()
+    return ApiResponse(data={"vote": message.vote}, traceId=current_trace_id())
+
+
+@router.delete("/conversations/messages/{message_id}/feedback", response_model=ApiResponse)
+def cancel_feedback(
+    message_id: int, db: DbSession, user: CurrentUser, request: Request
+) -> ApiResponse:
+    message = _require_owned_message(db, message_id, user)
+    message.vote = None
+    db.commit()
+    return ApiResponse(data={"vote": None}, traceId=current_trace_id())
+
+
+@router.post(
+    "/conversations/messages/{message_id}/recommended-questions",
+    response_model=ApiResponse,
+)
+async def recommended_questions(
+    message_id: int, db: DbSession, user: CurrentUser, request: Request
+) -> ApiResponse:
+    """基于当前助手消息生成推荐追问 (调用主模型, 失败时返回空列表而非编造)"""
+    message = _require_owned_message(db, message_id, user)
+    router = request.app.state.container.model_router
+    questions: list[str] = []
+    if router is not None:
+        from app.infra_ai.contracts import ChatMessage, ChatRequest as ModelChatRequest
+
+        try:
+            result = await router.complete(
+                ModelChatRequest(
+                    messages=[
+                        ChatMessage(
+                            "system",
+                            "根据下面的回答生成 3 个简短的自然语言追问问题，"
+                            "每行一个，只输出问题本身，不要编号和多余文字。",
+                        ),
+                        ChatMessage("user", message.content[:2000]),
+                    ],
+                    temperature=0.7,
+                    max_tokens=128,
+                )
+            )
+            questions = [
+                line.strip()
+                for line in result.splitlines()
+                if line.strip() and len(line.strip()) <= 60
+            ][:3]
+        except Exception:  # noqa: BLE001
+            questions = []
+    return ApiResponse(data={"questions": questions}, traceId=current_trace_id())

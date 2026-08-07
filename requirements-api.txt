@@ -1,0 +1,37 @@
+# 云端 API 模式 (LLM_PROVIDER=api) 精简依赖
+# 无需 GPU / 无需本地模型权重 / 无需 torch / paddlepaddle
+# LLM 走 DeepSeek API, Embedding 走硅基流动 SiliconFlow BGE-M3 API
+# 用法: uv pip install -r requirements-api.txt
+
+# ---- Web 框架 ----
+fastapi
+uvicorn
+python-multipart
+
+# ---- 数据库 ----
+sqlalchemy
+pymysql
+
+# ---- LLM / Vector ----
+openai>=1.0
+pymilvus>=2.3.0
+
+# ---- 文档解析 (扫描件 OCR 需另装 paddleocr, 数字 PDF 不受影响) ----
+pypdf
+pandas
+openpyxl
+pymupdf
+Pillow
+numpy
+
+# ---- 认证 ----
+python-jose[cryptography]
+passlib
+bcrypt
+argon2-cffi
+
+# ---- 工具 ----
+httpx
+jieba
+tiktoken
+python-docx
