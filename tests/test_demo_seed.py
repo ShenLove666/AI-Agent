@@ -4,33 +4,62 @@ import copy
 import errno
 import json
 import urllib.request
+import uuid
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+import app.cli as cli
 import app.modules.demo.catalog as demo_catalog
+from app.application import create_app
+from app.framework.config import Settings
 from app.framework.database import Base, Database
+from app.modules.conversations.models import (
+    ChatRequestRun,
+    Conversation,
+    ConversationTurn,
+    Message,
+)
 from app.modules.demo.catalog import DemoCatalogError, load_demo_catalog
-from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
+from app.modules.demo.service import DemoSeedError, DemoSeedService
+from app.modules.evaluation.models import EvaluationCase, EvaluationDataset
+from app.modules.knowledge.models import (
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
+from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
 from app.modules.users.models import User
+from app.modules.vector.indexer import VectorIndexer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def db(tmp_path) -> Session:
-    database = Database(f"sqlite:///{tmp_path / 'demo-metadata.db'}")
-    Base.metadata.create_all(database.engine)
-    session = database.session_factory()
+def app(tmp_path, monkeypatch):
+    monkeypatch.delenv("EMBED_MODEL_PATH", raising=False)
+    database_url = f"sqlite:///{tmp_path / 'demo-metadata.db'}"
+    item = create_app(Settings(database_url=database_url))
+    Base.metadata.create_all(item.state.container.database.engine)
+    try:
+        yield item
+    finally:
+        item.state.container.database.engine.dispose()
+
+
+@pytest.fixture
+def db(app) -> Session:
+    session = app.state.container.database.session_factory()
     try:
         yield session
     finally:
         session.close()
-        database.engine.dispose()
 
 
 @pytest.fixture
@@ -432,3 +461,303 @@ def test_bundled_evaluation_cases_cover_merchant_support_topics():
         for case in catalog.evaluation_cases
     )
     assert any(case.should_refuse for case in catalog.evaluation_cases)
+
+
+def _create_real_user_graph(db: Session, storage_path: Path) -> dict[type, int | str]:
+    storage_path.write_text("ordinary user file", encoding="utf-8")
+    real = User(username="real-user", password_hash="hash", is_demo=False)
+    db.add(real)
+    db.flush()
+    knowledge_base = KnowledgeBase(owner_id=real.id, name="real knowledge base")
+    db.add(knowledge_base)
+    db.flush()
+    document = KnowledgeDocument(
+        knowledge_base_id=knowledge_base.id,
+        uploader_id=real.id,
+        filename="real.txt",
+        file_type="txt",
+        storage_path=str(storage_path),
+        status="indexed",
+    )
+    db.add(document)
+    db.flush()
+    chunk = KnowledgeChunk(
+        knowledge_base_id=knowledge_base.id,
+        document_id=document.id,
+        position=0,
+        content="ordinary user chunk",
+    )
+    dataset = EvaluationDataset(
+        owner_id=real.id,
+        name="real dataset",
+        description="must survive demo clear",
+        is_demo=False,
+    )
+    db.add_all([chunk, dataset])
+    db.flush()
+    case = EvaluationCase(
+        dataset_id=dataset.id,
+        case_key="real-case",
+        question="real question",
+        category="real",
+        difficulty="basic",
+        expected_points_json='["real point"]',
+        expected_document_keys_json="[]",
+    )
+    conversation = Conversation(
+        id=str(uuid.uuid4()), user_id=real.id, title="real conversation"
+    )
+    db.add_all([case, conversation])
+    db.flush()
+    turn = ConversationTurn(
+        conversation_id=conversation.id,
+        sequence=1,
+        status="completed",
+        knowledge_base_ids_json=f"[{knowledge_base.id}]",
+    )
+    db.add(turn)
+    db.flush()
+    user_message = Message(
+        conversation_id=conversation.id,
+        user_id=real.id,
+        turn_id=turn.id,
+        role="user",
+        content="real user message",
+    )
+    assistant_message = Message(
+        conversation_id=conversation.id,
+        user_id=real.id,
+        turn_id=turn.id,
+        version=1,
+        role="assistant",
+        content="real assistant message",
+        vote=-1,
+    )
+    db.add_all([user_message, assistant_message])
+    db.flush()
+    turn.user_message_id = user_message.id
+    turn.active_assistant_message_id = assistant_message.id
+    request_run = ChatRequestRun(
+        user_id=real.id,
+        request_id="real-request",
+        request_fingerprint="real-fingerprint",
+        conversation_id=conversation.id,
+        turn_id=turn.id,
+        user_message_id=user_message.id,
+        assistant_message_id=assistant_message.id,
+        status="completed",
+    )
+    trace = RagTraceRun(
+        id=uuid.uuid4().hex,
+        user_id=real.id,
+        conversation_id=conversation.id,
+        turn_id=turn.id,
+        query="real trace",
+        status="completed",
+    )
+    db.add_all([request_run, trace])
+    db.flush()
+    trace_node = RagTraceNode(
+        run_id=trace.id,
+        name="real node",
+        status="completed",
+        elapsed_ms=1.0,
+    )
+    db.add(trace_node)
+    db.commit()
+    return {
+        User: real.id,
+        KnowledgeBase: knowledge_base.id,
+        KnowledgeDocument: document.id,
+        KnowledgeChunk: chunk.id,
+        EvaluationDataset: dataset.id,
+        EvaluationCase: case.id,
+        Conversation: conversation.id,
+        ConversationTurn: turn.id,
+        Message: assistant_message.id,
+        ChatRequestRun: request_run.id,
+        RagTraceRun: trace.id,
+        RagTraceNode: trace_node.id,
+    }
+
+
+def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
+    app, db: Session, tmp_path: Path
+):
+    real_file = tmp_path / "real-user.txt"
+    real_ids = _create_real_user_graph(db, real_file)
+    service = DemoSeedService(app.state.container)
+
+    first = service.seed(db, password="StrongDemo123!")
+    second = service.seed(db, password="StrongDemo123!")
+
+    assert first.created_documents == 3
+    assert second.created_documents == 0
+    assert second.reused_documents == 3
+    assert second.reused_evaluation_cases == 14
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 4
+    assert db.scalar(select(func.count(EvaluationDataset.id))) == 2
+    assert db.scalar(select(func.count(EvaluationCase.id))) == 15
+
+    demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    demo_conversation = db.scalar(
+        select(Conversation).where(Conversation.user_id == demo_user.id)
+    )
+    demo_turn = db.scalar(
+        select(ConversationTurn).where(
+            ConversationTurn.conversation_id == demo_conversation.id
+        )
+    )
+    demo_messages = list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == demo_conversation.id)
+            .order_by(Message.id)
+        )
+    )
+    assert demo_conversation.title == "七日无理由退货咨询示例"
+    assert demo_turn.status == "completed"
+    assert [message.role for message in demo_messages] == ["user", "assistant"]
+    assert demo_messages[1].vote == 1
+    assert demo_turn.active_assistant_message_id == demo_messages[1].id
+
+    demo_files = {
+        Path(path)
+        for path in db.scalars(
+            select(KnowledgeDocument.storage_path).join(
+                User, KnowledgeDocument.uploader_id == User.id
+            ).where(User.is_demo.is_(True))
+        )
+    }
+    assert len(demo_files) == 3
+    assert all(path.is_file() for path in demo_files)
+
+    cleared = service.clear(db)
+
+    assert cleared.removed_documents == 3
+    assert cleared.removed_files == 3
+    assert cleared.removed_users == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
+    for model, identifier in real_ids.items():
+        assert db.get(model, identifier) is not None, model.__name__
+    assert real_file.read_text(encoding="utf-8") == "ordinary user file"
+    assert all(not path.exists() for path in demo_files)
+
+
+class _OfflineEmbeddingModel:
+    async def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[float(index + 1)] for index, _text in enumerate(texts)]
+
+
+class _FailThirdDocumentStore:
+    def __init__(self):
+        self.upsert_calls = 0
+        self.records = {}
+
+    async def upsert(self, records) -> None:
+        self.upsert_calls += 1
+        if self.upsert_calls == 3:
+            raise RuntimeError("injected vector index failure")
+        self.records.update({record.id: record for record in records})
+
+    async def delete_document(self, document_id: int) -> None:
+        self.records = {
+            key: record
+            for key, record in self.records.items()
+            if record.document_id != document_id
+        }
+
+
+def test_seed_vector_failure_removes_partial_demo_graph_and_vectors(
+    app, db: Session
+):
+    store = _FailThirdDocumentStore()
+    app.state.container.knowledge.vector_indexer = VectorIndexer(
+        _OfflineEmbeddingModel(), store
+    )
+
+    with pytest.raises(DemoSeedError, match="injected vector index failure"):
+        DemoSeedService(app.state.container).seed(
+            db, password="StrongDemo123!"
+        )
+
+    assert store.upsert_calls == 3
+    assert store.records == {}
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
+    assert db.scalar(select(func.count(KnowledgeBase.id))) == 0
+    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 0
+    assert db.scalar(select(func.count(KnowledgeChunk.id))) == 0
+    assert db.scalar(select(func.count(EvaluationDataset.id))) == 0
+    assert db.scalar(select(func.count(EvaluationCase.id))) == 0
+
+
+def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_clear(
+    tmp_path: Path, monkeypatch, capsys
+):
+    database_url = f"sqlite:///{tmp_path / 'cli-demo.db'}"
+    monkeypatch.setenv("DB_URL", database_url)
+    monkeypatch.setenv("CUSTOM_DEMO_PASSWORD", "StrongDemo123!")
+
+    assert cli.main(
+        ["seed-demo", "--password-env", "CUSTOM_DEMO_PASSWORD"]
+    ) == 0
+    assert cli.main(
+        ["seed-demo", "--password-env", "CUSTOM_DEMO_PASSWORD"]
+    ) == 0
+    seed_output = capsys.readouterr().out
+    assert "created_documents=3" in seed_output
+    assert "reused_documents=3" in seed_output
+
+    monkeypatch.setattr(
+        cli.sys, "stdin", SimpleNamespace(isatty=lambda: False)
+    )
+    assert cli.main(["clear-demo"]) == 2
+    database = Database(database_url)
+    with database.session_factory() as db:
+        assert db.scalar(
+            select(func.count(User.id)).where(User.is_demo.is_(True))
+        ) == 1
+
+    assert cli.main(["clear-demo", "--yes"]) == 0
+    clear_output = capsys.readouterr().out
+    assert "removed_records=" in clear_output
+    assert "removed_files=3" in clear_output
+    with database.session_factory() as db:
+        assert db.scalar(
+            select(func.count(User.id)).where(User.is_demo.is_(True))
+        ) == 0
+    database.engine.dispose()
+
+
+def test_demo_cli_rejects_short_password_before_seeding(
+    tmp_path: Path, monkeypatch, capsys
+):
+    database_url = f"sqlite:///{tmp_path / 'weak-password.db'}"
+    monkeypatch.setenv("DB_URL", database_url)
+    monkeypatch.setenv("WEAK_DEMO_PASSWORD", "short")
+
+    assert cli.main(
+        ["seed-demo", "--password-env", "WEAK_DEMO_PASSWORD"]
+    ) == 2
+    assert "at least 10" in capsys.readouterr().err
+
+
+def test_demo_cli_prompts_with_getpass_when_named_env_is_absent(
+    tmp_path: Path, monkeypatch
+):
+    database_url = f"sqlite:///{tmp_path / 'prompted-password.db'}"
+    monkeypatch.setenv("DB_URL", database_url)
+    monkeypatch.delenv("ABSENT_DEMO_PASSWORD", raising=False)
+    prompts: list[str] = []
+
+    def prompted(prompt: str) -> str:
+        prompts.append(prompt)
+        return "StrongDemo123!"
+
+    monkeypatch.setattr(cli.getpass, "getpass", prompted)
+
+    assert cli.main(
+        ["seed-demo", "--password-env", "ABSENT_DEMO_PASSWORD"]
+    ) == 0
+    assert prompts == ["Demo password: "]
