@@ -18,7 +18,7 @@
 - 大模型多供应商优先级、故障转移和三态熔断器
 - RAG Trace：记录改写、检索、Prompt 和生成节点的耗时与状态
 - 商家运营洞察：统计 AI 工具渗透率、反馈覆盖率、回答好评率、知识命中率和高频经营意图
-- Agent 质量运营：将负反馈、知识未命中、慢响应和失败运行转化为可导出的诊断报告与优化动作
+- 规则化质量运营：将负反馈、知识未命中、慢响应和失败运行转化为可导出的诊断报告与优化动作
 - SQLite 默认零配置运行；可选 Milvus 和本地 SentenceTransformer
 - 新版管理界面覆盖对话、知识库、运行追踪和系统状态
 
@@ -106,6 +106,14 @@ uv run python server.py
 ```
 
 浏览器访问 `http://127.0.0.1:8081`。FastAPI 会直接托管 `web/dist`，生产环境不需要再暴露 Vite 的 3000 端口。
+
+应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0004_demo_index_metadata`：
+
+```powershell
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+已识别的 pre-Alembic SQLite 会保留现有数据并升级；无法安全识别的部分 schema 会拒绝启动，不会猜测性修改。生产数据库降级前应先停服务并备份，降级不会在启动时自动执行。
 
 开发界面时可使用热更新：
 
@@ -206,13 +214,53 @@ $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 .\.venv\Scripts\python.exe -m app.cli promote-admin --username admin
 ```
 
+## 本地演示数据
+
+项目内置一个可离线、可重复创建的商家售后演示目录。演示用户名固定为 `merchant-demo`，密码不在仓库中且至少需要 10 个字符。非交互运行应通过本机环境变量 `DEMO_SEED_PASSWORD` 提供；未设置时 CLI 会安全地交互提示。以下命令可以直接从仓库根目录复制执行：
+
+```powershell
+$env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
+.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
+.\.venv\Scripts\python.exe -m app.cli seed-demo
+```
+
+`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、3 份文档、评测集、14 个评测用例和演示会话，不会重复创建稳定实体。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
+
+如需只清理演示数据，非交互环境必须显式确认：
+
+```powershell
+.\.venv\Scripts\python.exe -m app.cli clear-demo --yes
+```
+
+演示知识库固定包含 3 份项目内置文本，并在数据库记录来源类型与 provenance：
+
+- 国家市场监督管理总局的[《网络购买商品七日无理由退货暂行办法》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html)：项目原创简短摘要；
+- 国家市场监督管理总局的[《中华人民共和国消费者权益保护法实施条例》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html)：项目原创简短摘要；
+- “云桥优选”售后政策：明确标记为 `synthetic` 的虚构演示内容。
+
+两份 `public_summary` 均保存官方 URL、发布方、检索日期和用途说明；仓库内容是为演示撰写的原创摘要，不是官方页面副本，如有差异以官方原文为准。seed/reset 全程读取本地文件，不需要 LLM、Redis、Milvus 或网络访问。
+
+## 当前阶段的能力边界
+
+当前评测能力只提供输入基础：租户所有的 `evaluation_datasets`、结构化 `evaluation_cases` 及其问题、知识范围、预期答案要点、预期文档、拒答期望和可选参考答案。它不会执行用例、调用 LLM judge、生成分数、运行状态或仪表盘结果。
+
+Agent 运行时、MCP、知识图谱、意图体系、完整评测执行/诊断闭环，以及重新设计的运营仪表盘均属于后续阶段；本阶段没有为隐藏的未来前端服务添加占位 API。
+
 ## 测试
 
 ```powershell
-uv run python -m pytest -q
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-测试使用临时 SQLite 数据库，不依赖已经启动的 8081 服务。目前覆盖鉴权、会话、文档入库、检索融合、向量检索、RAG 对话、运行追踪和 SPA 路由。
+这是 canonical 本地验证命令，可从任意工作目录通过脚本绝对路径调用。它依次执行 Python 编译、后端 pytest、启用中的前端 API/OpenAPI 契约检查、Vitest、ESLint 和 Vite 生产构建；任一阶段失败都会立即停止并返回非零状态。脚本使用仓库自己的 `.venv` 和 `web` Node 环境，不依赖已经启动的 8081 服务。
+
+只运行后端测试时可使用：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+后端测试使用临时 SQLite 数据库。目前覆盖鉴权、会话、文档入库、检索融合、向量检索、RAG 对话、运行追踪、迁移、演示 seed/reset、评测输入模型和 API 契约。
 
 ## 服务器部署提示
 
@@ -227,3 +275,6 @@ uv run python -m pytest -q
 - `docs/chat-product-completeness.md`
 - `docs/v2.1-state-and-retrieval-scope.md`
 - `docs/v2.2-pre-turn-consistency.md`
+- `docs/superpowers/specs/2026-08-07-merchant-ai-operations-closed-loop-design.md`（批准的总体设计）
+- `docs/superpowers/plans/2026-08-07-demo-evaluation-foundation.md`（本阶段实现计划）
+- `openspec/changes/establish-demo-evaluation-foundation/`（proposal、design、specs 与 tasks）

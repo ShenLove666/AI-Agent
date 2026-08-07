@@ -1,32 +1,38 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  RAGent is a local-first modular monolith for merchant-support RAG workflows.
+  Backend: Python 3.11+, FastAPI, SQLAlchemy, Alembic, Pydantic, pytest, and
+  SQLite by default. Frontend: React 18, TypeScript, Vite, Vitest, and ESLint.
+  Optional LLM APIs, Milvus, and local embedding/reranking models must not be
+  required for schema migration, demo seed/reset, or the foundation test suite.
+  FastAPI lifespan upgrades the database to Alembic head before serving traffic.
+  Demo ownership is bounded by User.is_demo; public-summary provenance remains
+  document-specific. Evaluation datasets/cases are inputs only until a later
+  execution and scoring stage.
+  D:\Project\ragent-main is a read-only reference project and must never be edited.
+  Agent, MCP, graph, intent, full evaluation execution, and dashboard redesign
+  require separately approved changes. Canonical local verification is
+  powershell -ExecutionPolicy Bypass -File scripts/verify.ps1.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Include an explicit Non-goals section, especially for adjacent future capabilities.
+    - State affected capabilities, local-first constraints, and external-system impact.
+  design:
+    - Record concrete schema revisions, ownership/deletion boundaries, API contracts, and rollback behavior.
+    - Name the exact backend, frontend, migration, contract, and acceptance tests that prove the design.
+  specs:
+    - Keep requirements observable and pair each one with concrete GIVEN/WHEN/THEN-style scenarios.
+  tasks:
+    - Make each task no larger than one independently testable deliverable.
+    - Include the exact verification command and expected result for each deliverable.
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - Keep edits inside the selected repository and preserve unrelated user changes.
+      - Report exact verification results without printing secrets.
+  archive:
+    guidance:
+      - Run strict validation and the canonical verification command before archiving.

@@ -40,7 +40,7 @@
 
 ## 7. Canonical verification and documentation
 
-- [ ] 7.1 Add `scripts/verify.ps1` to run backend compilation/tests, the active API contract check, frontend lint, and the production build with fail-fast exit behavior.
-- [ ] 7.2 Update the README with prerequisites, migration, demo seed/reset, local startup, test, verification, demo-account, data-provenance, and truthful capability-boundary guidance.
-- [ ] 7.3 Update project OpenSpec context and documentation links so the approved design, implementation plan, and change artifacts are discoverable.
-- [ ] 7.4 Run the canonical verification command, repeat clean-database migration and seed smoke tests, and audit that no external project, secret, generated artifact, or out-of-scope capability was added.
+- [x] 7.1 Add `scripts/verify.ps1` to run backend compilation/tests, the active API contract check, frontend lint, and the production build with fail-fast exit behavior.
+- [x] 7.2 Update the README with prerequisites, migration, demo seed/reset, local startup, test, verification, demo-account, data-provenance, and truthful capability-boundary guidance.
+- [x] 7.3 Update project OpenSpec context and documentation links so the approved design, implementation plan, and change artifacts are discoverable.
+- [x] 7.4 Run the canonical verification command, repeat clean-database migration and seed smoke tests, and audit that no external project, secret, generated artifact, or out-of-scope capability was added.
