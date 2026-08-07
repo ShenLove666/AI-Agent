@@ -29,6 +29,7 @@ from app.container import build_container as build_ai_container
 from app.framework.config import Settings, settings
 from app.framework.database import Database
 from app.framework.http import install_http_conventions
+from app.framework.migrations import upgrade_database
 from app.infra_ai.providers.cross_encoder import CrossEncoderRerankModel
 from app.infra_ai.providers.sentence_transformer import SentenceTransformerEmbeddingModel
 from app.infra_ai.router import ChatModelRouter
@@ -152,7 +153,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        container.database.create_schema()
+        upgrade_database(container.database)
         yield
         container.database.engine.dispose()
 
