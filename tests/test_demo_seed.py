@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import copy
+import json
+import urllib.request
 from datetime import date
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.framework.database import Base, Database
+from app.modules.demo.catalog import DemoCatalogError, load_demo_catalog
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
 from app.modules.users.models import User
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -114,3 +123,244 @@ def test_document_rejects_unknown_content_origin(
             storage_path="unknown.txt",
             content_origin="partner_upload",
         )
+
+
+def _valid_catalog_payload() -> dict:
+    return {
+        "account": {
+            "key": "merchant-demo-owner",
+            "username": "merchant-demo",
+            "display_name": "商家售后演示账号",
+        },
+        "knowledge_bases": [
+            {
+                "key": "merchant-support",
+                "name": "商家售后知识库",
+                "description": "演示知识库",
+                "document_keys": ["return-rules"],
+            }
+        ],
+        "documents": [
+            {
+                "key": "return-rules",
+                "title": "退货规则摘要",
+                "local_path": "documents/return-rules.md",
+                "content_origin": "public_summary",
+                "source_url": "https://example.test/official-return-rules",
+                "source_publisher": "示例监管机构",
+                "source_retrieved_at": "2026-08-07",
+                "source_usage_note": "项目原创摘要，官方原文优先。",
+            }
+        ],
+        "evaluation_dataset": {
+            "key": "merchant-support-baseline",
+            "name": "商家售后基础评测集",
+            "description": "演示评测集",
+            "cases_path": "evaluation/cases.json",
+        },
+    }
+
+
+def _valid_cases_payload() -> dict:
+    return {
+        "cases": [
+            {
+                "key": "return-window",
+                "question": "退货期限如何计算？",
+                "category": "return_window",
+                "difficulty": "basic",
+                "expected_points": ["说明起算时间"],
+                "expected_document_keys": ["return-rules"],
+                "should_refuse": False,
+                "reference_answer": "按规则说明起算时间。",
+            }
+        ]
+    }
+
+
+def _write_catalog_fixture(
+    root: Path,
+    *,
+    catalog_payload: dict | None = None,
+    cases_payload: dict | None = None,
+) -> Path:
+    catalog_payload = copy.deepcopy(catalog_payload or _valid_catalog_payload())
+    cases_payload = copy.deepcopy(cases_payload or _valid_cases_payload())
+    (root / "documents").mkdir(parents=True)
+    (root / "evaluation").mkdir()
+    (root / "documents" / "return-rules.md").write_text(
+        "fixture", encoding="utf-8"
+    )
+    (root / "catalog.json").write_text(
+        json.dumps(catalog_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    (root / "evaluation" / "cases.json").write_text(
+        json.dumps(cases_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    return root
+
+
+def test_demo_catalog_has_unique_stable_keys_and_valid_local_files():
+    catalog = load_demo_catalog(PROJECT_ROOT / "resources" / "demo")
+
+    assert len({item.key for item in catalog.documents}) == len(catalog.documents)
+    assert all((catalog.root / item.local_path).is_file() for item in catalog.documents)
+    assert all(
+        item.source_url
+        for item in catalog.documents
+        if item.content_origin == "public_summary"
+    )
+
+
+@pytest.mark.parametrize(
+    ("invalid_path", "field"),
+    [
+        ("C:/outside/return-rules.md", "local_path"),
+        ("../outside/return-rules.md", "local_path"),
+        ("/outside/cases.json", "cases_path"),
+        ("evaluation/../outside.json", "cases_path"),
+    ],
+    ids=[
+        "absolute-document",
+        "traversing-document",
+        "absolute-cases",
+        "traversing-cases",
+    ],
+)
+def test_demo_catalog_rejects_unsafe_local_paths(
+    tmp_path: Path, invalid_path: str, field: str
+):
+    payload = _valid_catalog_payload()
+    if field == "local_path":
+        payload["documents"][0][field] = invalid_path
+    else:
+        payload["evaluation_dataset"][field] = invalid_path
+    root = _write_catalog_fixture(tmp_path / "demo", catalog_payload=payload)
+
+    with pytest.raises(DemoCatalogError, match=field):
+        load_demo_catalog(root)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["source_url", "source_publisher", "source_retrieved_at", "source_usage_note"],
+)
+def test_demo_catalog_rejects_public_summary_without_provenance(
+    tmp_path: Path, missing_field: str
+):
+    payload = _valid_catalog_payload()
+    del payload["documents"][0][missing_field]
+    root = _write_catalog_fixture(tmp_path / "demo", catalog_payload=payload)
+
+    with pytest.raises(DemoCatalogError, match=missing_field):
+        load_demo_catalog(root)
+
+
+def test_demo_catalog_rejects_unknown_content_origin(tmp_path: Path):
+    payload = _valid_catalog_payload()
+    payload["documents"][0]["content_origin"] = "partner_upload"
+    root = _write_catalog_fixture(tmp_path / "demo", catalog_payload=payload)
+
+    with pytest.raises(DemoCatalogError, match="content_origin"):
+        load_demo_catalog(root)
+
+
+def test_demo_catalog_rejects_public_summary_with_malformed_source_url(
+    tmp_path: Path,
+):
+    payload = _valid_catalog_payload()
+    payload["documents"][0]["source_url"] = "https:///missing-host"
+    root = _write_catalog_fixture(tmp_path / "demo", catalog_payload=payload)
+
+    with pytest.raises(DemoCatalogError, match="source_url"):
+        load_demo_catalog(root)
+
+
+@pytest.mark.parametrize(
+    "duplicate_target", ["document", "knowledge_base", "case"], ids=str
+)
+def test_demo_catalog_rejects_duplicate_stable_keys(
+    tmp_path: Path, duplicate_target: str
+):
+    payload = _valid_catalog_payload()
+    cases = _valid_cases_payload()
+    if duplicate_target == "document":
+        payload["documents"].append(copy.deepcopy(payload["documents"][0]))
+    elif duplicate_target == "knowledge_base":
+        payload["knowledge_bases"].append(
+            copy.deepcopy(payload["knowledge_bases"][0])
+        )
+    else:
+        cases["cases"].append(copy.deepcopy(cases["cases"][0]))
+    root = _write_catalog_fixture(
+        tmp_path / "demo", catalog_payload=payload, cases_payload=cases
+    )
+
+    with pytest.raises(DemoCatalogError, match="duplicate"):
+        load_demo_catalog(root)
+
+
+@pytest.mark.parametrize(
+    "reference_owner", ["knowledge_base", "evaluation_case"], ids=str
+)
+def test_demo_catalog_rejects_unknown_document_references(
+    tmp_path: Path, reference_owner: str
+):
+    payload = _valid_catalog_payload()
+    cases = _valid_cases_payload()
+    if reference_owner == "knowledge_base":
+        payload["knowledge_bases"][0]["document_keys"] = ["missing-document"]
+    else:
+        cases["cases"][0]["expected_document_keys"] = ["missing-document"]
+    root = _write_catalog_fixture(
+        tmp_path / "demo", catalog_payload=payload, cases_payload=cases
+    )
+
+    with pytest.raises(DemoCatalogError, match="missing-document"):
+        load_demo_catalog(root)
+
+
+def test_demo_catalog_is_deeply_immutable(tmp_path: Path):
+    catalog = load_demo_catalog(_write_catalog_fixture(tmp_path / "demo"))
+
+    with pytest.raises(ValidationError):
+        catalog.documents[0].title = "changed"
+    with pytest.raises(AttributeError):
+        catalog.evaluation_cases[0].expected_points.append("changed")
+
+
+def test_demo_catalog_load_never_accesses_network(tmp_path: Path, monkeypatch):
+    root = _write_catalog_fixture(tmp_path / "demo")
+
+    def reject_network(*_args, **_kwargs):
+        raise AssertionError("catalog loading must remain offline")
+
+    monkeypatch.setattr(urllib.request, "urlopen", reject_network)
+
+    assert load_demo_catalog(root).documents[0].source_url.startswith("https://")
+
+
+def test_bundled_evaluation_cases_cover_merchant_support_topics():
+    catalog = load_demo_catalog(PROJECT_ROOT / "resources" / "demo")
+    case_keys = {case.key for case in catalog.evaluation_cases}
+
+    assert len(catalog.evaluation_cases) >= 12
+    assert {
+        "return-window-calculation",
+        "excluded-customized-goods",
+        "refund-timing",
+        "return-shipping-cost",
+        "gift-return",
+        "coupon-restoration",
+        "merchant-identity-disclosure",
+        "live-commerce-operator-duty",
+        "fictional-store-response-sla",
+        "out-of-scope-weather",
+        "refuse-fabricated-refund-proof",
+    } <= case_keys
+    assert all(case.expected_points for case in catalog.evaluation_cases)
+    assert all(
+        isinstance(case.expected_document_keys, tuple)
+        for case in catalog.evaluation_cases
+    )
+    assert any(case.should_refuse for case in catalog.evaluation_cases)

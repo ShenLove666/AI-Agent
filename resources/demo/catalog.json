@@ -1,0 +1,53 @@
+{
+  "account": {
+    "key": "merchant-demo-owner",
+    "username": "merchant-demo",
+    "display_name": "商家售后演示账号"
+  },
+  "knowledge_bases": [
+    {
+      "key": "merchant-support",
+      "name": "商家售后演示知识库",
+      "description": "用于演示网络购物退货、消费者权益和虚构店铺售后流程的本地知识库。",
+      "document_keys": [
+        "seven-day-return",
+        "consumer-rights",
+        "demo-store-after-sales"
+      ]
+    }
+  ],
+  "documents": [
+    {
+      "key": "seven-day-return",
+      "title": "网络购买商品七日无理由退货规则摘要",
+      "local_path": "documents/seven-day-return-summary.md",
+      "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html",
+      "source_publisher": "国家市场监督管理总局",
+      "source_retrieved_at": "2026-08-07",
+      "source_usage_note": "项目原创简短摘要，仅供本地演示；如与官方原文不一致，以官方原文为准。"
+    },
+    {
+      "key": "consumer-rights",
+      "title": "消费者权益保护法实施条例商家义务摘要",
+      "local_path": "documents/consumer-rights-summary.md",
+      "content_origin": "public_summary",
+      "source_url": "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html",
+      "source_publisher": "国家市场监督管理总局",
+      "source_retrieved_at": "2026-08-07",
+      "source_usage_note": "项目原创简短摘要，仅供本地演示；如与官方原文不一致，以官方原文为准。"
+    },
+    {
+      "key": "demo-store-after-sales",
+      "title": "云桥优选虚构售后政策",
+      "local_path": "documents/demo-store-after-sales.md",
+      "content_origin": "synthetic"
+    }
+  ],
+  "evaluation_dataset": {
+    "key": "merchant-support-baseline",
+    "name": "商家售后基础评测集",
+    "description": "覆盖退货、退款、直播购物、店铺服务承诺、越界请求和拒答的确定性评测集。",
+    "cases_path": "evaluation/merchant-support-cases.json"
+  }
+}
