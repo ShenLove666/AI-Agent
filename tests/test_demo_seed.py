@@ -633,6 +633,11 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
     assert [message.role for message in demo_messages] == ["user", "assistant"]
     assert demo_messages[1].vote == 1
     assert demo_turn.active_assistant_message_id == demo_messages[1].id
+    citation = json.loads(demo_messages[1].citations_json)[0]
+    cited_document = db.get(KnowledgeDocument, int(citation["docId"]))
+    assert cited_document is not None
+    assert citation["docName"] == cited_document.source_title
+    assert citation["url"] == cited_document.source_url
 
     demo_files = {
         Path(path)

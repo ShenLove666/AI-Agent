@@ -1,14 +1,9 @@
 import { ArrowUpRight } from "lucide-react";
 
 import { SourceIcon } from "@/components/chat/SourceIcon";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger
-} from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { displayExcerpt, displayName, openSource, sourceSite } from "@/lib/source";
+import { canOpenSource, displayExcerpt, displayName, openSource, sourceSite } from "@/lib/source";
 import { useChatStore } from "@/stores/chatStore";
 import type { SourceRef } from "@/types";
 
@@ -60,6 +55,7 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
 
   const { title, detail } = displayName(source);
   const excerpt = displayExcerpt(source.excerpt);
+  const sourceCanOpen = canOpenSource(source);
 
   return (
     <TooltipProvider delayDuration={180}>
@@ -76,28 +72,28 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
           )}
         >
           <div
-            role="link"
+            role={sourceCanOpen ? "link" : undefined}
             title={source.docName || "查看来源"}
-            onClick={() => openSource(source)}
+            onClick={() => sourceCanOpen && openSource(source)}
             className={cn(
-              "group cursor-pointer rounded-2xl p-4 transition-colors",
-              "hover:bg-[#FAFAFA] dark:hover:bg-[#26262A]"
+              "group rounded-2xl p-4 transition-colors",
+              sourceCanOpen && "cursor-pointer hover:bg-[#FAFAFA] dark:hover:bg-[#26262A]"
             )}
           >
             <div className="flex items-center gap-2">
               <SourceIcon source={source} className="h-4 w-4 shrink-0" />
               <span className="min-w-0 flex-1 truncate text-[12px] text-[#8A8F94] dark:text-[#A1A1AA]">
-                {sourceSite(source)}
+                {sourceCanOpen ? sourceSite(source) : "来源信息不完整"}
               </span>
               <span className="flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-[#F2F2F3] px-1 text-[10px] font-medium text-[#8A8F94] dark:bg-[#3F3F46] dark:text-[#D4D4D8]">
                 {index}
               </span>
-              <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#C6C6CA] transition-colors group-hover:text-[#8A8F94] dark:text-[#5C5C63] dark:group-hover:text-[#A1A1AA]" />
+              {sourceCanOpen ? (
+                <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-[#C6C6CA] transition-colors group-hover:text-[#8A8F94] dark:text-[#5C5C63] dark:group-hover:text-[#A1A1AA]" />
+              ) : null}
             </div>
 
-            <p className="mt-2.5 line-clamp-2 text-[13.5px] font-semibold leading-[1.5]">
-              {title}
-            </p>
+            <p className="mt-2.5 line-clamp-2 text-[13.5px] font-semibold leading-[1.5]">{title}</p>
             {detail ? (
               <p className="mt-1 truncate text-[11px] text-[#A8ADB3] dark:text-[#8F8F98]">
                 {detail}

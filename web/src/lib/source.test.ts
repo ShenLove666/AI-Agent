@@ -26,14 +26,27 @@ describe("openSource", () => {
 
     openSource({ docId: "external", url: "https://example.com/article" });
 
-    expect(open).toHaveBeenCalledWith("https://example.com/article", "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith(
+      "https://example.com/article",
+      "_blank",
+      "noopener,noreferrer"
+    );
   });
 
   it("opens local sources in the document preview", () => {
     const open = stubWindowOpen();
 
-    openSource({ docId: "local-document" });
+    openSource({ docId: "42" });
 
-    expect(open).toHaveBeenCalledWith("/preview/doc/local-document", "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith("/preview/doc/42", "_blank", "noopener,noreferrer");
+  });
+
+  it("does not open a preview when the citation has no valid document id", () => {
+    const open = stubWindowOpen();
+
+    openSource({ docName: "legacy citation" });
+    openSource({ docId: "undefined", docName: "broken citation" });
+
+    expect(open).not.toHaveBeenCalled();
   });
 });

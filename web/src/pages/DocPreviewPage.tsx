@@ -9,11 +9,12 @@ type DocMeta = Awaited<ReturnType<typeof getDocument>>;
 
 export function DocPreviewPage() {
   const { docId } = useParams<{ docId: string }>();
+  const validDocId = Boolean(docId && /^\d+$/.test(docId));
   const [doc, setDoc] = React.useState<DocMeta | null>(null);
   const [status, setStatus] = React.useState<"loading" | "done" | "error">("loading");
 
   React.useEffect(() => {
-    if (!docId) {
+    if (!validDocId || !docId) {
       setStatus("error");
       return;
     }
@@ -32,7 +33,7 @@ export function DocPreviewPage() {
     return () => {
       cancelled = true;
     };
-  }, [docId]);
+  }, [docId, validDocId]);
 
   return (
     <div className="flex h-screen flex-col bg-white">
@@ -48,7 +49,7 @@ export function DocPreviewPage() {
             <Loader2 className="h-4 w-4 animate-spin" />
             正在加载…
           </div>
-        ) : status === "error" || !doc || !docId ? (
+        ) : status === "error" || !doc || !validDocId || !docId ? (
           <div className="flex flex-1 items-center justify-center text-sm text-[#999999]">
             无法加载该文档，可能已被删除。
           </div>

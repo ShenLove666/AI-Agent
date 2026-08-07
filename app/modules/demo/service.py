@@ -260,7 +260,9 @@ class DemoSeedService:
             counts["created_evaluation_cases"] += created_cases
             counts["reused_evaluation_cases"] += reused_cases
 
-            for key, value in self._upsert_history(db, user, bases_by_key).items():
+            for key, value in self._upsert_history(
+                db, user, bases_by_key, documents_by_key
+            ).items():
                 counts[key] += value
             created_support, reused_support = self._upsert_support_workflow(
                 db, user, documents_by_key
@@ -1126,7 +1128,11 @@ class DemoSeedService:
         case.reference_answer = item.reference_answer
 
     def _upsert_history(
-        self, db: Session, user: User, bases_by_key: dict[str, KnowledgeBase]
+        self,
+        db: Session,
+        user: User,
+        bases_by_key: dict[str, KnowledgeBase],
+        documents_by_key: dict[str, KnowledgeDocument],
     ) -> dict[str, int]:
         counts = {
             "created_conversations": 0,
@@ -1206,23 +1212,33 @@ class DemoSeedService:
         self._require_history_message(
             assistant, turn, user, "assistant", allow_missing=True
         )
+        source_document = documents_by_key["seven-day-return"]
+        citations = [
+            {
+                "index": 1,
+                "docId": str(source_document.id),
+                "docName": source_document.source_title or source_document.filename,
+                "sourceType": (
+                    "url" if source_document.source_url else "file"
+                ),
+                "fileType": source_document.file_type,
+                "url": source_document.source_url,
+                "excerpt": self._answer,
+            }
+        ]
         if assistant is None:
             assistant = self.container.conversations.add_assistant_version(
                 db,
                 turn=turn,
                 user_id=user.id,
                 content=self._answer,
-                citations=[
-                    {
-                        "documentKey": "seven-day-return",
-                        "title": "网络购买商品七日无理由退货规则摘要",
-                    }
-                ],
+                citations=citations,
                 message_status="NORMAL",
             )
             counts["created_messages"] += 1
         else:
             counts["reused_messages"] += 1
+            assistant.citations_json = json.dumps(citations, ensure_ascii=False)
         assistant.vote = 1
         db.commit()
         return counts

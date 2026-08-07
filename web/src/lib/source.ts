@@ -47,6 +47,11 @@ export function isHttpUrl(value: string) {
   }
 }
 
+export function canOpenSource(source: SourceRef) {
+  if (source.url != null) return isHttpUrl(source.url);
+  return Boolean(source.docId && /^\d+$/.test(source.docId));
+}
+
 // 打开来源：外链新窗口跳原站 本地文件走 docId 预览页
 export function openSource(source: SourceRef) {
   if (source.url !== undefined && source.url !== null) {
@@ -54,6 +59,7 @@ export function openSource(source: SourceRef) {
     window.open(source.url, "_blank", "noopener,noreferrer");
     return;
   }
+  if (!source.docId || !/^\d+$/.test(source.docId)) return;
   window.open(`/preview/doc/${source.docId}`, "_blank", "noopener,noreferrer");
 }
 

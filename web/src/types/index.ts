@@ -24,7 +24,7 @@ export interface Session {
 
 export interface SourceRef {
   index?: number;
-  docId: string;
+  docId?: string;
   docName?: string;
   sourceType?: string;
   fileType?: string | null;

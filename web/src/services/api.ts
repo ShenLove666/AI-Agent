@@ -8,6 +8,26 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1";
 
 export const api = axios.create({ baseURL: API_BASE_URL, timeout: 60000 });
 
+export function apiErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((item) => apiErrorMessage(item))
+      .filter((item): item is string => Boolean(item));
+    return messages.length > 0 ? messages.join("；") : undefined;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const message = apiErrorMessage(record.message ?? record.msg ?? record.detail);
+    if (!message) return undefined;
+    const location = Array.isArray(record.loc)
+      ? record.loc.filter((item) => typeof item === "string" || typeof item === "number").join(".")
+      : "";
+    return location ? `${location}: ${message}` : message;
+  }
+  return undefined;
+}
+
 export function setAuthToken(token: string | null) {
   if (token) api.defaults.headers.common.Authorization = `Bearer ${token}`;
   else delete api.defaults.headers.common.Authorization;
@@ -43,7 +63,7 @@ api.interceptors.response.use(
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }
     const payload = error?.response?.data;
-    const message = payload?.error?.message || payload?.detail;
+    const message = apiErrorMessage(payload?.error?.message ?? payload?.detail);
     if (message) toast.error(message);
     else if (error?.code === "ERR_NETWORK") toast.error("网络错误，请检查网络连接");
     return Promise.reject(
