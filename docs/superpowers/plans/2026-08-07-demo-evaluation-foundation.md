@@ -335,7 +335,7 @@ git commit -m "feat: track demo ownership and source provenance"
 - Produces: `EvaluationDataset`, `EvaluationCase`, and `EvaluationRepository.create_dataset_with_cases(db, *, owner_id, name, description, is_demo, cases) -> EvaluationDataset`.
 - Does not produce evaluation runs, scores, judges, or dashboard APIs.
 
-- [ ] **Step 1: Write the failing repository test**
+- [x] **Step 1: Write the failing repository test**
 
 ```python
 def test_dataset_persists_structured_cases(db, user):
@@ -360,34 +360,34 @@ def test_dataset_persists_structured_cases(db, user):
     assert dataset.cases[0].expected_points == ["从签收商品的次日开始计算"]
 ```
 
-- [ ] **Step 2: Run and observe missing-module failure**
+- [x] **Step 2: Run and observe missing-module failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_evaluation_models.py -v
 ```
 
-- [ ] **Step 3: Implement focused models**
+- [x] **Step 3: Implement focused models**
 
 `EvaluationDataset` fields: integer id, owner FK, unique owner/name pair, name, description, is_demo, created_at, updated_at. `EvaluationCase` fields: integer id, dataset FK, stable `case_key`, question, category, difficulty, knowledge-base IDs JSON, expected-points JSON, expected-document-keys JSON, should_refuse, nullable reference_answer, created_at, updated_at.
 
 Expose typed properties that decode JSON into `list[int]` and `list[str]`; JSON serialization uses `ensure_ascii=False` and sorted/stable input ordering where order is not semantically meaningful.
 
-- [ ] **Step 4: Implement the repository transaction**
+- [x] **Step 4: Implement the repository transaction**
 
 The repository validates non-empty question and expected points, rejects duplicate `case_key` values in one dataset, inserts dataset and cases in one transaction, commits once, and rolls back on error.
 
-- [ ] **Step 5: Create revision 0003 and register models**
+- [x] **Step 5: Create revision 0003 and register models**
 
 Create both tables, indexes, unique constraints, and foreign keys in `upgrade()`; drop child then parent in `downgrade()`. Import evaluation models beside other model-registration imports in `application_core.py`.
 
-- [ ] **Step 6: Run focused and full backend tests**
+- [x] **Step 6: Run focused and full backend tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_evaluation_models.py tests/test_migrations.py -v
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/modules/evaluation app/application_core.py migrations/versions/0003_evaluation_datasets.py tests/test_evaluation_models.py tests/test_migrations.py pytest.ini

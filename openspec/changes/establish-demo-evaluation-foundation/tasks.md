@@ -14,9 +14,9 @@
 
 ## 3. Evaluation dataset foundation
 
-- [ ] 3.1 Add failing tests for tenant ownership, structured expectation round-tripping, per-dataset stable-key uniqueness, and transactional rollback on an invalid case.
-- [ ] 3.2 Implement focused `EvaluationDataset` and `EvaluationCase` models plus a repository method that creates a dataset and its initial cases in one transaction.
-- [ ] 3.3 Register the models, add the ordered migration with upgrade/downgrade operations, and run focused plus full backend tests.
+- [x] 3.1 Add failing tests for tenant ownership, structured expectation round-tripping, per-dataset stable-key uniqueness, and transactional rollback on an invalid case.
+- [x] 3.2 Implement focused `EvaluationDataset` and `EvaluationCase` models plus a repository method that creates a dataset and its initial cases in one transaction.
+- [x] 3.3 Register the models, add the ordered migration with upgrade/downgrade operations, and run focused plus full backend tests.
 
 ## 4. Validated bundled demo catalog
 
