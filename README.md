@@ -82,8 +82,8 @@ uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
 ```powershell
 $env:DEEPSEEK_API_KEY = "替换为自己的密钥"
 $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-$env:DEEPSEEK_MODEL = "deepseek-chat"
-$env:DEEPSEEK_REASONING_MODEL = "deepseek-reasoner"
+$env:DEEPSEEK_MODEL = "deepseek-v4-flash"
+$env:DEEPSEEK_REASONING_MODEL = "deepseek-v4-flash"
 
 # 可选备用接口
 $env:BACKUP_LLM_API_KEY = "替换为备用密钥"
@@ -93,6 +93,7 @@ $env:BACKUP_LLM_REASONING_MODEL = "reasoning-model-id"
 ```
 
 密钥只放在环境变量或服务器的私密环境文件中，不要提交到 Git。
+DeepSeek V4 Flash 同时支持普通对话和深度思考；模型环境变量是可选覆盖项，未设置时也会使用该默认模型。
 
 ### 3. 构建界面并启动
 
@@ -170,7 +171,7 @@ $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 | `CHAT_FIRST_TOKEN_TIMEOUT_SECONDS` | `20` | 流式生成首 Token 超时 |
 | `CHAT_IDLE_TIMEOUT_SECONDS` | `30` | 流式生成 Token 间最大空闲时间 |
 | `MAX_UPLOAD_FILE_SIZE` | `52428800` | 服务端允许的单文件最大字节数 |
-| `DEEPSEEK_REASONING_MODEL` | `deepseek-reasoner` | 开启深度思考时使用的 DeepSeek 模型 |
+| `DEEPSEEK_REASONING_MODEL` | `deepseek-v4-flash` | 开启深度思考时使用的 DeepSeek 模型 |
 | `MIMO_REASONING_MODEL` | 与普通模型相同 | 小米 MiMo 深度思考模型；同时发送 thinking 开关 |
 | `BACKUP_LLM_REASONING_MODEL` | 未设置 | 备用接口的推理模型 ID |
 | `CIRCUIT_FAILURE_THRESHOLD` | `3` | 供应商熔断阈值 |

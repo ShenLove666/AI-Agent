@@ -92,8 +92,10 @@ class Settings:
                     name="deepseek",
                     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                     api_key=key,
-                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-                    reasoning_model=os.getenv("DEEPSEEK_REASONING_MODEL", "deepseek-reasoner"),
+                    model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                    reasoning_model=os.getenv(
+                        "DEEPSEEK_REASONING_MODEL", "deepseek-v4-flash"
+                    ),
                     priority=10,
                 )
             )

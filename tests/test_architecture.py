@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.infra_ai.circuit_breaker import CircuitBreaker, CircuitState
+from app.framework.config import Settings
 from app.framework.errors import ModelStreamTimeoutError
 from app.infra_ai.contracts import ChatMessage, ChatRequest
 from app.infra_ai.router import ChatModelRouter, RoutedProvider
@@ -27,6 +28,29 @@ class FakeChannel(BaseSearchChannel):
         if self.fail:
             raise RuntimeError("channel failed")
         return self.results
+
+
+def test_deepseek_defaults_to_v4_flash_for_chat_and_reasoning(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_REASONING_MODEL", raising=False)
+
+    endpoint = next(
+        item for item in Settings().chat_endpoints() if item.name == "deepseek"
+    )
+
+    assert endpoint.model == "deepseek-v4-flash"
+    assert endpoint.reasoning_model == "deepseek-v4-flash"
+
+    monkeypatch.setenv("DEEPSEEK_MODEL", "custom-chat-model")
+    monkeypatch.setenv("DEEPSEEK_REASONING_MODEL", "custom-reasoning-model")
+
+    endpoint = next(
+        item for item in Settings().chat_endpoints() if item.name == "deepseek"
+    )
+
+    assert endpoint.model == "custom-chat-model"
+    assert endpoint.reasoning_model == "custom-reasoning-model"
 
 
 def test_circuit_breaker_opens_after_threshold():
