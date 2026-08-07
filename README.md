@@ -181,7 +181,7 @@ $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `DB_URL` | `sqlite:///./data/ragent.db` | SQLAlchemy 数据库地址 |
+| `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | SQLAlchemy 数据库地址；旧 `ragent.db` 会保留但不会被默认覆盖 |
 | `API_PREFIX` | `/api/v1` | API 统一前缀 |
 | `CORS_ORIGINS` | `http://localhost:3000` | 逗号分隔的跨域来源 |
 | `RETRIEVAL_TIMEOUT_SECONDS` | `8` | 检索通道超时 |

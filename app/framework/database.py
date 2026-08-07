@@ -14,7 +14,7 @@ class Base(DeclarativeBase):
 
 class Database:
     def __init__(self, database_url: str | None = None):
-        url = database_url or os.getenv("DB_URL", "sqlite:///./data/ragent.db")
+        url = database_url or os.getenv("DB_URL", "sqlite:///./data/ragent-v4-flash.db")
         kwargs: dict = {"pool_pre_ping": True}
         if url.startswith("sqlite"):
             kwargs.update(connect_args={"check_same_thread": False}, poolclass=NullPool)

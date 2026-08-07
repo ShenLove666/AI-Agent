@@ -31,7 +31,7 @@ class Settings:
     environment: str = field(default_factory=lambda: os.getenv("APP_ENV", "development"))
     api_prefix: str = field(default_factory=lambda: os.getenv("API_PREFIX", "/api/v1"))
     database_url: str = field(
-        default_factory=lambda: os.getenv("DB_URL", "sqlite:///./data/ragent.db")
+        default_factory=lambda: os.getenv("DB_URL", "sqlite:///./data/ragent-v4-flash.db")
     )
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: _csv("CORS_ORIGINS", "http://localhost:3000")
