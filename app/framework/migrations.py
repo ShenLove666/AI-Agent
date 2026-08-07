@@ -7,7 +7,11 @@ from alembic.config import Config
 from sqlalchemy import inspect
 
 from app.framework.database import Database
-from app.framework.legacy_schema import adopt_pre_alembic_schema
+from app.framework.legacy_schema import (
+    adopt_pre_alembic_schema,
+    migration_transaction,
+    verify_revision_0001_schema,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -24,8 +28,11 @@ def upgrade_database(database: Database) -> None:
     config = build_alembic_config(
         database.engine.url.render_as_string(hide_password=False)
     )
-    tables = set(inspect(database.engine).get_table_names())
-    if "alembic_version" not in tables and tables:
-        adopt_pre_alembic_schema(database)
-        command.stamp(config, "0001_current_schema")
-    command.upgrade(config, "head")
+    with migration_transaction(database) as connection:
+        config.attributes["connection"] = connection
+        tables = set(inspect(connection).get_table_names())
+        if "alembic_version" not in tables and tables:
+            adopt_pre_alembic_schema(database, connection)
+            verify_revision_0001_schema(connection)
+            command.stamp(config, "0001_current_schema")
+        command.upgrade(config, "head")
