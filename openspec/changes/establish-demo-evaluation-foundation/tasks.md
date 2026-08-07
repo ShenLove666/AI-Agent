@@ -34,9 +34,9 @@
 
 ## 6. Active frontend API contract
 
-- [ ] 6.1 Add failing tests for supported service-call extraction, prefix/parameter normalization, explicit streaming-chat coverage, and unmatched-operation reporting.
-- [ ] 6.2 Implement the checker with a reviewed allowlist of enabled frontend service files; keep hidden future modules explicitly out of scope.
-- [ ] 6.3 Run the checker against generated FastAPI OpenAPI and resolve every enabled method/path mismatch without adding placeholder endpoints.
+- [x] 6.1 Add failing tests for supported service-call extraction, prefix/parameter normalization, explicit streaming-chat coverage, and unmatched-operation reporting.
+- [x] 6.2 Implement the checker with a reviewed allowlist of enabled frontend service files; keep hidden future modules explicitly out of scope.
+- [x] 6.3 Run the checker against generated FastAPI OpenAPI and resolve every enabled method/path mismatch without adding placeholder endpoints.
 
 ## 7. Canonical verification and documentation
 

@@ -546,7 +546,7 @@ git commit -m "feat: add reproducible demo seed workflow"
 - Produces: `extract_service_calls(paths: Sequence[Path]) -> set[ApiCall]`, `openapi_calls(app: FastAPI) -> set[ApiCall]`, and CLI exit code 1 for unmatched active calls.
 - Active services are exactly `api.ts`, `authService.ts`, `chatService.ts`, `dashboardService.ts`, `knowledgeService.ts`, `ragTraceService.ts`, `sessionService.ts`, `settingsService.ts`, and `userService.ts`.
 
-- [ ] **Step 1: Write failing extraction and comparison tests**
+- [x] **Step 1: Write failing extraction and comparison tests**
 
 ```python
 def test_active_frontend_service_calls_exist_in_openapi():
@@ -559,19 +559,19 @@ def test_template_parameters_are_normalized():
     assert normalize_path("/conversations/${conversationId}/messages") == "/conversations/{}/messages"
 ```
 
-- [ ] **Step 2: Run and observe missing-script failure**
+- [x] **Step 2: Run and observe missing-script failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_api_contract_baseline.py -v
 ```
 
-- [ ] **Step 3: Implement the checker**
+- [x] **Step 3: Implement the checker**
 
 Parse `api.get/post/put/patch/delete` calls whose first argument is a string or template literal. Normalize `${...}` and FastAPI `{name}` parameters to `{}`. Strip the `/api/v1` prefix before comparison. Ignore type arguments but never ignore an unmatched active path.
 
 Keep currently hidden service modules outside `ACTIVE_SERVICE_PATHS`; this is explicit scope selection, not a silent ignore pattern. Add the SSE POST endpoint explicitly because it is issued through `fetch` in `chatStore.ts`.
 
-- [ ] **Step 4: Run checker and focused test**
+- [x] **Step 4: Run checker and focused test**
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_api_contracts.py
@@ -580,7 +580,7 @@ Keep currently hidden service modules outside `ACTIVE_SERVICE_PATHS`; this is ex
 
 Expected: output lists the number of active calls and exits 0 with no missing method/path pairs.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add scripts/check_api_contracts.py tests/test_api_contract_baseline.py pytest.ini
