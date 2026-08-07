@@ -26,6 +26,12 @@ const OperationsPage = lazy(() =>
 const RetailOperationsPage = lazy(() =>
   import("@/pages/admin/retail/RetailOperationsPage").then((module) => ({ default: module.RetailOperationsPage }))
 );
+const SupportWorkbenchPage = lazy(() =>
+  import("@/pages/admin/support/SupportWorkbenchPage").then((module) => ({ default: module.SupportWorkbenchPage }))
+);
+const SupportOperationsPage = lazy(() =>
+  import("@/pages/admin/support/SupportOperationsPage").then((module) => ({ default: module.SupportOperationsPage }))
+);
 const KnowledgeListPage = lazy(() =>
   import("@/pages/admin/knowledge/KnowledgeListPage").then((module) => ({ default: module.KnowledgeListPage }))
 );
@@ -91,7 +97,7 @@ function RedirectIfAuth({ children }: { children: JSX.Element }) {
   const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
   if (isAuthenticated) {
-    return <Navigate to={user?.role === "admin" ? "/admin/retail" : "/chat"} replace />;
+    return <Navigate to={user?.role === "admin" ? "/admin/support" : "/chat"} replace />;
   }
   return children;
 }
@@ -101,7 +107,7 @@ function HomeRedirect() {
   const isInitialized = useAuthStore((state) => state.isInitialized);
   const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
-  return <Navigate to={isAuthenticated ? (user?.role === "admin" ? "/admin/retail" : "/chat") : "/login"} replace />;
+  return <Navigate to={isAuthenticated ? (user?.role === "admin" ? "/admin/support" : "/chat") : "/login"} replace />;
 }
 
 export const router = createBrowserRouter([
@@ -159,7 +165,27 @@ export const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: <Navigate to="/admin/retail" replace />
+        element: <Navigate to="/admin/support" replace />
+      },
+      {
+        path: "support",
+        element: withPageSuspense(<SupportWorkbenchPage />)
+      },
+      {
+        path: "support-knowledge",
+        element: withPageSuspense(<SupportOperationsPage view="knowledge" />)
+      },
+      {
+        path: "support-quality",
+        element: withPageSuspense(<SupportOperationsPage view="quality" />)
+      },
+      {
+        path: "support-evaluation",
+        element: withPageSuspense(<SupportOperationsPage view="evaluation" />)
+      },
+      {
+        path: "support-reports",
+        element: withPageSuspense(<SupportOperationsPage view="reports" />)
       },
       {
         path: "retail",

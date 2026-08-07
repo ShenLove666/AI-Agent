@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Bot,
+  BookOpenCheck,
   BarChart3,
   ChevronDown,
   ChevronRight,
@@ -11,6 +12,9 @@ import {
   Database,
   GitBranch,
   Github,
+  Inbox,
+  FlaskConical,
+  FileBarChart,
   Layers,
   LayoutDashboard,
   Lightbulb,
@@ -78,8 +82,33 @@ const menuGroups: MenuGroup[] = [
     title: "导航",
     items: [
       {
+        path: "/admin/support",
+        label: "客服工作台",
+        icon: Inbox
+      },
+      {
+        path: "/admin/support-knowledge",
+        label: "知识发布",
+        icon: BookOpenCheck
+      },
+      {
+        path: "/admin/support-quality",
+        label: "质量与缺口",
+        icon: ShieldCheck
+      },
+      {
+        path: "/admin/support-evaluation",
+        label: "上线前评测",
+        icon: FlaskConical
+      },
+      {
+        path: "/admin/support-reports",
+        label: "客服运营报告",
+        icon: FileBarChart
+      },
+      {
         path: "/admin/retail",
-        label: "即时零售运营",
+        label: "商品组合洞察",
         icon: LayoutDashboard
       },
       {
@@ -188,6 +217,7 @@ const menuGroups: MenuGroup[] = [
 ];
 
 const breadcrumbMap: Record<string, string> = {
+  support: "客服工作台",
   retail: "即时零售运营",
   dashboard: "Dashboard",
   operations: "商家运营洞察",
@@ -488,8 +518,8 @@ export function AdminLayout() {
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <h1 className="admin-sidebar__title">邻里鲜选 AI 运营台</h1>
-                <p className="admin-sidebar__subtitle">Instant Retail Ops</p>
+                <h1 className="admin-sidebar__title">邻里鲜选 AI 客服台</h1>
+                <p className="admin-sidebar__subtitle">Support Quality Ops</p>
               </div>
             )}
           </div>

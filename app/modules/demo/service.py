@@ -9,9 +9,10 @@ import os
 import shutil
 import stat
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, inspect, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.conversations.models import (
@@ -29,6 +30,18 @@ from app.modules.knowledge.models import (
     KnowledgeDocument,
 )
 from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
+from app.modules.support.models import (
+    KnowledgeGap,
+    KnowledgeRelease,
+    KnowledgeReleaseDocument,
+    ReplyDecision,
+    ReplySuggestion,
+    SupportCase,
+    SupportEvent,
+    SupportMessage,
+    SupportQualityLabel,
+    SupportReleaseDecision,
+)
 from app.modules.users.models import User
 
 
@@ -66,6 +79,8 @@ class DemoSeedResult:
     reused_turns: int = 0
     created_messages: int = 0
     reused_messages: int = 0
+    created_support_cases: int = 0
+    reused_support_cases: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +99,7 @@ class DemoClearResult:
     removed_trace_nodes: int = 0
     removed_files: int = 0
     removed_vectors: int = 0
+    removed_support_records: int = 0
     external_cleanup_errors: tuple[str, ...] = ()
 
     @property
@@ -102,6 +118,7 @@ class DemoClearResult:
                 self.removed_request_runs,
                 self.removed_trace_runs,
                 self.removed_trace_nodes,
+                self.removed_support_records,
             )
         )
 
@@ -242,6 +259,11 @@ class DemoSeedService:
 
             for key, value in self._upsert_history(db, user, bases_by_key).items():
                 counts[key] += value
+            created_support, reused_support = self._upsert_support_workflow(
+                db, user, documents_by_key
+            )
+            counts["created_support_cases"] += created_support
+            counts["reused_support_cases"] += reused_support
             return DemoSeedResult(**counts)
         except DemoOwnershipError:
             db.rollback()
@@ -665,6 +687,7 @@ class DemoSeedService:
     def _delete_planned_rows(
         self, db: Session, plan: _OwnershipPlan
     ) -> dict[str, int]:
+        support_removed = self._delete_support_rows(db, plan.user_ids)
         counts = {
             "removed_request_runs": self._delete_ids(
                 db, ChatRequestRun, ChatRequestRun.id, plan.request_run_ids
@@ -675,6 +698,7 @@ class DemoSeedService:
             "removed_trace_runs": self._delete_ids(
                 db, RagTraceRun, RagTraceRun.id, plan.trace_run_ids
             ),
+            "removed_support_records": support_removed,
         }
         if plan.turn_ids:
             db.execute(
@@ -716,6 +740,39 @@ class DemoSeedService:
         )
         db.flush()
         return counts
+
+    @staticmethod
+    def _delete_support_rows(db: Session, user_ids: tuple[int, ...]) -> int:
+        if not user_ids:
+            return 0
+        bind = db.get_bind()
+        if not inspect(bind).has_table("support_cases"):
+            return 0
+        case_ids = tuple(
+            db.scalars(select(SupportCase.id).where(SupportCase.owner_id.in_(user_ids)))
+        )
+        release_ids = tuple(
+            db.scalars(
+                select(KnowledgeRelease.id).where(KnowledgeRelease.owner_id.in_(user_ids))
+            )
+        )
+        deletions = (
+            (SupportReleaseDecision, SupportReleaseDecision.owner_id.in_(user_ids)),
+            (SupportQualityLabel, SupportQualityLabel.owner_id.in_(user_ids)),
+            (ReplyDecision, ReplyDecision.case_id.in_(case_ids)),
+            (SupportMessage, SupportMessage.case_id.in_(case_ids)),
+            (SupportEvent, SupportEvent.case_id.in_(case_ids)),
+            (ReplySuggestion, ReplySuggestion.case_id.in_(case_ids)),
+            (KnowledgeGap, KnowledgeGap.owner_id.in_(user_ids)),
+            (KnowledgeReleaseDocument, KnowledgeReleaseDocument.release_id.in_(release_ids)),
+            (KnowledgeRelease, KnowledgeRelease.owner_id.in_(user_ids)),
+            (SupportCase, SupportCase.owner_id.in_(user_ids)),
+        )
+        removed = 0
+        for model, predicate in deletions:
+            result = db.execute(delete(model).where(predicate))
+            removed += int(result.rowcount or 0)
+        return removed
 
     def _cleanup_externals(
         self, plan: _OwnershipPlan, file_deletions: tuple[Path, ...]
@@ -1147,6 +1204,236 @@ class DemoSeedService:
         assistant.vote = 1
         db.commit()
         return counts
+
+    def _upsert_support_workflow(
+        self,
+        db: Session,
+        user: User,
+        documents_by_key: dict[str, KnowledgeDocument],
+    ) -> tuple[int, int]:
+        """Seed a realistic, deterministic support queue backed by demo policies."""
+
+        if not inspect(db.get_bind()).has_table("support_cases"):
+            return 0, 0
+
+        release = db.scalar(
+            select(KnowledgeRelease).where(
+                KnowledgeRelease.owner_id == user.id,
+                KnowledgeRelease.version == "support-demo-v1",
+            )
+        )
+        document_hashes = [
+            item.demo_content_sha256 or hashlib.sha256(item.filename.encode()).hexdigest()
+            for item in documents_by_key.values()
+        ]
+        content_hash = hashlib.sha256("".join(sorted(document_hashes)).encode()).hexdigest()
+        if release is None:
+            release = KnowledgeRelease(
+                owner_id=user.id,
+                version="support-demo-v1",
+                title="即时零售客服规则基线",
+                status="published",
+                processing_status="ready",
+                content_hash=content_hash,
+                retrieval_mode=("hybrid" if self.container.knowledge.vector_indexer else "keyword"),
+                published_by=user.id,
+                published_at=datetime.utcnow(),
+                is_active=True,
+                is_demo=True,
+            )
+            db.add(release)
+            db.flush()
+        for document in documents_by_key.values():
+            membership = db.scalar(
+                select(KnowledgeReleaseDocument).where(
+                    KnowledgeReleaseDocument.release_id == release.id,
+                    KnowledgeReleaseDocument.document_id == document.id,
+                )
+            )
+            if membership is None:
+                db.add(
+                    KnowledgeReleaseDocument(
+                        release_id=release.id,
+                        document_id=document.id,
+                        document_hash=document.demo_content_sha256 or content_hash,
+                        filename_snapshot=document.filename,
+                    )
+                )
+
+        scenarios = (
+            ("生鲜破损退款", "草莓送到后压坏了一半，可以退款吗？优惠券会退回来吗？", "refund", "urgent"),
+            ("配送超时处理", "订单已经晚了四十分钟，骑手还没到，怎么处理？", "delivery", "high"),
+            ("优惠券使用条件", "满减券和会员折扣可以同时使用吗？", "promotion", "normal"),
+            ("缺货替换确认", "牛奶缺货了，能换成同价的低脂奶吗？", "product", "normal"),
+            ("临期商品售后", "收到的面包明天就过期，可以申请售后吗？", "refund", "high"),
+            ("会员积分到账", "昨天的订单为什么还没有增加积分？", "membership", "normal"),
+            ("发票开具", "即时零售订单在哪里申请电子发票？", "invoice", "low"),
+            ("地址修改", "订单已经接单了，还能修改配送地址吗？", "delivery", "high"),
+            ("冷藏品温度异常", "酸奶送到时已经不冰了，还能喝吗？", "safety", "urgent"),
+            ("退款到账时间", "退款审核通过后多久原路返回？", "refund", "normal"),
+            ("赠品缺失", "活动页面写了赠品，但订单里没有收到。", "promotion", "normal"),
+            ("重复扣款", "同一个订单银行卡显示扣了两次款。", "payment", "urgent"),
+        )
+        created = 0
+        reused = 0
+        now = datetime.utcnow()
+        for index in range(36):
+            title, question, category, priority = scenarios[index % len(scenarios)]
+            case_key = f"support-demo-{index + 1:03d}"
+            support_case = db.scalar(
+                select(SupportCase).where(
+                    SupportCase.owner_id == user.id,
+                    SupportCase.case_key == case_key,
+                )
+            )
+            status = ("pending", "in_progress", "resolved", "escalated")[index % 4]
+            if support_case is None:
+                support_case = SupportCase(
+                    owner_id=user.id,
+                    case_key=case_key,
+                    customer_name=f"顾客{index + 1:02d}",
+                    customer_channel=("web", "app", "store")[index % 3],
+                    subject=title,
+                    status=status,
+                    priority=priority,
+                    assignee_id=user.id if status != "pending" else None,
+                    labels_json=json.dumps([category, "即时零售"], ensure_ascii=False),
+                    unread=status == "pending",
+                    resolution_code="policy_explained" if status == "resolved" else None,
+                    resolution_note="已依据规则完成答复" if status == "resolved" else None,
+                    version=1,
+                    is_demo=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(support_case)
+                db.flush()
+                created += 1
+            else:
+                reused += 1
+            first_message = db.scalar(
+                select(SupportMessage).where(
+                    SupportMessage.case_id == support_case.id,
+                    SupportMessage.role == "customer",
+                )
+            )
+            if first_message is None:
+                db.add(
+                    SupportMessage(
+                        case_id=support_case.id,
+                        role="customer",
+                        content=question,
+                        sent_to_customer=False,
+                        created_at=now,
+                    )
+                )
+                db.add(
+                    SupportEvent(
+                        owner_id=user.id,
+                        case_id=support_case.id,
+                        event_type="case_created",
+                        payload_json=json.dumps({"category": category}, ensure_ascii=False),
+                        is_demo=True,
+                        occurred_at=now,
+                    )
+                )
+            if index < 12 and db.scalar(
+                select(ReplySuggestion.id).where(ReplySuggestion.case_id == support_case.id)
+            ) is None:
+                risk_flags = ["refund_review"] if category in {"refund", "payment", "safety"} else []
+                suggestion = ReplySuggestion(
+                    case_id=support_case.id,
+                    requested_by=user.id,
+                    knowledge_release_id=release.id,
+                    status="completed",
+                    content=f"您好，关于“{title}”，我已根据当前已发布规则为您核实。请保留商品和订单凭证，我们将按售后流程协助处理。",
+                    citations_json=json.dumps(
+                        [{"title": "即时零售售后与活动规则", "releaseVersion": release.version}],
+                        ensure_ascii=False,
+                    ),
+                    risk_flags_json=json.dumps(risk_flags),
+                    model_id="demo-grounded-reply",
+                    prompt_version="support-v1",
+                    config_snapshot_json=json.dumps({"knowledgeVersion": release.version}),
+                    latency_ms=680 + index * 13,
+                )
+                db.add(suggestion)
+                db.flush()
+                if index < 9:
+                    decision = "edited" if index % 3 == 0 else "accepted"
+                    final = suggestion.content + (" 我们会在审核后同步处理进度。" if decision == "edited" else "")
+                    db.add(
+                        ReplyDecision(
+                            suggestion_id=suggestion.id,
+                            case_id=support_case.id,
+                            actor_id=user.id,
+                            decision=decision,
+                            final_content=final,
+                        )
+                    )
+                    db.add(
+                        SupportMessage(
+                            case_id=support_case.id,
+                            actor_id=user.id,
+                            role="agent",
+                            content=final,
+                            suggestion_id=suggestion.id,
+                            sent_to_customer=True,
+                            created_at=now,
+                        )
+                    )
+                    db.add(
+                        SupportEvent(
+                            owner_id=user.id,
+                            case_id=support_case.id,
+                            actor_id=user.id,
+                            event_type=f"suggestion_{decision}",
+                            payload_json=json.dumps({"suggestionId": suggestion.id}),
+                            is_demo=True,
+                            occurred_at=now,
+                        )
+                    )
+                if index in {0, 4, 8}:
+                    db.add(
+                        SupportQualityLabel(
+                            owner_id=user.id,
+                            case_id=support_case.id,
+                            suggestion_id=suggestion.id,
+                            reviewer_id=user.id,
+                            verdict="partially_correct",
+                            failure_category="missing_knowledge",
+                            severity="high",
+                            note="缺少更细的赔付或安全处置边界",
+                        )
+                    )
+        for category, title in (
+            ("refund", "补充优惠券随退款返还规则"),
+            ("safety", "补充冷藏商品温度异常处置规则"),
+            ("promotion", "明确赠品缺失补发条件"),
+        ):
+            fingerprint = hashlib.sha256(f"demo:{category}:{title}".encode()).hexdigest()
+            if db.scalar(
+                select(KnowledgeGap.id).where(
+                    KnowledgeGap.owner_id == user.id,
+                    KnowledgeGap.fingerprint == fingerprint,
+                )
+            ) is None:
+                db.add(
+                    KnowledgeGap(
+                        owner_id=user.id,
+                        fingerprint=fingerprint,
+                        title=title,
+                        category=category,
+                        severity="high",
+                        status="open",
+                        occurrence_count=3,
+                        owner_user_id=user.id,
+                        evidence_json="[]",
+                        is_demo=True,
+                    )
+                )
+        db.commit()
+        return created, reused
 
     @staticmethod
     def _require_history_message(

@@ -128,7 +128,7 @@ uv run python server.py
 
 浏览器访问 `http://127.0.0.1:8081`。FastAPI 会直接托管 `web/dist`，生产环境不需要再暴露 Vite 的 3000 端口。
 
-应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `2fce55de2167`：
+应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0005_support_quality_loop`：
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
@@ -260,6 +260,25 @@ $env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
 - “云桥优选”售后政策：明确标记为 `synthetic` 的虚构演示内容。
 
 两份 `public_summary` 均保存官方 URL、发布方、检索日期和用途说明；仓库内容是为演示撰写的原创摘要，不是官方页面副本，如有差异以官方原文为准。seed/reset 全程读取本地文件，不需要 LLM、Redis、Milvus 或网络访问。
+
+### AI 客服质量闭环演示
+
+新工作台围绕一个可落地场景组织：即时零售商家处理配送、退款、促销、商品和食品安全咨询，AI 只能基于当前已发布知识版本提出草稿，人工审核后才会发送。质检失败会聚合成知识缺口，候选版本必须通过固定评测集和高风险门禁才能启用。
+
+首次运行可直接复制：
+
+```powershell
+$env:DB_URL = "sqlite:///./data/ragent-v4-flash.db"
+$env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
+.\.venv\Scripts\python.exe -m app.cli create-admin --username support-admin --password "AdminDemo@2026"
+.\.venv\Scripts\python.exe server.py
+```
+
+访问 `http://127.0.0.1:8081/login`，使用 `support-admin / AdminDemo@2026`。建议按“客服工作台 → 质量与缺口 → 知识发布 → 上线前评测 → 客服运营报告”的顺序演示。数据包含 36 个工单、14 个固定评测用例、人工回复决策和 3 个知识缺口；报告会明确标注 demo provenance。
+
+Embedding 是可选增强，不是启动前置条件。不设置 `EMBED_MODEL_PATH` 时使用 SQLite + jieba 关键词检索，完整业务闭环仍可运行；设置本地模型目录后才启用向量检索。模型不可用时 AI 建议返回可操作的 provider-unavailable 状态，人工回复、工单处理、质检、知识发布和报告不受影响。
 
 ## 当前阶段的能力边界
 

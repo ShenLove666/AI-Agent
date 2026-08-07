@@ -26,6 +26,7 @@ from app.api.knowledge_mutations import router as knowledge_mutation_router
 from app.api.management import router as management_router
 from app.api.retail import router as retail_router
 from app.api.system import create_system_router
+from app.api.support import router as support_router
 from app.container import build_container as build_ai_container
 from app.framework.config import Settings, settings
 from app.framework.database import Database
@@ -60,6 +61,7 @@ from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.operations import models as operation_models  # noqa: F401,E402
 from app.modules.optimization import models as optimization_models  # noqa: F401,E402
+from app.modules.support import models as support_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
 
 
@@ -187,6 +189,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         chat_router,
         management_router,
         retail_router,
+        support_router,
         dashboard_router,
         knowledge_fixes_router,
         knowledge_chunk_fixes_router,
