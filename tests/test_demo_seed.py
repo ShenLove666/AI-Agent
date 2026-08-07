@@ -45,6 +45,26 @@ def test_regular_user_and_upload_are_not_demo_or_public_by_default(db: Session):
 
     assert user.is_demo is False
 
+    knowledge_base = KnowledgeBase(owner_id=user.id, name="uploads")
+    db.add(knowledge_base)
+    db.flush()
+    document = KnowledgeDocument(
+        knowledge_base_id=knowledge_base.id,
+        uploader_id=user.id,
+        filename="owner-upload.txt",
+        file_type="txt",
+        storage_path="uploads/owner-upload.txt",
+    )
+    db.add(document)
+    db.commit()
+    document_id = document.id
+
+    db.expunge_all()
+    persisted = db.get(KnowledgeDocument, document_id)
+
+    assert persisted is not None
+    assert persisted.content_origin == "user_upload"
+
 
 def test_public_summary_keeps_provenance(
     db: Session, knowledge_base: KnowledgeBase, user: User
@@ -66,8 +86,20 @@ def test_public_summary_keeps_provenance(
     )
     db.add(document)
     db.commit()
+    document_id = document.id
 
-    assert document.content_origin == "public_summary"
+    db.expunge_all()
+    persisted = db.get(KnowledgeDocument, document_id)
+
+    assert persisted is not None
+    assert persisted.content_origin == "public_summary"
+    assert persisted.source_url == (
+        "https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/"
+        "art_26ca8fe29e184edd899fa0a7a060d935.html"
+    )
+    assert persisted.source_publisher == "国家市场监督管理总局"
+    assert persisted.source_retrieved_at == date(2026, 8, 7)
+    assert persisted.source_usage_note == "原创摘要，仅用于本地演示；原文以来源页面为准。"
 
 
 def test_document_rejects_unknown_content_origin(
