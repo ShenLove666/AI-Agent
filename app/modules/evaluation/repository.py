@@ -63,8 +63,9 @@ class EvaluationRepository:
                         reference_answer=case_input.reference_answer,
                     )
                 )
-            db.commit()
+            db.flush()
             db.refresh(dataset)
+            db.commit()
             return dataset
         except Exception:
             db.rollback()

@@ -52,6 +52,7 @@ def test_dataset_persists_structured_cases(db: Session, user: User):
         ],
     )
 
+    assert dataset.id is not None
     assert dataset.is_demo is True
     assert dataset.cases[0].expected_points == ["从签收商品的次日开始计算"]
 
@@ -209,6 +210,42 @@ def test_duplicate_case_key_in_one_dataset_rolls_back_all_rows(
                 ),
             ],
         )
+
+    assert db.query(EvaluationDataset).count() == 0
+    assert db.query(EvaluationCase).count() == 0
+
+
+def test_refresh_failure_does_not_persist_dataset_or_cases(db: Session, user: User):
+    def fail_dataset_refresh(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ) -> None:
+        normalized = " ".join(statement.split()).upper()
+        if normalized.startswith("SELECT EVALUATION_DATASETS"):
+            raise RuntimeError("injected dataset refresh failure")
+
+    event.listen(db.bind, "before_cursor_execute", fail_dataset_refresh)
+    try:
+        with pytest.raises(RuntimeError, match="injected dataset refresh failure"):
+            EvaluationRepository().create_dataset_with_cases(
+                db,
+                owner_id=user.id,
+                name="refresh 失败必须回滚",
+                description=None,
+                is_demo=False,
+                cases=[
+                    EvaluationCaseInput(
+                        question="提交后读取失败怎么办？",
+                        category="persistence",
+                        difficulty="basic",
+                        knowledge_base_ids=[1],
+                        expected_points=["事务不能留下部分数据"],
+                        expected_document_keys=["atomicity"],
+                        should_refuse=False,
+                    )
+                ],
+            )
+    finally:
+        event.remove(db.bind, "before_cursor_execute", fail_dataset_refresh)
 
     assert db.query(EvaluationDataset).count() == 0
     assert db.query(EvaluationCase).count() == 0
