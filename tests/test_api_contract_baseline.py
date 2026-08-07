@@ -130,6 +130,25 @@ def test_template_interpolation_is_scanned_as_code(tmp_path: Path):
     assert "POST" in message
 
 
+def test_regex_brace_inside_template_interpolation_does_not_hide_dynamic_call(tmp_path: Path):
+    """A regex brace must not close ${...} before a later axios call is scanned."""
+    service = tmp_path / "templateInterpolationRegexService.ts"
+    service.write_text(
+        'const label = `${ /}/.test(x) && api.post(url, payload) }`;',
+        encoding="utf-8",
+    )
+
+    try:
+        extract_service_calls([service])
+    except ContractExtractionError as error:
+        message = str(error)
+    else:
+        raise AssertionError("regex brace hid a dynamic call inside template interpolation")
+
+    assert "templateInterpolationRegexService.ts:1" in message
+    assert "POST" in message
+
+
 def test_regex_literals_are_ignored_and_division_keeps_following_call_visible(tmp_path: Path):
     """Regex text is non-code, while a division slash cannot swallow later axios calls."""
     service = tmp_path / "regexAndDivisionService.ts"
@@ -144,6 +163,25 @@ def test_regex_literals_are_ignored_and_division_keeps_following_call_visible(tm
     )
 
     assert extract_service_calls([service]) == {ApiCall("GET", "/after-division")}
+
+
+def test_numeric_literal_makes_following_slash_division(tmp_path: Path):
+    """A numeric left operand must not let division swallow a dynamic axios call."""
+    service = tmp_path / "numericDivisionService.ts"
+    service.write_text(
+        "const ratio = 10 / api.post(url, payload);",
+        encoding="utf-8",
+    )
+
+    try:
+        extract_service_calls([service])
+    except ContractExtractionError as error:
+        message = str(error)
+    else:
+        raise AssertionError("division after a numeric literal hid a dynamic call")
+
+    assert "numericDivisionService.ts:1" in message
+    assert "POST" in message
 
 
 def test_checker_cli_validates_the_real_fastapi_application():

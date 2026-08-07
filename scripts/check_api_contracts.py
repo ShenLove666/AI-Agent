@@ -126,6 +126,36 @@ def _skip_regex_literal(source: str, index: int) -> int:
     return len(source)
 
 
+def _skip_numeric_literal(source: str, index: int, end: int | None = None) -> int:
+    """Skip a JavaScript decimal/prefixed numeric literal, including bigint suffixes."""
+    limit = len(source) if end is None else end
+    if source.startswith(("0x", "0X", "0b", "0B", "0o", "0O"), index):
+        index += 2
+        while index < limit and (source[index].isalnum() or source[index] == "_"):
+            index += 1
+        return index
+
+    if source[index] == ".":
+        index += 1
+    else:
+        while index < limit and (source[index].isdigit() or source[index] == "_"):
+            index += 1
+        if index < limit and source[index] == ".":
+            index += 1
+
+    while index < limit and (source[index].isdigit() or source[index] == "_"):
+        index += 1
+    if index < limit and source[index] in "eE":
+        index += 1
+        if index < limit and source[index] in "+-":
+            index += 1
+        while index < limit and (source[index].isdigit() or source[index] == "_"):
+            index += 1
+    if index < limit and source[index] == "n":
+        index += 1
+    return index
+
+
 def _template_interpolation_ranges(source: str, index: int) -> tuple[int, list[tuple[int, int]]]:
     """Return a template's end and code ranges within its `${...}` interpolations."""
     ranges: list[tuple[int, int]] = []
@@ -149,23 +179,52 @@ def _template_interpolation_ranges(source: str, index: int) -> tuple[int, list[t
 def _find_interpolation_end(source: str, index: int) -> int:
     """Find a `${...}` close brace while ignoring nested literal/comment contents."""
     depth = 0
+    allows_expression_start = True
     while index < len(source):
         comment_end = _skip_comment(source, index)
         if comment_end is not None:
             index = comment_end
             continue
-        if source[index] in {"'", '"'}:
+        character = source[index]
+        if character in {"'", '"'}:
             index = _skip_quoted_literal(source, index)
+            allows_expression_start = False
             continue
-        if source[index] == "`":
+        if character == "`":
             index, _ = _template_interpolation_ranges(source, index)
+            allows_expression_start = False
             continue
-        if source[index] == "{":
+        if character == "/" and allows_expression_start:
+            index = _skip_regex_literal(source, index)
+            allows_expression_start = False
+            continue
+        if character.isdigit() or (
+            character == "." and index + 1 < len(source) and source[index + 1].isdigit()
+        ):
+            index = _skip_numeric_literal(source, index)
+            allows_expression_start = False
+            continue
+        if character.isalpha() or character in "$_":
+            identifier_end = _identifier_end(source, index, len(source))
+            allows_expression_start = (
+                source[index:identifier_end] in EXPRESSION_START_KEYWORDS
+            )
+            index = identifier_end
+            continue
+        if character == "{":
             depth += 1
-        elif source[index] == "}":
+            allows_expression_start = True
+        elif character == "}":
             if depth == 0:
                 return index
             depth -= 1
+            allows_expression_start = False
+        elif character in ")]":
+            allows_expression_start = False
+        elif character in "([,;:=!?+-*%&|^~<>":
+            allows_expression_start = True
+        elif character == "/":
+            allows_expression_start = True
         index += 1
 
     return len(source)
@@ -206,6 +265,12 @@ def _iter_code_api_methods(source: str, start: int = 0, end: int | None = None):
             continue
         if character == "/" and allows_expression_start:
             index = min(_skip_regex_literal(source, index), limit)
+            allows_expression_start = False
+            continue
+        if character.isdigit() or (
+            character == "." and index + 1 < limit and source[index + 1].isdigit()
+        ):
+            index = _skip_numeric_literal(source, index, limit)
             allows_expression_start = False
             continue
         match = API_METHOD_RE.match(source, index)
