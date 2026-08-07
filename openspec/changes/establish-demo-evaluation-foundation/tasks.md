@@ -20,10 +20,10 @@
 
 ## 4. Validated bundled demo catalog
 
-- [ ] 4.1 Add failing catalog tests for stable keys, required public-source provenance, synthetic-content labelling, minimum case count, and valid document references.
-- [ ] 4.2 Implement the typed manifest loader and fail-fast validation without network access.
-- [ ] 4.3 Add concise original summaries of the two approved official sources and one explicitly fictional merchant policy, each with the required metadata.
-- [ ] 4.4 Add at least twelve deterministic merchant-support evaluation cases spanning answer, evidence, scope, and refusal behavior; make all catalog tests pass.
+- [x] 4.1 Add failing catalog tests for stable keys, required public-source provenance, synthetic-content labelling, minimum case count, and valid document references.
+- [x] 4.2 Implement the typed manifest loader and fail-fast validation without network access.
+- [x] 4.3 Add concise original summaries of the two approved official sources and one explicitly fictional merchant policy, each with the required metadata.
+- [x] 4.4 Add at least twelve deterministic merchant-support evaluation cases spanning answer, evidence, scope, and refusal behavior; make all catalog tests pass.
 
 ## 5. Idempotent demo seed and safe reset
 

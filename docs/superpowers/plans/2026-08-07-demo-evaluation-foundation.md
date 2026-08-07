@@ -410,7 +410,7 @@ git commit -m "feat: add evaluation dataset foundation"
 - Produces: `load_demo_catalog(root: Path) -> DemoCatalog` using Pydantic models `DemoSource`, `DemoKnowledgeBase`, and `DemoEvaluationCase`.
 - Consumes: the provenance vocabulary and evaluation case fields from Tasks 3 and 4.
 
-- [ ] **Step 1: Add failing catalog-validation tests**
+- [x] **Step 1: Add failing catalog-validation tests**
 
 ```python
 def test_demo_catalog_has_unique_stable_keys_and_valid_local_files():
@@ -422,17 +422,17 @@ def test_demo_catalog_has_unique_stable_keys_and_valid_local_files():
 
 Also test that an absolute path, `..` path, public source without publisher/URL/date, or unknown `content_origin` raises `DemoCatalogError`.
 
-- [ ] **Step 2: Run and observe missing-loader failure**
+- [x] **Step 2: Run and observe missing-loader failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_demo_seed.py -v
 ```
 
-- [ ] **Step 3: Implement the typed manifest loader**
+- [x] **Step 3: Implement the typed manifest loader**
 
 Resolve all local paths under `resources/demo`, reject path traversal, validate unique document/case keys, and expose immutable Pydantic models. Do not access the network at seed time.
 
-- [ ] **Step 4: Write three concise source documents**
+- [x] **Step 4: Write three concise source documents**
 
 The two public summaries cite these official sources in their front matter and closing source section:
 
@@ -441,17 +441,17 @@ The two public summaries cite these official sources in their front matter and c
 
 Each file must say it is an original project summary and that the official source prevails. The synthetic shop policy must say that the shop and rules are fictional.
 
-- [ ] **Step 5: Add at least twelve deterministic evaluation cases**
+- [x] **Step 5: Add at least twelve deterministic evaluation cases**
 
 Cover return-window calculation, excluded goods, refund timing, return shipping, gifts/coupons, merchant identity disclosure, live-commerce obligations, fictional shop SLA, out-of-scope questions, and a required-refusal case. Every case has a stable key, category, difficulty, expected points, expected document keys, and `should_refuse`.
 
-- [ ] **Step 6: Run catalog tests**
+- [x] **Step 6: Run catalog tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_demo_seed.py -v
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add app/modules/demo resources/demo tests/test_demo_seed.py
