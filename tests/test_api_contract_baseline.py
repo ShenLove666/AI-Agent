@@ -114,6 +114,38 @@ def test_api_like_text_in_comments_and_plain_strings_is_ignored(tmp_path: Path):
     assert extract_service_calls([service]) == set()
 
 
+def test_template_interpolation_is_scanned_as_code(tmp_path: Path):
+    """A dynamic axios call inside ${...} must not be hidden by a template literal."""
+    service = tmp_path / "templateInterpolationService.ts"
+    service.write_text('const label = `${api.post(url, payload)}`;', encoding="utf-8")
+
+    try:
+        extract_service_calls([service])
+    except ContractExtractionError as error:
+        message = str(error)
+    else:
+        raise AssertionError("template interpolation dynamic call was silently ignored")
+
+    assert "templateInterpolationService.ts:1" in message
+    assert "POST" in message
+
+
+def test_regex_literals_are_ignored_and_division_keeps_following_call_visible(tmp_path: Path):
+    """Regex text is non-code, while a division slash cannot swallow later axios calls."""
+    service = tmp_path / "regexAndDivisionService.ts"
+    service.write_text(
+        r'''
+        const simple = /api.post(url)/;
+        const escaped = /api\.delete\(target\)[/]/gi;
+        const ratio = total / divisor;
+        api.get("/after-division");
+        ''',
+        encoding="utf-8",
+    )
+
+    assert extract_service_calls([service]) == {ApiCall("GET", "/after-division")}
+
+
 def test_checker_cli_validates_the_real_fastapi_application():
     """Running the file directly must use the real application, not fail to import it."""
     project_root = Path(__file__).resolve().parents[1]

@@ -85,8 +85,8 @@ def _skip_trivia(source: str, index: int) -> int:
     return index
 
 
-def _skip_plain_literal(source: str, index: int) -> int:
-    """Skip a non-code quoted literal while searching for axios method tokens."""
+def _skip_quoted_literal(source: str, index: int) -> int:
+    """Skip a single- or double-quoted literal while searching code tokens."""
     quote = source[index]
     index += 1
     escaped = False
@@ -102,22 +102,129 @@ def _skip_plain_literal(source: str, index: int) -> int:
     return len(source)
 
 
-def _iter_code_api_methods(source: str):
-    """Yield API method matches found only in TypeScript code, never text/comments."""
-    index = 0
+def _skip_regex_literal(source: str, index: int) -> int:
+    """Skip a JavaScript regex, including escapes, character classes, and flags."""
+    index += 1
+    escaped = False
+    in_character_class = False
+    while index < len(source):
+        character = source[index]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == "[":
+            in_character_class = True
+        elif character == "]":
+            in_character_class = False
+        elif character == "/" and not in_character_class:
+            index += 1
+            while index < len(source) and (source[index].isalpha() or source[index] in "$_"):
+                index += 1
+            return index
+        index += 1
+    return len(source)
+
+
+def _template_interpolation_ranges(source: str, index: int) -> tuple[int, list[tuple[int, int]]]:
+    """Return a template's end and code ranges within its `${...}` interpolations."""
+    ranges: list[tuple[int, int]] = []
+    index += 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+            continue
+        if source[index] == "`":
+            return index + 1, ranges
+        if source.startswith("${", index):
+            start = index + 2
+            end = _find_interpolation_end(source, start)
+            ranges.append((start, end))
+            index = end + 1
+            continue
+        index += 1
+    return len(source), ranges
+
+
+def _find_interpolation_end(source: str, index: int) -> int:
+    """Find a `${...}` close brace while ignoring nested literal/comment contents."""
+    depth = 0
     while index < len(source):
         comment_end = _skip_comment(source, index)
         if comment_end is not None:
             index = comment_end
             continue
-        if source[index] in {"'", '"', "`"}:
-            index = _skip_plain_literal(source, index)
+        if source[index] in {"'", '"'}:
+            index = _skip_quoted_literal(source, index)
+            continue
+        if source[index] == "`":
+            index, _ = _template_interpolation_ranges(source, index)
+            continue
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            if depth == 0:
+                return index
+            depth -= 1
+        index += 1
+
+    return len(source)
+
+
+def _identifier_end(source: str, index: int, end: int) -> int:
+    while index < end and (source[index].isalnum() or source[index] in "$_"):
+        index += 1
+    return index
+
+
+EXPRESSION_START_KEYWORDS = frozenset(
+    {"await", "case", "delete", "in", "instanceof", "new", "return", "throw", "typeof", "void", "yield"}
+)
+
+
+def _iter_code_api_methods(source: str, start: int = 0, end: int | None = None):
+    """Yield API methods in code, including code nested inside template interpolations."""
+    index = start
+    limit = len(source) if end is None else end
+    allows_expression_start = True
+    while index < limit:
+        comment_end = _skip_comment(source, index)
+        if comment_end is not None:
+            index = min(comment_end, limit)
+            continue
+        character = source[index]
+        if character in {"'", '"'}:
+            index = _skip_quoted_literal(source, index)
+            allows_expression_start = False
+            continue
+        if character == "`":
+            template_end, ranges = _template_interpolation_ranges(source, index)
+            for interpolation_start, interpolation_end in ranges:
+                yield from _iter_code_api_methods(source, interpolation_start, interpolation_end)
+            index = min(template_end, limit)
+            allows_expression_start = False
+            continue
+        if character == "/" and allows_expression_start:
+            index = min(_skip_regex_literal(source, index), limit)
+            allows_expression_start = False
             continue
         match = API_METHOD_RE.match(source, index)
-        if match is not None:
+        if match is not None and match.end() <= limit:
             yield match
             index = match.end()
+            allows_expression_start = False
             continue
+        if character.isalpha() or character in "$_":
+            identifier_end = _identifier_end(source, index, limit)
+            allows_expression_start = source[index:identifier_end] in EXPRESSION_START_KEYWORDS
+            index = identifier_end
+            continue
+        if character in ")]}":
+            allows_expression_start = False
+        elif character in "([{,;:=!?+-*%&|^~<>":
+            allows_expression_start = True
+        elif character == "/":
+            allows_expression_start = True
         index += 1
 
 
