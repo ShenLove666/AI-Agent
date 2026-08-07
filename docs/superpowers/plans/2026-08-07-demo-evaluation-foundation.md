@@ -262,7 +262,7 @@ git commit -m "feat: add Alembic schema lifecycle"
 - Produces: `User.is_demo: bool`; `KnowledgeDocument.content_origin`, `source_url`, `source_publisher`, `source_retrieved_at`, and `source_usage_note`.
 - Consumes: Alembic revision `0001_current_schema`.
 
-- [ ] **Step 1: Write failing persistence/default tests**
+- [x] **Step 1: Write failing persistence/default tests**
 
 ```python
 def test_regular_user_and_upload_are_not_demo_or_public_by_default(db):
@@ -289,7 +289,7 @@ def test_public_summary_keeps_provenance(db, knowledge_base, user):
     assert document.content_origin == "public_summary"
 ```
 
-- [ ] **Step 2: Run and observe model-constructor failure**
+- [x] **Step 2: Run and observe model-constructor failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_demo_seed.py -v
@@ -297,15 +297,15 @@ def test_public_summary_keeps_provenance(db, knowledge_base, user):
 
 Expected: FAIL because the new mapped attributes do not exist.
 
-- [ ] **Step 3: Add mapped fields and validation vocabulary**
+- [x] **Step 3: Add mapped fields and validation vocabulary**
 
 Use `Boolean`, `String`, `Date`, and `Text`. Valid `content_origin` values are exactly `user_upload`, `public_summary`, and `synthetic`; enforce the vocabulary in application schemas and seed catalog validation, while the database column defaults to `user_upload`.
 
-- [ ] **Step 4: Create revision 0002**
+- [x] **Step 4: Create revision 0002**
 
 Generate the revision, then make the migration explicit. `upgrade()` adds non-null `users_v2.is_demo` with server default false and the five nullable/defaulted document provenance fields. `downgrade()` removes only those columns in reverse order.
 
-- [ ] **Step 5: Verify empty and upgraded legacy databases**
+- [x] **Step 5: Verify empty and upgraded legacy databases**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_migrations.py tests/test_demo_seed.py -v
@@ -313,7 +313,7 @@ Generate the revision, then make the migration explicit. `upgrade()` adds non-nu
 
 Expected: both database paths expose the new columns and preserve existing rows as non-demo/user-upload data.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add app/modules/users/models.py app/modules/knowledge/models.py migrations/versions/0002_demo_source_metadata.py tests/test_demo_seed.py pytest.ini

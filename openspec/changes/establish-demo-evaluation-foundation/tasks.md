@@ -8,9 +8,9 @@
 
 ## 2. Demo ownership and document provenance
 
-- [ ] 2.1 Add failing persistence and default-value tests for `User.is_demo` and knowledge-document provenance fields.
-- [ ] 2.2 Add the mapped fields and constrained content-origin vocabulary while preserving ordinary/user-upload defaults for existing rows.
-- [ ] 2.3 Add the post-baseline migration with explicit upgrade/downgrade operations and verify both clean and legacy upgrade paths.
+- [x] 2.1 Add failing persistence and default-value tests for `User.is_demo` and knowledge-document provenance fields.
+- [x] 2.2 Add the mapped fields and constrained content-origin vocabulary while preserving ordinary/user-upload defaults for existing rows.
+- [x] 2.3 Add the post-baseline migration with explicit upgrade/downgrade operations and verify both clean and legacy upgrade paths.
 
 ## 3. Evaluation dataset foundation
 
