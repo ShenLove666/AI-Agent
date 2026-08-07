@@ -157,7 +157,7 @@ export function LoginPage() {
                 </label>
                 <span className="inline-flex items-center gap-1 text-xs text-[var(--merchant-text-muted)]">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  凭证加密传输
+                  账号仅用于本次登录
                 </span>
               </div>
               {error ? (

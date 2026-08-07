@@ -41,6 +41,27 @@ interface SidebarProps {
   onClose: () => void;
 }
 
+const DESKTOP_NAVIGATION_QUERY = "(min-width: 1024px)";
+
+function useDesktopNavigation() {
+  const [isDesktop, setIsDesktop] = React.useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(DESKTOP_NAVIGATION_QUERY).matches
+      : false
+  );
+
+  React.useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia(DESKTOP_NAVIGATION_QUERY);
+    const update = () => setIsDesktop(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  return isDesktop;
+}
+
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const {
     sessions,
@@ -55,6 +76,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   } = useChatStore();
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
+  const isDesktop = useDesktopNavigation();
+  const navigationHidden = !isDesktop && !isOpen;
   const [query, setQuery] = React.useState("");
   const [renamingId, setRenamingId] = React.useState<string | null>(null);
   const [renameValue, setRenameValue] = React.useState("");
@@ -165,7 +188,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
         aria-label="主导航"
+        aria-hidden={navigationHidden}
+        inert={navigationHidden ? ("" as unknown as boolean) : undefined}
       >
+        {navigationHidden ? null : (
+        <>
         <div className="border-b border-white/10 pb-3">
           <div className="flex items-center gap-3">
             <BrandMark inverted />
@@ -400,6 +427,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        </>
+        )}
       </aside>
       <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => {
         if (!open) {

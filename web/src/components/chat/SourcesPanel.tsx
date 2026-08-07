@@ -46,7 +46,9 @@ export function SourcesPanel() {
         open ? "w-[380px] border-l border-[#EFEFEF]" : "w-0"
       )}
       aria-hidden={!open}
+      inert={open ? undefined : ("" as unknown as boolean)}
     >
+      {open ? (
       <div className="flex h-full w-[380px] flex-col bg-white">
         <div className="flex items-center justify-between border-b border-[#F0F0F0] px-5 py-4">
           <span className="text-[15px] font-semibold text-[#1A1A1A]">参考来源 ({shownSources.length})</span>
@@ -97,6 +99,7 @@ export function SourcesPanel() {
           </ul>
         </div>
       </div>
+      ) : null}
     </aside>
   );
 }
