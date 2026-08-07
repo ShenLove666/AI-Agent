@@ -49,6 +49,9 @@ web/dist/
 *.db-wal
 openapi.generated.json
 
+# Local AI model weights and Hugging Face cache
+models/
+
 # Local project archive
 rag-project.zip
 
