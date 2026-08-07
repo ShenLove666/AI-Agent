@@ -53,6 +53,7 @@ from app.modules.vector.memory import InMemoryVectorStore
 from app.modules.vector.milvus import MilvusVectorStore
 
 from app.modules.conversations import models as conversation_models  # noqa: F401,E402
+from app.modules.evaluation import models as evaluation_models  # noqa: F401,E402
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402

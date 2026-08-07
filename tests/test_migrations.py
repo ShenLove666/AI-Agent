@@ -9,6 +9,7 @@ from app.framework.legacy_schema import adopt_pre_alembic_schema
 from app.framework.migrations import build_alembic_config, upgrade_database
 
 from app.modules.conversations import models as conversation_models  # noqa: F401,E402
+from app.modules.evaluation import models as evaluation_models  # noqa: F401,E402
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
@@ -414,7 +415,7 @@ def test_upgrade_database_adopts_current_pre_alembic_schema(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert connection.scalar(text("SELECT is_demo FROM users_v2")) == 0
@@ -470,7 +471,7 @@ def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
         assert connection.scalar(text("SELECT username FROM users_v2")) == "legacy-user"
         assert (
@@ -521,7 +522,7 @@ def test_completed_adoption_without_stamp_is_safe_to_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
         assert connection.scalar(text("SELECT content FROM messages")) == "legacy message"
 
@@ -556,7 +557,7 @@ def test_failed_legacy_rebuild_rolls_back_without_stamp_and_can_retry(tmp_path):
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
 
 
@@ -608,7 +609,7 @@ def test_destructive_legacy_rebuild_ddl_is_inside_real_sqlite_transaction(tmp_pa
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
 
 
@@ -627,7 +628,7 @@ def test_programmatic_database_url_wins_over_polluted_environment(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
 
 
@@ -644,8 +645,36 @@ def test_upgrade_database_resolves_alembic_config_outside_repository_cwd(
     with database.engine.connect() as connection:
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0002_demo_source_metadata"
+            == "0003_evaluation_datasets"
         )
+
+
+def test_evaluation_revision_creates_and_drops_dataset_tables(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'evaluation-revision.db'}")
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+
+    command.upgrade(config, "0003_evaluation_datasets")
+
+    inspector = inspect(database.engine)
+    assert {"evaluation_datasets", "evaluation_cases"} <= set(
+        inspector.get_table_names()
+    )
+    assert ("owner_id", "name") in {
+        tuple(constraint.get("column_names") or ())
+        for constraint in inspector.get_unique_constraints("evaluation_datasets")
+    }
+    assert ("dataset_id", "case_key") in {
+        tuple(constraint.get("column_names") or ())
+        for constraint in inspector.get_unique_constraints("evaluation_cases")
+    }
+
+    command.downgrade(config, "0002_demo_source_metadata")
+
+    assert {"evaluation_datasets", "evaluation_cases"}.isdisjoint(
+        inspect(database.engine).get_table_names()
+    )
 
 
 def test_real_sqlite_upgrade_can_downgrade_to_base(tmp_path):
