@@ -258,6 +258,12 @@ class DemoSeedService:
         try:
             plan = self._ownership_plan(db)
             self._require_vector_cleanup_capability(plan)
+            file_deletions = self._plan_file_cleanup(plan)
+        except OSError as exc:
+            db.rollback()
+            raise DemoCleanupError(
+                [f"file identity check failed: {exc}"]
+            ) from exc
         except DemoSeedError:
             db.rollback()
             raise
@@ -268,7 +274,7 @@ class DemoSeedService:
         try:
             counts = self._delete_planned_rows(db, plan)
             removed_vectors, removed_files, cleanup_errors = self._cleanup_externals(
-                plan
+                plan, file_deletions
             )
             if cleanup_errors:
                 db.rollback()
@@ -555,6 +561,80 @@ class DemoSeedService:
             raise DemoOwnershipError(
                 "ownership identity violation: reused demo user is outside closure"
             )
+        bases = list(
+            db.scalars(
+                select(KnowledgeBase).where(KnowledgeBase.id.in_(plan.base_ids))
+            )
+        ) if plan.base_ids else []
+        bases_by_key: dict[str, KnowledgeBase | None] = {}
+        for catalog_base in self.catalog.knowledge_bases:
+            stable_name = f"{catalog_base.name} [demo:{catalog_base.key}]"
+            matches = [
+                item
+                for item in bases
+                if item.owner_id == user.id and item.name == stable_name
+            ]
+            if len(matches) > 1:
+                raise DemoOwnershipError(
+                    "ownership identity violation: ambiguous catalog knowledge base"
+                )
+            bases_by_key[catalog_base.key] = matches[0] if matches else None
+
+        user_documents = [
+            item for item in plan.documents if item.uploader_id == user.id
+        ]
+        for source in self.catalog.documents:
+            source_path = self.catalog.root / source.local_path
+            filename = f"{source.key}{source_path.suffix.lower() or '.txt'}"
+            matches = [
+                item for item in user_documents if item.filename == filename
+            ]
+            if len(matches) > 1:
+                raise DemoOwnershipError(
+                    "ownership identity violation: ambiguous catalog document"
+                )
+            if not matches:
+                continue
+            document = matches[0]
+            catalog_base = next(
+                item
+                for item in self.catalog.knowledge_bases
+                if source.key in item.document_keys
+            )
+            expected_base = bases_by_key[catalog_base.key]
+            allowed_paths = {
+                self._lexical_key(self._storage_root() / filename),
+                self._lexical_key(self._legacy_storage_root() / filename),
+            }
+            if (
+                expected_base is None
+                or document.knowledge_base_id != expected_base.id
+                or document.uploader_id != user.id
+                or self._lexical_key(Path(document.storage_path))
+                not in allowed_paths
+            ):
+                raise DemoOwnershipError(
+                    "ownership identity violation: catalog document mismatch"
+                )
+
+        catalog_dataset = self.catalog.evaluation_dataset
+        dataset_name = (
+            f"{catalog_dataset.name} [demo:{catalog_dataset.key}]"
+        )
+        datasets = list(
+            db.scalars(
+                select(EvaluationDataset).where(
+                    EvaluationDataset.name == dataset_name
+                )
+            )
+        )
+        reused_datasets = [item for item in datasets if item.owner_id == user.id]
+        if len(reused_datasets) > 1 or (
+            reused_datasets and not reused_datasets[0].is_demo
+        ):
+            raise DemoOwnershipError(
+                "ownership identity violation: catalog dataset mismatch"
+            )
         conversations = list(
             db.scalars(
                 select(Conversation).where(
@@ -624,7 +704,7 @@ class DemoSeedService:
         return counts
 
     def _cleanup_externals(
-        self, plan: _OwnershipPlan
+        self, plan: _OwnershipPlan, file_deletions: tuple[Path, ...]
     ) -> tuple[int, int, list[str]]:
         errors: list[str] = []
         removed_vectors = 0
@@ -638,21 +718,27 @@ class DemoSeedService:
                     errors.append(f"vector cleanup {document_id}: {exc}")
 
         removed_files = 0
-        for document in plan.documents:
-            path = Path(document.storage_path)
+        for path in file_deletions:
             try:
-                if self._is_symlink(path):
-                    path.unlink(missing_ok=True)
-                    removed_files += 1
-                    continue
-                if self._shares_regular_file(path, plan.ordinary_storage_paths):
-                    continue
-                if path.is_file():
-                    path.unlink()
-                    removed_files += 1
+                path.unlink(missing_ok=True)
+                removed_files += 1
             except OSError as exc:
                 errors.append(f"file cleanup {path}: {exc}")
         return removed_vectors, removed_files, errors
+
+    def _plan_file_cleanup(self, plan: _OwnershipPlan) -> tuple[Path, ...]:
+        deletions: list[Path] = []
+        for document in plan.documents:
+            path = Path(document.storage_path)
+            if self._is_symlink(path):
+                deletions.append(path)
+                continue
+            if not path.exists():
+                continue
+            if self._shares_regular_file(path, plan.ordinary_storage_paths):
+                continue
+            deletions.append(path)
+        return tuple(deletions)
 
     def _require_vector_cleanup_capability(self, plan: _OwnershipPlan) -> None:
         if (
@@ -664,14 +750,19 @@ class DemoSeedService:
             )
 
     def _reject_shared_seed_files(self, plan: _OwnershipPlan) -> None:
-        for document in plan.documents:
-            path = Path(document.storage_path)
-            if not self._is_symlink(path) and self._shares_regular_file(
-                path, plan.ordinary_storage_paths
-            ):
-                raise DemoOwnershipError(
-                    "ownership violation: managed demo file is shared by ordinary data"
-                )
+        try:
+            for document in plan.documents:
+                path = Path(document.storage_path)
+                if not self._is_symlink(path) and self._shares_regular_file(
+                    path, plan.ordinary_storage_paths
+                ):
+                    raise DemoOwnershipError(
+                        "ownership violation: managed demo file is shared by ordinary data"
+                    )
+        except OSError as exc:
+            raise DemoCleanupError(
+                [f"file identity check failed during seed preflight: {exc}"]
+            ) from exc
 
     def _upsert_user(self, db: Session, password: str) -> tuple[User, bool]:
         user = self.container.user_repository.get_by_username(
@@ -737,6 +828,7 @@ class DemoSeedService:
             )
         )
         created = item is None
+        previous_path: Path | None = None
         if item is None:
             item = self.container.knowledge.create_document(
                 db,
@@ -746,12 +838,16 @@ class DemoSeedService:
                 storage_path=str(destination),
                 file_size=source_path.stat().st_size,
             )
-        elif self._lexical_key(Path(item.storage_path)) != self._lexical_key(
-            destination
-        ):
-            raise DemoOwnershipError(
-                "ownership identity violation: demo document storage path changed"
-            )
+        else:
+            previous_path = Path(item.storage_path)
+            allowed_paths = {
+                self._lexical_key(destination),
+                self._lexical_key(self._legacy_storage_root() / filename),
+            }
+            if self._lexical_key(previous_path) not in allowed_paths:
+                raise DemoOwnershipError(
+                    "ownership identity violation: demo document storage path changed"
+                )
 
         ordinary_paths = tuple(
             Path(value)
@@ -785,11 +881,22 @@ class DemoSeedService:
         item.source_usage_note = source.source_usage_note
         item.demo_content_sha256 = digest
         db.commit()
+        if (
+            previous_path is not None
+            and self._lexical_key(previous_path) != self._lexical_key(destination)
+        ):
+            self._require_managed_path(previous_path)
+            previous_path.unlink(missing_ok=True)
         return item, created
 
     def _reconcile_ingestion(
         self, db: Session, document: KnowledgeDocument
     ) -> None:
+        if self.container.knowledge.vector_indexer is not None:
+            # Persist cleanup ownership before the vector store can receive even
+            # one record. A partial upsert must remain discoverable on failure.
+            document.vector_indexed = True
+            db.commit()
         ingested = self.container.knowledge.ingest_document(db, document.id)
         if ingested.status != "indexed":
             raise DemoSeedError(
@@ -817,9 +924,7 @@ class DemoSeedService:
                 f"managed demo content changed during indexing: {ingested.filename}"
             )
         ingested.demo_indexed_sha256 = digest
-        ingested.vector_indexed = (
-            self.container.knowledge.vector_indexer is not None
-        )
+        ingested.vector_indexed = self.container.knowledge.vector_indexer is not None
         db.commit()
 
     def _upsert_evaluation_dataset(
@@ -1054,19 +1159,26 @@ class DemoSeedService:
         digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:16]
         return (Path.cwd() / "data" / f"demo-seed-files-{digest}").resolve()
 
+    @staticmethod
+    def _legacy_storage_root() -> Path:
+        return Path(os.path.abspath(Path.cwd() / "data" / "demo-seed-files"))
+
     def _require_managed_path(self, path: Path) -> None:
-        root_key = self._lexical_key(self._storage_root())
         path_key = self._lexical_key(path)
-        try:
-            common = os.path.commonpath((root_key, path_key))
-        except ValueError as exc:
-            raise DemoOwnershipError(
-                "ownership violation: managed file path is on another volume"
-            ) from exc
-        if common != root_key or path_key == root_key:
-            raise DemoOwnershipError(
-                "ownership violation: demo file path escapes managed root"
-            )
+        roots = (self._storage_root(), self._legacy_storage_root())
+        for root in roots:
+            root_key = self._lexical_key(root)
+            try:
+                common = os.path.commonpath((root_key, path_key))
+            except ValueError:
+                continue
+            if common == root_key and path_key != root_key:
+                if root == self._legacy_storage_root() and root.is_symlink():
+                    break
+                return
+        raise DemoOwnershipError(
+            "ownership violation: demo file path escapes managed roots"
+        )
 
     @staticmethod
     def _lexical_key(path: Path) -> str:
@@ -1087,11 +1199,8 @@ class DemoSeedService:
         for ordinary in ordinary_paths:
             if self._canonical_key(ordinary) == path_key:
                 return True
-            try:
-                if path.exists() and ordinary.exists() and os.path.samefile(path, ordinary):
-                    return True
-            except OSError:
-                continue
+            if path.exists() and ordinary.exists() and os.path.samefile(path, ordinary):
+                return True
         return False
 
     @staticmethod

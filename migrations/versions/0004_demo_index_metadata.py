@@ -35,15 +35,6 @@ def upgrade() -> None:
             server_default=sa.false(),
         ),
     )
-    # Pre-metadata demo rows may have used a vector backend. Conservatively mark
-    # indexed demo documents so clear/reset requires an explicit cleanup store.
-    op.execute(
-        sa.text(
-            "UPDATE knowledge_documents SET vector_indexed = 1 "
-            "WHERE status = 'indexed' AND uploader_id IN "
-            "(SELECT id FROM users_v2 WHERE is_demo = 1)"
-        )
-    )
 
 
 def downgrade() -> None:

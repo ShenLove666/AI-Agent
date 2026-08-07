@@ -10,15 +10,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from alembic import command
 from pydantic import ValidationError
-from sqlalchemy import event, func, select, text
+from sqlalchemy import event, func, inspect, select, text
 from sqlalchemy.orm import Session
 
 import app.cli as cli
 import app.modules.demo.catalog as demo_catalog
+import app.modules.demo.service as demo_service
 from app.application import create_app
 from app.framework.config import Settings
 from app.framework.database import Base, Database
+from app.framework.migrations import build_alembic_config
 from app.modules.conversations.models import (
     ChatRequestRun,
     Conversation,
@@ -1145,3 +1148,263 @@ def test_clear_unlinks_managed_symlink_without_following_shared_target(
     assert result.removed_files == 3
     assert not managed_path.exists()
     assert shared_target.read_text(encoding="utf-8") == "ordinary shared bytes"
+
+
+def test_seed_catalog_preflight_rejects_path_mismatch_before_any_mutation(
+    app, db: Session
+):
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    base = db.scalar(
+        select(KnowledgeBase).where(KnowledgeBase.owner_id == user.id)
+    )
+    document = db.scalar(
+        select(KnowledgeDocument).where(
+            KnowledgeDocument.uploader_id == user.id
+        ).order_by(KnowledgeDocument.id)
+    )
+    assistant = db.scalar(
+        select(Message).where(
+            Message.user_id == user.id,
+            Message.role == "assistant",
+        )
+    )
+    old_password_hash = user.password_hash
+    old_document_id = document.id
+    unexpected_path = Path(document.storage_path).with_name("unexpected-demo.md")
+    unexpected_path.write_text("unexpected", encoding="utf-8")
+    document.storage_path = str(unexpected_path)
+    base.description = "sentinel base description"
+    assistant.vote = -1
+    db.commit()
+
+    with pytest.raises(DemoSeedError, match="identity|ownership"):
+        service.seed(db, password="DifferentStrongDemo456!")
+
+    persisted_user = db.get(User, user.id)
+    persisted_base = db.get(KnowledgeBase, base.id)
+    persisted_document = db.get(KnowledgeDocument, old_document_id)
+    persisted_assistant = db.get(Message, assistant.id)
+    assert persisted_user.password_hash == old_password_hash
+    assert persisted_base.description == "sentinel base description"
+    assert persisted_document.storage_path == str(unexpected_path)
+    assert persisted_assistant.vote == -1
+
+
+class _PartialWriteThenFailStore:
+    def __init__(self, *, fail_cleanup: bool = False):
+        self.fail_cleanup = fail_cleanup
+        self.records = {}
+        self.delete_attempts: list[int] = []
+        self.partial_written = False
+
+    async def upsert(self, records) -> None:
+        first = next(iter(records))
+        self.records[first.id] = first
+        self.partial_written = True
+        raise RuntimeError("injected failure after partial vector write")
+
+    async def delete_document(self, document_id: int) -> None:
+        self.delete_attempts.append(document_id)
+        if self.fail_cleanup and self.partial_written:
+            raise RuntimeError("injected partial-vector cleanup failure")
+        self.records = {
+            key: record
+            for key, record in self.records.items()
+            if record.document_id != document_id
+        }
+
+
+def test_partial_vector_write_is_removed_by_seed_compensation(app, db: Session):
+    store = _PartialWriteThenFailStore()
+    app.state.container.knowledge.vector_indexer = VectorIndexer(
+        _OfflineEmbeddingModel(), store
+    )
+
+    with pytest.raises(DemoSeedError, match="partial vector write"):
+        DemoSeedService(app.state.container).seed(
+            db, password="StrongDemo123!"
+        )
+
+    assert store.delete_attempts
+    assert store.records == {}
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
+
+
+def test_partial_vector_cleanup_failure_keeps_attempt_metadata_for_retry(
+    app, db: Session
+):
+    store = _PartialWriteThenFailStore(fail_cleanup=True)
+    app.state.container.knowledge.vector_indexer = VectorIndexer(
+        _OfflineEmbeddingModel(), store
+    )
+
+    with pytest.raises(DemoSeedError, match="cleanup"):
+        DemoSeedService(app.state.container).seed(
+            db, password="StrongDemo123!"
+        )
+
+    document = db.scalar(select(KnowledgeDocument))
+    assert len(store.delete_attempts) >= 2
+    assert store.delete_attempts[-1] == document.id
+    assert store.records
+    assert document.vector_indexed is True
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+
+
+def test_samefile_oserror_fails_closed_before_clear_mutation(
+    app, db: Session, tmp_path: Path, monkeypatch
+):
+    real_ids = _create_real_user_graph(db, tmp_path / "ordinary-file.txt")
+    service = DemoSeedService(app.state.container)
+    service.seed(db, password="StrongDemo123!")
+    demo_files = [
+        Path(value)
+        for value in db.scalars(
+            select(KnowledgeDocument.storage_path).join(
+                User, KnowledgeDocument.uploader_id == User.id
+            ).where(User.is_demo.is_(True))
+        )
+    ]
+
+    def inaccessible_identity(_left, _right):
+        raise PermissionError("injected samefile access failure")
+
+    monkeypatch.setattr(demo_service.os.path, "samefile", inaccessible_identity)
+
+    with pytest.raises(DemoSeedError, match="identity|cleanup|samefile"):
+        service.clear(db)
+
+    assert all(path.is_file() for path in demo_files)
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    for model, identifier in real_ids.items():
+        assert db.get(model, identifier) is not None
+
+
+def _prepare_pre0004_demo_database(database_url: str, legacy_path: Path) -> Database:
+    database = Database(database_url)
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+    command.upgrade(config, "0003_evaluation_datasets")
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("legacy managed content", encoding="utf-8")
+    with database.engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO users_v2 (
+                    id, username, password_hash, email, is_active, role,
+                    created_at, updated_at, is_demo
+                ) VALUES (
+                    1, 'merchant-demo', 'hash', NULL, 1, 'user',
+                    '2026-08-07 00:00:00', '2026-08-07 00:00:00', 1
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO knowledge_bases (
+                    id, owner_id, name, description, created_at
+                ) VALUES (
+                    1, 1, '商家售后演示知识库 [demo:merchant-support]',
+                    'legacy', '2026-08-07 00:00:00'
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO knowledge_documents (
+                    id, knowledge_base_id, uploader_id, filename, file_type,
+                    storage_path, file_size, status, enabled, error_message,
+                    created_at, content_origin
+                ) VALUES (
+                    1, 1, 1, 'seven-day-return.md', 'md', :storage_path,
+                    22, 'indexed', 1, NULL, '2026-08-07 00:00:00',
+                    'public_summary'
+                )
+                """
+            ),
+            {"storage_path": str(legacy_path)},
+        )
+    command.upgrade(config, "0004_demo_index_metadata")
+    return database
+
+
+def test_pre0004_indexed_demo_upgrades_and_clears_without_vector_store(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'pre0004-clear.db'}"
+    legacy_path = tmp_path / "data" / "demo-seed-files" / "seven-day-return.md"
+    database = _prepare_pre0004_demo_database(database_url, legacy_path)
+    with database.engine.connect() as connection:
+        assert connection.scalar(
+            text(
+                "SELECT vector_indexed FROM knowledge_documents WHERE id = 1"
+            )
+        ) == 0
+    database.engine.dispose()
+    item = create_app(Settings(database_url=database_url))
+    with item.state.container.database.session_factory() as db:
+        result = DemoSeedService(item.state.container).clear(db)
+        assert result.removed_documents == 1
+        assert db.scalar(select(func.count(User.id))) == 0
+    item.state.container.database.engine.dispose()
+    assert not legacy_path.exists()
+
+    migration_db = Database(database_url)
+    config = build_alembic_config(
+        migration_db.engine.url.render_as_string(hide_password=False)
+    )
+    command.downgrade(config, "0003_evaluation_datasets")
+    columns = {
+        column["name"]
+        for column in inspect(migration_db.engine).get_columns(
+            "knowledge_documents"
+        )
+    }
+    assert {
+        "demo_content_sha256",
+        "demo_indexed_sha256",
+        "vector_indexed",
+    }.isdisjoint(columns)
+    migration_db.engine.dispose()
+
+
+def test_seed_migrates_pre0004_legacy_managed_document_to_db_root(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    database_url = f"sqlite:///{tmp_path / 'pre0004-seed.db'}"
+    legacy_path = tmp_path / "data" / "demo-seed-files" / "seven-day-return.md"
+    database = _prepare_pre0004_demo_database(database_url, legacy_path)
+    database.engine.dispose()
+    item = create_app(Settings(database_url=database_url))
+    with item.state.container.database.session_factory() as db:
+        user = db.get(User, 1)
+        user.password_hash = item.state.container.auth.passwords.hash(
+            "StrongDemo123!"
+        )
+        db.commit()
+        result = DemoSeedService(item.state.container).seed(
+            db, password="StrongDemo123!"
+        )
+        migrated = db.scalar(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.filename == "seven-day-return.md"
+            )
+        )
+        assert result.reused_documents == 1
+        assert result.created_documents == 2
+        assert Path(migrated.storage_path).parent == (
+            tmp_path / "pre0004-seed-demo-files"
+        )
+        assert Path(migrated.storage_path).is_file()
+    item.state.container.database.engine.dispose()
+    assert not legacy_path.exists()
