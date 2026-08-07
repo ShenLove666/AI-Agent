@@ -81,6 +81,39 @@ def test_dynamic_first_argument_fails_with_filename_line_and_method(tmp_path: Pa
     assert "first argument must be a string or template literal" in message
 
 
+def test_comments_between_method_and_parenthesis_do_not_hide_dynamic_call(tmp_path: Path):
+    """A comment after an axios method must not bypass the dynamic-call guard."""
+    service = tmp_path / "commentSeparatedDynamicService.ts"
+    service.write_text('api.post /* request URL resolved elsewhere */ (url, payload);', encoding="utf-8")
+
+    try:
+        extract_service_calls([service])
+    except ContractExtractionError as error:
+        message = str(error)
+    else:
+        raise AssertionError("comment-separated dynamic call was silently ignored")
+
+    assert "commentSeparatedDynamicService.ts:1" in message
+    assert "POST" in message
+
+
+def test_api_like_text_in_comments_and_plain_strings_is_ignored(tmp_path: Path):
+    """Non-code text must not be mistaken for an active frontend call."""
+    service = tmp_path / "nonCodeApiTextService.ts"
+    service.write_text(
+        '''
+        // api.post(url)
+        /* api.get(endpoint) */
+        const single = 'api.delete(target)';
+        const double = "api.patch(target)";
+        const template = `api.put(target)`;
+        ''',
+        encoding="utf-8",
+    )
+
+    assert extract_service_calls([service]) == set()
+
+
 def test_checker_cli_validates_the_real_fastapi_application():
     """Running the file directly must use the real application, not fail to import it."""
     project_root = Path(__file__).resolve().parents[1]

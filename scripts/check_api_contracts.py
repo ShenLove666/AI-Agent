@@ -61,10 +61,64 @@ def normalize_path(path: str) -> str:
     return normalized
 
 
-def _skip_whitespace(source: str, index: int) -> int:
-    while index < len(source) and source[index].isspace():
-        index += 1
+def _skip_comment(source: str, index: int) -> int | None:
+    if source.startswith("//", index):
+        newline = source.find("\n", index + 2)
+        return len(source) if newline == -1 else newline + 1
+    if source.startswith("/*", index):
+        end = source.find("*/", index + 2)
+        return len(source) if end == -1 else end + 2
+    return None
+
+
+def _skip_trivia(source: str, index: int) -> int:
+    """Skip whitespace and TypeScript comments between call tokens."""
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+            continue
+        comment_end = _skip_comment(source, index)
+        if comment_end is not None:
+            index = comment_end
+            continue
+        break
     return index
+
+
+def _skip_plain_literal(source: str, index: int) -> int:
+    """Skip a non-code quoted literal while searching for axios method tokens."""
+    quote = source[index]
+    index += 1
+    escaped = False
+    while index < len(source):
+        character = source[index]
+        if escaped:
+            escaped = False
+        elif character == "\\":
+            escaped = True
+        elif character == quote:
+            return index + 1
+        index += 1
+    return len(source)
+
+
+def _iter_code_api_methods(source: str):
+    """Yield API method matches found only in TypeScript code, never text/comments."""
+    index = 0
+    while index < len(source):
+        comment_end = _skip_comment(source, index)
+        if comment_end is not None:
+            index = comment_end
+            continue
+        if source[index] in {"'", '"', "`"}:
+            index = _skip_plain_literal(source, index)
+            continue
+        match = API_METHOD_RE.match(source, index)
+        if match is not None:
+            yield match
+            index = match.end()
+            continue
+        index += 1
 
 
 def _skip_balanced_type_arguments(source: str, index: int, path: Path) -> int:
@@ -83,6 +137,9 @@ def _skip_balanced_type_arguments(source: str, index: int, path: Path) -> int:
                 quote = None
         elif character in {"'", '"', "`"}:
             quote = character
+        elif (comment_end := _skip_comment(source, index)) is not None:
+            index = comment_end
+            continue
         elif character == "<":
             depth += 1
         elif character == ">":
@@ -120,16 +177,16 @@ def _read_literal_argument(source: str, index: int, path: Path, method: str) -> 
 
 def _extract_source_calls(source: str, path: Path) -> set[ApiCall]:
     calls: set[ApiCall] = set()
-    for match in API_METHOD_RE.finditer(source):
+    for match in _iter_code_api_methods(source):
         method = match.group("method").upper()
-        index = _skip_whitespace(source, match.end())
+        index = _skip_trivia(source, match.end())
         if index < len(source) and source[index] == "<":
             index = _skip_balanced_type_arguments(source, index, path)
-            index = _skip_whitespace(source, index)
+            index = _skip_trivia(source, index)
         if index >= len(source) or source[index] != "(":
             continue
         literal_path, _ = _read_literal_argument(
-            source, _skip_whitespace(source, index + 1), path, method
+            source, _skip_trivia(source, index + 1), path, method
         )
         calls.add(ApiCall(method, normalize_path(literal_path)))
     return calls
