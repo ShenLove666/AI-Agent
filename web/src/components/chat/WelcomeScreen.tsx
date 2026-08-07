@@ -1,114 +1,47 @@
 import * as React from "react";
-import { ArrowUpRight, BookOpen, Bot, Brain, Check, Lightbulb, Send, Square } from "lucide-react";
+import { Brain, CalendarRange, PackageX, Send, Square, Wrench } from "lucide-react";
 
-import { cn } from "@/lib/utils";
-import { listSampleQuestions } from "@/services/sampleQuestionService";
-import { useChatStore } from "@/stores/chatStore";
 import { KnowledgeScopeSelector } from "@/components/chat/KnowledgeScopeSelector";
+import { cn } from "@/lib/utils";
+import { useChatStore } from "@/stores/chatStore";
 
-type PromptPreset = {
-  id?: string;
-  title: string;
-  description: string;
-  prompt: string;
-  icon: React.ComponentType<{ className?: string }>;
-};
-
-const PRESET_ICONS = [BookOpen, Check, Lightbulb];
-
-const DEFAULT_PRESETS: PromptPreset[] = [
+const MERCHANT_PRESETS = [
   {
-    title: "内容总结",
-    description: "提炼 3-5 条关键信息与行动点",
-    prompt: "请帮我总结以下内容，并列出3-5条要点：",
-    icon: BookOpen
+    title: "质量问题退款",
+    description: "核对质检不合格后的退款与运费责任",
+    prompt: "商品经质检确认存在质量问题，商家应如何处理退款和退货运费？",
+    icon: PackageX
   },
   {
-    title: "任务拆解",
-    description: "把目标拆成可执行步骤与优先级",
-    prompt: "请把下面需求拆解为步骤，并给出优先级和里程碑：",
-    icon: Check
+    title: "七天退货边界",
+    description: "判断已拆封商品是否适用七天无理由",
+    prompt: "数码商品已拆封并激活，是否还适用七天无理由退货？请说明判断边界。",
+    icon: CalendarRange
   },
   {
-    title: "灵感扩展",
-    description: "给出多个方案并比较优缺点",
-    prompt: "围绕以下主题给出5-8个方案，并注明优缺点：",
-    icon: Lightbulb
+    title: "保修期内维修",
+    description: "梳理报修材料、寄修流程与处理时限",
+    prompt: "顾客反馈商品在保修期内故障，请给出需要收集的材料和维修处理流程。",
+    icon: Wrench
   }
-];
+] as const;
 
 export function WelcomeScreen() {
   const [value, setValue] = React.useState("");
   const [isFocused, setIsFocused] = React.useState(false);
-  const [promptPresets, setPromptPresets] = React.useState<PromptPreset[]>(DEFAULT_PRESETS);
   const isComposingRef = React.useRef(false);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const { sendMessage, isStreaming, cancelGeneration, deepThinkingEnabled, setDeepThinkingEnabled } =
     useChatStore();
 
-  const focusInput = React.useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.focus({ preventScroll: true });
-  }, []);
+  const focusInput = React.useCallback(() => textareaRef.current?.focus({ preventScroll: true }), []);
 
-  const adjustHeight = React.useCallback(() => {
+  React.useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
-    const next = Math.min(el.scrollHeight, 160);
-    el.style.height = `${next}px`;
-  }, []);
-
-  React.useEffect(() => {
-    adjustHeight();
-  }, [value, adjustHeight]);
-
-  React.useEffect(() => {
-    let active = true;
-
-    const loadPresets = async () => {
-      const data = await listSampleQuestions().catch(() => null);
-      if (!active || !data || data.length === 0) {
-        return;
-      }
-      const mapped = data
-        .filter((item) => item.question && item.question.trim())
-        .slice(0, 3)
-        .map((item, index) => {
-          const question = item.question.trim();
-          const title =
-            item.title?.trim() ||
-            (question.length > 12 ? `${question.slice(0, 12)}...` : question) ||
-            `推荐问法 ${index + 1}`;
-          const description = item.description?.trim() || "直接点选即可开始对话";
-          return {
-            id: item.id,
-            title,
-            description,
-            prompt: question,
-            icon: PRESET_ICONS[index % PRESET_ICONS.length]
-          };
-        });
-      if (mapped.length > 0) {
-        setPromptPresets(mapped);
-      }
-    };
-
-    loadPresets();
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const applyPreset = React.useCallback(
-    (prompt: string) => {
-      if (isStreaming) return;
-      setValue(prompt);
-      focusInput();
-    },
-    [isStreaming, focusInput]
-  );
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [value]);
 
   const handleSubmit = async () => {
     if (isStreaming) {
@@ -119,7 +52,6 @@ export function WelcomeScreen() {
     if (!value.trim()) return;
     const next = value;
     setValue("");
-    focusInput();
     await sendMessage(next);
     focusInput();
   };
@@ -127,188 +59,112 @@ export function WelcomeScreen() {
   const hasContent = value.trim().length > 0;
 
   return (
-    <div className="relative flex min-h-full items-center justify-center overflow-hidden px-4 py-16 sm:px-6">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[#F8FAFC] via-white to-[#EFF6FF]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-grid-pattern opacity-40 [background-size:40px_40px]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-32 right-[-40px] h-72 w-72 rounded-full bg-gradient-radial from-[#BFDBFE]/60 via-transparent to-transparent blur-3xl animate-float"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -bottom-36 left-[-80px] h-80 w-80 rounded-full bg-gradient-radial from-[#FDE68A]/40 via-transparent to-transparent blur-3xl animate-float"
-      />
-
-      <div className="relative w-full max-w-[860px]">
-        <div
-          className="text-center opacity-0 animate-fade-up"
-          style={{ animationFillMode: "both" }}
-        >
-          <span className="inline-flex items-center gap-2 rounded-full border border-white/70 bg-white/70 px-3 py-1 text-xs font-medium text-[#2563EB] shadow-sm">
-            <Bot className="h-3.5 w-3.5" />
-            RAG 智能问答
-          </span>
-          <h1 className="mt-4 font-display text-4xl leading-tight tracking-tight text-[#111827] sm:text-5xl md:text-6xl">
-            把问题变成
-            <span className="text-gradient">清晰答案</span>
-          </h1>
-          <p className="mt-4 text-base text-[#4B5563] sm:text-lg">
-            结构化提问、知识检索与深度思考，一次对话给出可执行方案
-          </p>
-        </div>
-
-        <div
-          className="mt-10 opacity-0 animate-fade-up"
-          style={{ animationDelay: "80ms", animationFillMode: "both" }}
-        >
-          <div
-            className={cn(
-              "relative flex flex-col rounded-3xl border border-white/70 bg-white/80 px-5 pt-4 pb-3 shadow-soft backdrop-blur-xl transition-all duration-200",
-              isFocused
-                ? "border-[#BFDBFE] shadow-glow"
-                : "hover:border-[#D4D4D4]"
-            )}
-          >
-            <div className="relative">
-              <textarea
-                ref={textareaRef}
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder={deepThinkingEnabled ? "输入需要深度分析的问题..." : "输入你的问题..."}
-                className="max-h-40 min-h-[52px] w-full resize-none border-0 bg-transparent px-2 pt-2 pb-2 text-[15px] text-[#1F2937] placeholder:text-[#9CA3AF] focus:outline-none sm:text-base"
-                rows={1}
-                onFocus={() => setIsFocused(true)}
-                onBlur={() => setIsFocused(false)}
-                onCompositionStart={() => {
-                  isComposingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  isComposingRef.current = false;
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    const nativeEvent = event.nativeEvent as KeyboardEvent;
-                    if (nativeEvent.isComposing || isComposingRef.current || nativeEvent.keyCode === 229) {
-                      return;
-                    }
-                    event.preventDefault();
-                    handleSubmit();
-                  }
-                }}
-                aria-label="发送消息"
-              />
-              <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[10px] bg-gradient-to-b from-white/0 via-white/40 to-white/90" />
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setDeepThinkingEnabled(!deepThinkingEnabled)}
-                disabled={isStreaming}
-                aria-pressed={deepThinkingEnabled}
-                className={cn(
-                  "rounded-full border px-3 py-1.5 text-xs font-medium transition-all",
-                  deepThinkingEnabled
-                    ? "border-[#BFDBFE] bg-[#DBEAFE] text-[#2563EB]"
-                    : "border-transparent bg-[#F5F5F5] text-[#6B7280] hover:bg-[#EEEEEE]",
-                  isStreaming && "cursor-not-allowed opacity-60"
-                )}
-              >
-                <span className="inline-flex items-center gap-2">
-                  <Brain className={cn("h-3.5 w-3.5", deepThinkingEnabled && "text-[#3B82F6]")} />
-                  深度思考
-                  {deepThinkingEnabled ? (
-                    <span className="h-2 w-2 rounded-full bg-[#3B82F6] animate-pulse" />
-                  ) : null}
-                </span>
-              </button>
-              <KnowledgeScopeSelector />
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={!hasContent && !isStreaming}
-                aria-label={isStreaming ? "停止生成" : "发送消息"}
-                className={cn(
-                  "ml-auto inline-flex items-center justify-center rounded-full p-2.5 transition-all duration-200",
-                  isStreaming
-                    ? "bg-[#FEE2E2] text-[#EF4444] hover:bg-[#FECACA]"
-                    : hasContent
-                      ? "bg-[#3B82F6] text-white hover:bg-[#2563EB]"
-                      : "cursor-not-allowed bg-[#F5F5F5] text-[#CCCCCC]"
-                )}
-              >
-                {isStreaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-          {deepThinkingEnabled ? (
-            <p className="mt-3 text-xs text-[#2563EB]">
-              <span className="inline-flex items-center gap-1.5">
-                <Lightbulb className="h-3.5 w-3.5" />
-                深度思考模式已开启，AI将进行更深入的分析推理
-              </span>
+    <div className="flex min-h-full w-full items-start justify-center overflow-y-auto bg-[var(--merchant-surface-subtle)] px-3 py-6 sm:px-6 sm:py-10">
+      <div className="w-full max-w-[900px]">
+        <div className="flex flex-col gap-5 border-b border-[var(--merchant-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--merchant-cyan-strong)]">
+              Merchant after-sales assistant
             </p>
-          ) : null}
-          <p className="mt-3 text-center text-xs text-[#94A3B8]">
-            <kbd className="rounded bg-white/80 px-1.5 py-0.5 text-[#6B7280] shadow-sm">
-              Enter
-            </kbd>{" "}
-            发送
-            <span className="px-1.5">·</span>
-            <kbd className="rounded bg-white/80 px-1.5 py-0.5 text-[#6B7280] shadow-sm">
-              Shift + Enter
-            </kbd>{" "}
-            换行
-            {isStreaming ? <span className="ml-2 animate-pulse-soft">生成中...</span> : null}
-          </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--merchant-navy)] sm:text-3xl">
+              今天要处理哪类售后问题？
+            </h1>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--merchant-text-muted)]">
+              结合商家规则与知识资料，快速核对退款、退货和保修边界。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2" aria-label="当前模型配置">
+            <span className="rounded-full border border-[var(--merchant-border)] bg-white px-3 py-1.5 text-xs text-[var(--merchant-text-muted)]">
+              本地模型配置 · <strong className="text-[var(--merchant-navy)]">V4 Flash</strong>
+            </span>
+            <span className="rounded-full border border-[var(--merchant-border)] bg-white px-3 py-1.5 text-xs text-[var(--merchant-text-muted)]">
+              向量规格 · <strong className="text-[var(--merchant-navy)]">BGE 512d</strong>
+            </span>
+          </div>
         </div>
 
-        <div
-          className="mt-10 opacity-0 animate-fade-up"
-          style={{ animationDelay: "160ms", animationFillMode: "both" }}
-        >
-          <div className="flex items-center justify-center gap-2 text-xs uppercase tracking-[0.24em] text-[#94A3B8]">
-            <span className="h-px w-8 bg-[#E5E7EB]" />
-            试试这些开场
-            <span className="h-px w-8 bg-[#E5E7EB]" />
-          </div>
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {promptPresets.map((preset) => {
-              const Icon = preset.icon;
-              return (
-                <button
-                  key={preset.id ?? preset.title}
-                  type="button"
-                  onClick={() => applyPreset(preset.prompt)}
-                  disabled={isStreaming}
-                  className={cn(
-                    "group rounded-2xl border border-white/70 bg-white/70 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-[#BFDBFE] hover:shadow-md",
-                    isStreaming && "cursor-not-allowed opacity-60"
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#EFF6FF] text-[#2563EB]">
-                      <Icon className="h-4 w-4" />
-                    </span>
-                    <div>
-                      <p className="text-sm font-semibold text-[#1F2937]">{preset.title}</p>
-                      <p className="text-xs text-[#6B7280]">{preset.description}</p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2 text-xs text-[#94A3B8]">
-                    <span className="min-w-0 flex-1 truncate">推荐问法：{preset.prompt}</span>
-                    <ArrowUpRight className="h-3.5 w-3.5 text-[#CBD5F5] transition-colors group-hover:text-[#3B82F6]" />
-                  </div>
-                </button>
-              );
-            })}
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          {MERCHANT_PRESETS.map((preset) => {
+            const Icon = preset.icon;
+            return (
+              <button
+                key={preset.title}
+                type="button"
+                onClick={() => {
+                  if (isStreaming) return;
+                  setValue(preset.prompt);
+                  focusInput();
+                }}
+                disabled={isStreaming}
+                className="group min-w-0 rounded-[var(--merchant-radius-md)] border border-[var(--merchant-border)] bg-white p-4 text-left shadow-[var(--merchant-shadow-sm)] transition-colors hover:border-[var(--merchant-cyan-border)] hover:bg-[var(--merchant-cyan-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--merchant-focus)] disabled:opacity-60"
+              >
+                <Icon className="h-5 w-5 text-[var(--merchant-alert)]" />
+                <p className="mt-4 text-sm font-semibold text-[var(--merchant-navy)]">{preset.title}</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--merchant-text-muted)]">{preset.description}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="mt-5 rounded-[var(--merchant-radius-lg)] border border-[var(--merchant-border)] bg-white p-3 shadow-[var(--merchant-shadow-md)] sm:p-4">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder={deepThinkingEnabled ? "描述需要深入核对的售后场景..." : "输入订单场景、商品状态或顾客诉求..."}
+            className="max-h-36 min-h-[72px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-6 text-[var(--merchant-text)] placeholder:text-[var(--merchant-text-muted)] focus:outline-none sm:text-[15px]"
+            rows={2}
+            onFocus={() => setIsFocused(true)}
+            onBlur={() => setIsFocused(false)}
+            onCompositionStart={() => { isComposingRef.current = true; }}
+            onCompositionEnd={() => { isComposingRef.current = false; }}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || event.shiftKey) return;
+              const nativeEvent = event.nativeEvent as KeyboardEvent;
+              if (nativeEvent.isComposing || isComposingRef.current || nativeEvent.keyCode === 229) return;
+              event.preventDefault();
+              handleSubmit();
+            }}
+            aria-label="发送消息"
+          />
+          <div className={cn("mt-2 flex flex-wrap items-center gap-2 border-t pt-3", isFocused ? "border-[var(--merchant-cyan-border)]" : "border-[var(--merchant-border)]")}>
+            <button
+              type="button"
+              onClick={() => setDeepThinkingEnabled(!deepThinkingEnabled)}
+              disabled={isStreaming}
+              aria-pressed={deepThinkingEnabled}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-2 text-xs font-medium",
+                deepThinkingEnabled
+                  ? "border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] text-[var(--merchant-navy)]"
+                  : "border-[var(--merchant-border)] text-[var(--merchant-text-muted)]"
+              )}
+            >
+              <Brain className="h-3.5 w-3.5" />
+              深度思考
+            </button>
+            <div className="min-w-0 max-w-full"><KnowledgeScopeSelector /></div>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!hasContent && !isStreaming}
+              aria-label={isStreaming ? "停止生成" : "发送消息"}
+              className={cn(
+                "ml-auto inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg transition-colors",
+                isStreaming
+                  ? "bg-orange-100 text-[var(--merchant-alert)]"
+                  : hasContent
+                    ? "bg-[var(--merchant-navy)] text-white hover:bg-[#0d3b5d]"
+                    : "cursor-not-allowed bg-slate-100 text-slate-300"
+              )}
+            >
+              {isStreaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+            </button>
           </div>
         </div>
+        <p className="mt-3 text-xs text-[var(--merchant-text-muted)]">
+          V4 Flash 与 BGE 512d 为本地配置描述，不代表实时健康检查结果。
+        </p>
       </div>
     </div>
   );

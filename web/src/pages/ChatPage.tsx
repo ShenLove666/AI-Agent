@@ -1,4 +1,5 @@
 import * as React from "react";
+import { LoaderCircle, TriangleAlert } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ChatInput } from "@/components/chat/ChatInput";
@@ -22,6 +23,9 @@ export function ChatPage() {
     createSession
   } = useChatStore();
   const showWelcome = messages.length === 0 && !isLoading;
+  const showEmptyLoading = messages.length === 0 && isLoading;
+  const lastMessage = messages[messages.length - 1];
+  const lastMessageFailed = lastMessage?.status === "error" || lastMessage?.messageStatus === "ERROR";
   const [sessionsReady, setSessionsReady] = React.useState(false);
   const sessionExists = React.useMemo(() => {
     if (!sessionId) return false;
@@ -33,13 +37,9 @@ export function ChatPage() {
     fetchSessions()
       .catch(() => null)
       .finally(() => {
-        if (active) {
-          setSessionsReady(true);
-        }
+        if (active) setSessionsReady(true);
       });
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [fetchSessions]);
 
   React.useEffect(() => {
@@ -52,26 +52,9 @@ export function ChatPage() {
       selectSession(sessionId).catch(() => null);
       return;
     }
-    if (!sessionsReady) {
-      return;
-    }
-    if (isCreatingNew) {
-      return;
-    }
-    if (currentSessionId) {
-      return;
-    }
+    if (!sessionsReady || isCreatingNew || currentSessionId) return;
     createSession().catch(() => null);
-  }, [
-    sessionId,
-    sessionsReady,
-    sessionExists,
-    isCreatingNew,
-    currentSessionId,
-    selectSession,
-    createSession,
-    navigate
-  ]);
+  }, [sessionId, sessionsReady, sessionExists, isCreatingNew, currentSessionId, selectSession, createSession, navigate]);
 
   React.useEffect(() => {
     if (currentSessionId && currentSessionId !== sessionId) {
@@ -81,19 +64,29 @@ export function ChatPage() {
 
   return (
     <MainLayout>
-      <div className="flex h-full">
-        <div className="flex h-full min-w-0 flex-1 flex-col bg-white">
-          <div className="flex-1 min-h-0">
-            <MessageList
-              messages={messages}
-              isLoading={isLoading}
-              isStreaming={isStreaming}
-              sessionKey={currentSessionId}
-            />
+      <div className="merchant-chat-shell relative flex h-full min-h-0 min-w-0">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-white">
+          <div className="min-h-0 flex-1">
+            {showEmptyLoading ? (
+              <div className="flex h-full min-h-[240px] items-center justify-center bg-[var(--merchant-surface-subtle)] px-4" role="status">
+                <div className="text-center text-sm text-[var(--merchant-text-muted)]">
+                  <LoaderCircle className="mx-auto mb-3 h-6 w-6 animate-spin text-[var(--merchant-cyan-strong)]" />
+                  正在载入售后会话...
+                </div>
+              </div>
+            ) : (
+              <MessageList messages={messages} isLoading={isLoading} isStreaming={isStreaming} sessionKey={currentSessionId} />
+            )}
           </div>
           {showWelcome ? null : (
-            <div className="relative z-20 bg-white">
-              <div className="mx-auto max-w-[840px] px-6 pt-1 pb-4">
+            <div className="relative z-20 shrink-0 border-t border-[var(--merchant-border)] bg-white">
+              {lastMessageFailed ? (
+                <div className="mx-auto flex max-w-[840px] items-center gap-2 px-3 pt-2 text-xs text-orange-800 sm:px-6" role="status">
+                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-[var(--merchant-alert)]" />
+                  上次回答未完成，可补充信息后重新发送。
+                </div>
+              ) : null}
+              <div className="mx-auto max-w-[840px] px-3 pb-3 pt-2 sm:px-6 sm:pb-4">
                 <ChatInput />
               </div>
             </div>

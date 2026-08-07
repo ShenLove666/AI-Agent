@@ -1,10 +1,12 @@
 import * as React from "react";
-import { Eye, EyeOff, Lock, User } from "lucide-react";
+import { ArrowRight, CheckCircle2, Eye, EyeOff, Lock, ShieldCheck, User } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
+import { BrandMark } from "@/components/brand/BrandMark";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { BRAND_NAME, BRAND_SHORT_NAME, DEMO_CREDENTIALS } from "@/config/brand";
 import { useAuthStore } from "@/stores/authStore";
 
 export function LoginPage() {
@@ -30,69 +32,153 @@ export function LoginPage() {
     }
   };
 
+  const fillDemoCredentials = () => {
+    setError(null);
+    setShowPassword(false);
+    setForm({ ...DEMO_CREDENTIALS });
+  };
+
   return (
-    <div className="relative flex min-h-screen items-center justify-center px-4">
-      <div className="absolute inset-0 bg-gradient-to-br from-slate-50 via-blue-50/50 to-blue-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-900" />
-      <div className="relative z-10 w-full max-w-md rounded-3xl border border-border/70 bg-background/80 p-8 shadow-soft backdrop-blur">
-        <div className="mb-6">
-          <p className="font-display text-2xl font-semibold">欢迎回来</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            登录后继续你的检索增强对话。
-          </p>
-        </div>
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              用户名
-            </label>
-            <div className="relative">
-              <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="请输入用户名"
-                value={form.username}
-                onChange={(event) => setForm((prev) => ({ ...prev, username: event.target.value }))}
-                className="pl-10"
-                autoComplete="username"
-              />
+    <main className="min-h-[100dvh] bg-[var(--merchant-surface-subtle)] p-3 sm:p-6 lg:p-8">
+      <div className="mx-auto grid min-h-[calc(100dvh-1.5rem)] w-full max-w-6xl overflow-hidden rounded-[var(--merchant-radius-lg)] border border-[var(--merchant-border)] bg-white shadow-[var(--merchant-shadow-lg)] sm:min-h-[calc(100dvh-3rem)] lg:grid-cols-[minmax(0,0.9fr)_minmax(420px,1.1fr)]">
+        <section className="relative hidden overflow-hidden bg-[var(--merchant-navy)] px-10 py-12 text-white lg:flex lg:flex-col lg:justify-between">
+          <div aria-hidden="true" className="absolute right-0 top-0 h-44 w-44 border-b border-l border-white/10" />
+          <div>
+            <div className="flex items-center gap-3">
+              <BrandMark inverted />
+              <div>
+                <p className="text-base font-semibold tracking-wide">{BRAND_SHORT_NAME}</p>
+                <p className="text-xs text-slate-300">Merchant Operations Intelligence</p>
+              </div>
             </div>
+            <p className="mt-20 text-xs font-semibold uppercase tracking-[0.24em] text-[var(--merchant-cyan)]">
+              售后运营工作台
+            </p>
+            <h2 className="mt-5 max-w-md text-4xl font-semibold leading-[1.2] tracking-tight">
+              让每一次售后判断，
+              <span className="text-[var(--merchant-cyan)]">都有依据。</span>
+            </h2>
+            <p className="mt-5 max-w-md text-sm leading-7 text-slate-300">
+              汇集退换货规则、质检记录与保修政策，帮助商家团队快速核对边界、形成可执行答复。
+            </p>
           </div>
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              密码
-            </label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type={showPassword ? "text" : "password"}
-                placeholder="请输入密码"
-                value={form.password}
-                onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
-                className="pl-10 pr-10"
-                autoComplete="current-password"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground"
-                aria-label="显示或隐藏密码"
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
+          <ul className="space-y-3 text-sm text-slate-200">
+            {["售后规则统一检索", "来源依据清晰可追溯", "商家会话集中管理"].map((item) => (
+              <li key={item} className="flex items-center gap-3">
+                <CheckCircle2 className="h-4 w-4 text-[var(--merchant-cyan)]" />
+                {item}
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section className="flex min-w-0 items-center justify-center px-5 py-8 sm:px-10 lg:px-16">
+          <div className="w-full max-w-md">
+            <div className="mb-8 flex items-center gap-3 lg:hidden">
+              <BrandMark />
+              <div>
+                <p className="font-semibold text-[var(--merchant-navy)]">{BRAND_SHORT_NAME}</p>
+                <p className="text-xs text-[var(--merchant-text-muted)]">商家运营智能工作台</p>
+              </div>
             </div>
+
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--merchant-cyan-strong)]">
+              Secure merchant access
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-[var(--merchant-navy)]">
+              {BRAND_NAME}
+            </h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--merchant-text-muted)]">
+              登录后进入商家售后知识问答与会话工作区。
+            </p>
+
+            <button
+              type="button"
+              onClick={fillDemoCredentials}
+              aria-label="填入演示账号"
+              className="mt-7 flex w-full items-center justify-between rounded-[var(--merchant-radius-md)] border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-4 py-3 text-left text-sm transition-colors hover:border-[var(--merchant-cyan)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--merchant-focus)] focus-visible:ring-offset-2"
+            >
+              <span>
+                <span className="block font-semibold text-[var(--merchant-navy)]">使用商家演示环境</span>
+                <span className="mt-0.5 block text-xs text-[var(--merchant-text-muted)]">账号仅填入当前表单</span>
+              </span>
+              <span className="inline-flex items-center gap-1 font-semibold text-[var(--merchant-cyan-strong)]">
+                填入演示账号
+                <ArrowRight className="h-4 w-4" />
+              </span>
+            </button>
+
+            <form className="mt-7 space-y-5" onSubmit={handleSubmit}>
+              <div className="space-y-2">
+                <label htmlFor="login-username" className="text-sm font-medium text-[var(--merchant-text)]">
+                  用户名
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--merchant-text-muted)]" />
+                  <Input
+                    id="login-username"
+                    placeholder="请输入用户名"
+                    value={form.username}
+                    onChange={(event) => setForm((prev) => ({ ...prev, username: event.target.value }))}
+                    className="h-12 rounded-[var(--merchant-radius-md)] pl-10"
+                    autoComplete="username"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label htmlFor="login-password" className="text-sm font-medium text-[var(--merchant-text)]">
+                  密码
+                </label>
+                <div className="relative">
+                  <Lock className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--merchant-text-muted)]" />
+                  <Input
+                    id="login-password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="请输入密码"
+                    value={form.password}
+                    onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+                    className="h-12 rounded-[var(--merchant-radius-md)] pl-10 pr-11"
+                    autoComplete="current-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-[var(--merchant-text-muted)] hover:text-[var(--merchant-navy)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--merchant-focus)]"
+                    aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                <label className="flex items-center gap-2 text-[var(--merchant-text-muted)]">
+                  <Checkbox checked={remember} onCheckedChange={(value) => setRemember(Boolean(value))} />
+                  记住登录状态
+                </label>
+                <span className="inline-flex items-center gap-1 text-xs text-[var(--merchant-text-muted)]">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  凭证加密传输
+                </span>
+              </div>
+              {error ? (
+                <p role="alert" className="rounded-[var(--merchant-radius-sm)] border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800">
+                  {error}
+                </p>
+              ) : null}
+              <Button type="submit" className="h-12 w-full rounded-[var(--merchant-radius-md)] bg-[var(--merchant-navy)] hover:bg-[#0d3b5d]" disabled={isLoading}>
+                {isLoading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    正在验证并进入工作台...
+                  </span>
+                ) : (
+                  "登录运营台"
+                )}
+              </Button>
+            </form>
           </div>
-          <div className="flex items-center justify-between text-sm">
-            <label className="flex items-center gap-2 text-muted-foreground">
-              <Checkbox checked={remember} onCheckedChange={(value) => setRemember(Boolean(value))} />
-              记住我
-            </label>
-            <span className="text-xs text-muted-foreground">账号由管理员初始化</span>
-          </div>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? "正在登录..." : "登录"}
-          </Button>
-        </form>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }

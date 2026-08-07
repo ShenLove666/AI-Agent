@@ -1,7 +1,9 @@
-import * as React from "react";
-import { Github, Menu } from "lucide-react";
+import { Menu, ShieldCheck } from "lucide-react";
 
+import { BrandMark } from "@/components/brand/BrandMark";
 import { Button } from "@/components/ui/button";
+import { BRAND_SHORT_NAME } from "@/config/brand";
+import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
 
 interface HeaderProps {
@@ -10,70 +12,42 @@ interface HeaderProps {
 
 export function Header({ onToggleSidebar }: HeaderProps) {
   const { currentSessionId, sessions } = useChatStore();
-  const [starCount, setStarCount] = React.useState<number | null>(null);
-  const currentSession = React.useMemo(
-    () => sessions.find((session) => session.id === currentSessionId),
-    [sessions, currentSessionId]
-  );
-
-  React.useEffect(() => {
-    let active = true;
-    fetch("https://api.github.com/repos/nageoffer/ragent")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!active) return;
-        const count = typeof data?.stargazers_count === "number" ? data.stargazers_count : null;
-        setStarCount(count);
-      })
-      .catch(() => {
-        if (active) {
-          setStarCount(null);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const starLabel = React.useMemo(() => {
-    if (starCount === null) return "--";
-    if (starCount < 1000) return String(starCount);
-    const rounded = Math.round((starCount / 1000) * 10) / 10;
-    const text = String(rounded).replace(/\.0$/, "");
-    return `${text}k`;
-  }, [starCount]);
+  const user = useAuthStore((state) => state.user);
+  const currentSession = sessions.find((session) => session.id === currentSessionId);
+  const roleLabel = user?.role === "admin" ? "平台管理员" : "商家运营";
 
   return (
-    <header className="sticky top-0 z-20 bg-white">
-      <div className="flex h-16 items-center justify-between px-6">
-        <div className="flex items-center gap-2">
+    <header className="relative z-20 shrink-0 border-b border-[var(--merchant-border)] bg-white">
+      <div className="flex h-[var(--merchant-header-height)] min-w-0 items-center justify-between gap-3 px-3 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2.5">
           <Button
             variant="ghost"
             size="icon"
             onClick={onToggleSidebar}
-            aria-label="切换侧边栏"
-            className="text-gray-500 hover:bg-gray-100 lg:hidden"
+            aria-label="打开主导航"
+            className="shrink-0 text-[var(--merchant-navy)] hover:bg-[var(--merchant-cyan-soft)] lg:hidden"
           >
             <Menu className="h-5 w-5" />
           </Button>
-          <p className="text-base font-medium text-gray-900">
-            {currentSession?.title || "新对话"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <a
-            href="https://github.com/nageoffer/ragent"
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-1.5 text-sm text-gray-600 transition hover:bg-gray-100 hover:text-gray-900"
-            aria-label="打开 GitHub 仓库"
-          >
-            <Github className="h-4 w-4" />
-            <span className="font-medium">Star</span>
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600">
-              {starLabel}
+          <div className="flex items-center gap-2 lg:hidden">
+            <BrandMark className="h-8 w-8 rounded-[9px]" />
+            <span className="hidden text-sm font-semibold text-[var(--merchant-navy)] min-[390px]:inline">
+              {BRAND_SHORT_NAME}
             </span>
-          </a>
+          </div>
+          <div className="min-w-0 border-l border-[var(--merchant-border)] pl-3 lg:border-l-0 lg:pl-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--merchant-text-muted)]">
+              商家售后工作区
+            </p>
+            <p className="truncate text-sm font-semibold text-[var(--merchant-text)] sm:text-base">
+              {currentSession?.title || "新建售后咨询"}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 rounded-full border border-[var(--merchant-border)] bg-[var(--merchant-surface-subtle)] px-2.5 py-1.5 text-xs text-[var(--merchant-text-muted)] sm:px-3">
+          <ShieldCheck className="h-3.5 w-3.5 text-[var(--merchant-cyan-strong)]" />
+          <span className="hidden sm:inline">{user?.username || "当前账号"}</span>
+          <span className="font-semibold text-[var(--merchant-navy)]">{roleLabel}</span>
         </div>
       </div>
     </header>

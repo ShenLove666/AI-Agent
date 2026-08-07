@@ -1,17 +1,15 @@
 import * as React from "react";
 import { differenceInCalendarDays, isValid } from "date-fns";
 import {
-  BookOpen,
-  Bot,
   LogOut,
   MessageSquare,
   MoreHorizontal,
   Pencil,
-  PlayCircle,
   Plus,
   Search,
   Settings,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -32,6 +30,8 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { Loading } from "@/components/common/Loading";
+import { BrandMark } from "@/components/brand/BrandMark";
+import { BRAND_NAME, BRAND_SHORT_NAME } from "@/config/brand";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
@@ -124,9 +124,6 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
   const avatarUrl = user?.avatar?.trim();
   const showAvatar = Boolean(avatarUrl) && !avatarFailed;
   const avatarFallback = (user?.username || user?.userId || "用户").slice(0, 1).toUpperCase();
-  const sessionTitleFont =
-    "-apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"PingFang SC\", \"Hiragino Sans GB\", \"Microsoft YaHei\", \"Helvetica Neue\", Arial, sans-serif";
-
   const startRename = (id: string, title: string) => {
     setRenamingId(id);
     setRenameValue(title || "新对话");
@@ -157,90 +154,80 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     <>
       <div
         className={cn(
-          "fixed inset-0 z-30 bg-slate-900/30 backdrop-blur-sm transition-opacity lg:hidden",
+          "fixed inset-0 z-30 bg-[var(--merchant-navy)]/45 transition-opacity lg:hidden",
           isOpen ? "opacity-100" : "pointer-events-none opacity-0"
         )}
         onClick={onClose}
       />
       <aside
         className={cn(
-          "fixed left-0 top-0 z-40 flex h-screen w-[280px] flex-shrink-0 flex-col bg-[#FAFAFA] p-3 transition-transform lg:static lg:h-screen lg:translate-x-0",
+          "fixed left-0 top-0 z-40 flex h-[100dvh] w-[min(88vw,280px)] flex-shrink-0 flex-col border-r border-white/10 bg-[var(--merchant-navy)] p-3 text-white shadow-2xl transition-transform lg:static lg:w-[272px] lg:translate-x-0 lg:shadow-none",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
+        aria-label="主导航"
       >
-        <div className="border-b border-[#F0F0F0] pb-3">
+        <div className="border-b border-white/10 pb-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#3B82F6]">
-              <Bot className="h-5 w-5 text-white" />
+            <BrandMark inverted />
+            <div className="min-w-0">
+              <p className="truncate text-base font-semibold">{BRAND_SHORT_NAME}</p>
+              <p className="truncate text-xs text-slate-300">{BRAND_NAME}</p>
             </div>
-            <div style={{ fontFamily: sessionTitleFont }}>
-              <p className="text-base font-semibold text-[#1A1A1A]">Ragent AI 智能体</p>
-              <p className="text-xs text-[#999999]">Powered by AI</p>
-            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="ml-auto rounded-lg p-1.5 text-slate-300 hover:bg-white/10 hover:text-white lg:hidden"
+              aria-label="关闭主导航"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
         </div>
-        <div className="py-3 space-y-4">
-          <div className="relative overflow-hidden rounded-2xl border border-[#E6EEF6] bg-gradient-to-br from-[#F0F9FF] via-white to-[#FEF3C7] p-3 shadow-[0_14px_30px_rgba(15,23,42,0.08)]">
-            <span
-              aria-hidden="true"
-              className="absolute -right-10 -top-10 h-24 w-24 rounded-full bg-[#BAE6FD]/70 blur-2xl"
-            />
-            <span
-              aria-hidden="true"
-              className="absolute -left-12 -bottom-10 h-28 w-28 rounded-full bg-[#FDE68A]/70 blur-2xl"
-            />
-            <div className="relative">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-[11px] font-semibold text-[#94A3B8]">快速开始</span>
-                <span className="rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-[#2563EB]">
-                  新内容
-                </span>
-              </div>
+        <div className="space-y-3 py-3">
+          <nav aria-label="工作区快捷入口" className="rounded-[var(--merchant-radius-md)] border border-white/10 bg-white/[0.05] p-2.5">
+              <p className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">工作区</p>
               <button
                 type="button"
-                className="mt-2 flex w-full items-center gap-3 rounded-2xl bg-white/90 px-4 py-3 text-left shadow-[0_10px_20px_rgba(15,23,42,0.08)] transition-all hover:-translate-y-[1px] hover:shadow-[0_16px_30px_rgba(15,23,42,0.12)]"
+                className="flex w-full items-center gap-3 rounded-[10px] bg-[var(--merchant-cyan)] px-3 py-2.5 text-left font-semibold text-[var(--merchant-navy)] transition-colors hover:bg-[#43d2df]"
                 onClick={() => {
                   createSession().catch(() => null);
                   navigate("/chat");
                   onClose();
                 }}
               >
-                <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-[#60A5FA] to-[#2563EB] text-white shadow-[0_6px_14px_rgba(37,99,235,0.3)]">
+                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--merchant-navy)]/15">
                   <Plus className="h-4 w-4" />
                 </span>
                 <span className="flex-1">
-                  <span className="block text-sm font-semibold text-[#1F2937]">新建对话</span>
-                  <span className="block text-xs text-[#94A3B8]">从空白开始</span>
+                  <span className="block text-sm">新建售后咨询</span>
+                  <span className="block text-[11px] font-normal opacity-70">核对规则与处理边界</span>
                 </span>
               </button>
               {user?.role === "admin" ? (
                 <button
                   type="button"
-                  className="mt-2 inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-3 py-1.5 text-xs font-semibold text-[#1D4ED8] transition-colors hover:bg-white"
+                  className="mt-2 inline-flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-white/10"
                   onClick={() => {
                     window.open("/admin", "_blank");
                     onClose();
                   }}
                 >
                   <Settings className="h-3.5 w-3.5" />
-                  管理后台
+                  打开管理后台
                 </button>
               ) : null}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-[#E6EEF6] bg-white p-3 shadow-[0_12px_26px_rgba(15,23,42,0.06)]">
-            <div className="flex items-center justify-between px-1">
-              <span className="text-[11px] font-semibold text-[#94A3B8]">搜索对话</span>
-              <span className="text-[10px] text-[#CBD5F5]">Ctrl / Cmd + K</span>
-            </div>
+          </nav>
+          <div>
+            <label htmlFor="session-search" className="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">历史会话</label>
             <div className="mt-2">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9CA3AF]" />
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
+                  id="session-search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索对话..."
-                  className="h-10 w-full rounded-xl border border-[#E5E7EB] bg-[#F8FAFC] pl-9 pr-3 text-sm text-[#1F2937] placeholder:text-[#9CA3AF] focus:border-[#93C5FD] focus:outline-none transition-colors"
+                  placeholder="搜索售后会话"
+                  className="h-10 w-full rounded-[10px] border border-white/10 bg-white/[0.06] pl-9 pr-3 text-sm text-white placeholder:text-slate-400 focus:border-[var(--merchant-cyan)] focus:outline-none focus:ring-2 focus:ring-[var(--merchant-focus)]"
                 />
               </div>
             </div>
@@ -249,25 +236,19 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         <div className="relative flex-1 min-h-0">
           <div className="h-full overflow-y-auto sidebar-scroll">
             {sessions.length === 0 && (!sessionsLoaded || isLoading) ? (
-              <div
-                className="flex h-full items-center justify-center text-[#999999]"
-                style={{ fontFamily: sessionTitleFont }}
-              >
+              <div className="flex h-full items-center justify-center text-slate-400">
                 <Loading label="加载会话中" />
               </div>
             ) : filteredSessions.length === 0 ? (
-              <div
-                className="flex h-full flex-col items-center justify-center text-[#999999]"
-                style={{ fontFamily: sessionTitleFont }}
-              >
-                <MessageSquare className="h-16 w-16" />
-                <p className="mt-2 text-[14px]">暂无对话记录</p>
+              <div className="flex h-full flex-col items-center justify-center text-slate-400">
+                <MessageSquare className="h-10 w-10" />
+                <p className="mt-2 text-sm">暂无售后会话</p>
               </div>
             ) : (
               <div>
                 {groupedSessions.map((group, index) => (
                   <div key={group.label} className={cn("flex flex-col", index === 0 ? "mt-0" : "mt-4")}>
-                    <p className="mb-1.5 pl-3 text-[12px] font-normal leading-[18px] text-[#999999]">
+                    <p className="mb-1.5 pl-3 text-[11px] font-medium leading-[18px] text-slate-400">
                       {group.label}
                     </p>
                     {group.items.map((session) => (
@@ -276,8 +257,8 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                         className={cn(
                           "group my-[1px] flex min-h-[40px] cursor-pointer items-center justify-between gap-2 rounded-lg px-3 py-2 text-[14px] leading-[22px] transition-colors duration-200",
                           currentSessionId === session.id
-                            ? "bg-[#DBEAFE] text-[#2563EB]"
-                            : "text-[#333333] hover:bg-[#F5F5F5]"
+                            ? "bg-white/12 text-white"
+                            : "text-slate-300 hover:bg-white/[0.07] hover:text-white"
                         )}
                         role="button"
                         tabIndex={0}
@@ -317,7 +298,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                             onBlur={() => {
                               commitRename().catch(() => null);
                             }}
-                            className="h-6 flex-1 rounded-md border border-[#E5E5E5] bg-white px-2 text-[14px] leading-[22px] text-[#333333] focus:border-[#2563EB] focus:outline-none"
+                            className="h-7 flex-1 rounded-md border border-[var(--merchant-cyan)] bg-[var(--merchant-navy)] px-2 text-sm leading-[22px] text-white focus:outline-none focus:ring-2 focus:ring-[var(--merchant-focus)]"
                           />
                         ) : (
                           <span className="min-w-0 flex-1 truncate font-normal">
@@ -329,9 +310,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                             <button
                               type="button"
                               className={cn(
-                                "flex h-6 w-6 items-center justify-center rounded text-[#666666] transition-opacity duration-150 hover:bg-[rgba(0,0,0,0.06)]",
+                                "flex h-6 w-6 items-center justify-center rounded text-slate-300 transition-opacity duration-150 hover:bg-white/10 hover:text-white",
                                 currentSessionId === session.id
-                                  ? "pointer-events-auto opacity-100 text-[#2563EB]"
+                                  ? "pointer-events-auto opacity-100 text-white"
                                   : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100"
                               )}
                               onClick={(event) => event.stopPropagation()}
@@ -378,7 +359,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
           </div>
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-b from-transparent to-[#FAFAFA]"
+            className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-5 bg-gradient-to-b from-transparent to-[var(--merchant-navy)]"
           />
         </div>
         <div className="mt-auto pt-3">
@@ -386,10 +367,10 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                className="flex w-full items-center gap-2 rounded-lg p-2 text-left transition-colors hover:bg-[#F5F5F5] data-[state=open]:bg-[#EEEEEE]"
+                className="flex w-full items-center gap-2 rounded-[10px] border border-white/10 bg-white/[0.05] p-2 text-left transition-colors hover:bg-white/10 data-[state=open]:bg-white/10"
                 aria-label="用户菜单"
               >
-                <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-[#3B82F6] text-white">
+                <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-[var(--merchant-cyan)] font-semibold text-[var(--merchant-navy)]">
                   {showAvatar ? (
                     <img
                       src={avatarUrl}
@@ -401,38 +382,17 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     <span className="text-sm font-medium">{avatarFallback}</span>
                   )}
                 </div>
-                <span className="flex-1 truncate text-sm font-medium text-[#1A1A1A]">
-                  {(() => {
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-white">{(() => {
                     const fallback = user?.username || user?.userId || "用户";
                     return /^\d+$/.test(fallback) ? "用户" : fallback;
-                  })()}
+                  })()}</span>
+                  <span className="block text-[10px] text-slate-400">{user?.role === "admin" ? "平台管理员" : "商家运营"}</span>
                 </span>
-                <MoreHorizontal className="h-4 w-4 text-[#999999]" />
+                <MoreHorizontal className="h-4 w-4 text-slate-400" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-48">
-              <DropdownMenuItem asChild>
-                <a
-                  href="https://nageoffer.com/ragent"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center"
-                >
-                  <BookOpen className="mr-2 h-4 w-4" />
-                  官方文档
-                </a>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <a
-                  href="https://space.bilibili.com/352177376"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center"
-                >
-                  <PlayCircle className="mr-2 h-4 w-4" />
-                  哔哩哔哩
-                </a>
-              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => logout()} className="text-rose-600 focus:text-rose-600">
                 <LogOut className="mr-2 h-4 w-4" />
                 退出登录

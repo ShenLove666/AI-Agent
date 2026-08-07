@@ -60,13 +60,13 @@ export function ChatInput() {
   const hasContent = value.trim().length > 0;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-2">
       <div
         className={cn(
-          "relative flex flex-col rounded-2xl border bg-white px-4 pt-3 pb-2 transition-all duration-200",
+          "relative flex min-w-0 flex-col rounded-[var(--merchant-radius-md)] border bg-white px-3 pb-2 pt-3 transition-all duration-200 sm:px-4",
           isFocused
-            ? "border-[#D4D4D4] shadow-[0_4px_12px_rgba(0,0,0,0.06)]"
-            : "border-[#E5E5E5] hover:border-[#D4D4D4]"
+            ? "border-[var(--merchant-cyan)] shadow-[var(--merchant-shadow-md)]"
+            : "border-[var(--merchant-border)] hover:border-[var(--merchant-cyan-border)]"
         )}
       >
         <div className="relative">
@@ -74,8 +74,8 @@ export function ChatInput() {
             ref={textareaRef}
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder={deepThinkingEnabled ? "输入需要深度分析的问题..." : "输入你的问题..."}
-            className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-2 pt-2 pb-2 pr-2 text-[15px] text-[#333333] shadow-none placeholder:text-[#999999] focus-visible:ring-0"
+            placeholder={deepThinkingEnabled ? "输入需要深入核对的售后场景..." : "继续补充订单与售后信息..."}
+            className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-1 pb-2 pt-2 text-sm text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
             rows={1}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
@@ -99,29 +99,29 @@ export function ChatInput() {
           />
           <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-[10px] bg-gradient-to-b from-white/0 via-white/40 to-white/90" />
         </div>
-        <div className="relative mt-2 flex items-center">
+        <div className="relative mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-[var(--merchant-border)] pt-2">
           <button
             type="button"
             onClick={() => setDeepThinkingEnabled(!deepThinkingEnabled)}
             disabled={isStreaming}
             aria-pressed={deepThinkingEnabled}
             className={cn(
-              "rounded-lg border px-3 py-1.5 text-xs font-medium transition-all",
+              "rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-all",
               deepThinkingEnabled
-                ? "border-[#BFDBFE] bg-[#DBEAFE] text-[#2563EB]"
-                : "border-transparent bg-[#F5F5F5] text-[#999999] hover:bg-[#EEEEEE]",
+                ? "border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] text-[var(--merchant-navy)]"
+                : "border-[var(--merchant-border)] bg-white text-[var(--merchant-text-muted)] hover:bg-[var(--merchant-surface-subtle)]",
               isStreaming && "cursor-not-allowed opacity-60"
             )}
           >
             <span className="inline-flex items-center gap-2">
-              <Brain className={cn("h-3.5 w-3.5", deepThinkingEnabled && "text-[#3B82F6]")} />
+              <Brain className={cn("h-3.5 w-3.5", deepThinkingEnabled && "text-[var(--merchant-cyan-strong)]")} />
               深度思考
               {deepThinkingEnabled ? (
-                <span className="h-2 w-2 rounded-full bg-[#3B82F6] animate-pulse" />
+                <span className="h-2 w-2 rounded-full bg-[var(--merchant-cyan)] animate-pulse" />
               ) : null}
             </span>
           </button>
-          <div className="ml-2">
+          <div className="min-w-0 max-w-full">
             <KnowledgeScopeSelector />
           </div>
           <button
@@ -132,10 +132,10 @@ export function ChatInput() {
             className={cn(
               "ml-auto rounded-full p-2.5 transition-all duration-200",
               isStreaming
-                ? "bg-[#FEE2E2] text-[#EF4444] hover:bg-[#FECACA]"
-                : hasContent
-                  ? "bg-[#3B82F6] text-white hover:bg-[#2563EB]"
-                  : "cursor-not-allowed bg-[#F5F5F5] text-[#CCCCCC]"
+                  ? "bg-orange-100 text-[var(--merchant-alert)] hover:bg-orange-200"
+                  : hasContent
+                  ? "bg-[var(--merchant-navy)] text-white hover:bg-[#0d3b5d]"
+                  : "cursor-not-allowed bg-slate-100 text-slate-300"
             )}
           >
             {isStreaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
@@ -143,17 +143,17 @@ export function ChatInput() {
         </div>
       </div>
       {deepThinkingEnabled ? (
-        <p className="text-xs text-[#2563EB]">
+        <p className="text-xs text-[var(--merchant-cyan-strong)]">
           <span className="inline-flex items-center gap-1.5">
             <Lightbulb className="h-3.5 w-3.5" />
-            深度思考模式已开启，AI将进行更深入的分析推理
+            深度思考已开启，将更细致地核对规则边界
           </span>
         </p>
       ) : null}
-      <p className="text-center text-xs text-[#999999]">
-        <kbd className="rounded bg-[#F5F5F5] px-1.5 py-0.5 text-[#666666]">Enter</kbd> 发送
+      <p className="hidden text-center text-xs text-[var(--merchant-text-muted)] min-[390px]:block">
+        <kbd className="rounded bg-[var(--merchant-surface-subtle)] px-1.5 py-0.5">Enter</kbd> 发送
         <span className="px-1.5">·</span>
-        <kbd className="rounded bg-[#F5F5F5] px-1.5 py-0.5 text-[#666666]">
+        <kbd className="rounded bg-[var(--merchant-surface-subtle)] px-1.5 py-0.5">
           Shift + Enter
         </kbd>{" "}
         换行
