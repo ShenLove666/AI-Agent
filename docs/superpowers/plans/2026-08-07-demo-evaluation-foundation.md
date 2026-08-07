@@ -156,7 +156,7 @@ git commit -m "chore: establish safe project baseline"
 - Consumes: `Database.engine`, `Settings.database_url`, and all models registered on `Base.metadata`.
 - Produces: `upgrade_database(database: Database) -> None` and a baseline revision named `0001_current_schema`.
 
-- [ ] **Step 1: Add the failing empty-database migration test**
+- [x] **Step 1: Add the failing empty-database migration test**
 
 ```python
 def test_upgrade_database_builds_empty_sqlite_schema(tmp_path):
@@ -167,7 +167,7 @@ def test_upgrade_database_builds_empty_sqlite_schema(tmp_path):
     assert {"users_v2", "conversations", "messages", "knowledge_documents"} <= tables
 ```
 
-- [ ] **Step 2: Add the failing legacy-adoption test**
+- [x] **Step 2: Add the failing legacy-adoption test**
 
 Create a database through the current `Base.metadata.create_all`, remove its Alembic marker if present, call `upgrade_database`, and assert:
 
@@ -175,7 +175,7 @@ Create a database through the current `Base.metadata.create_all`, remove its Ale
 assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0001_current_schema"
 ```
 
-- [ ] **Step 3: Run the focused tests and observe failure**
+- [x] **Step 3: Run the focused tests and observe failure**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_migrations.py -v
@@ -183,7 +183,7 @@ assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "00
 
 Expected: collection or import fails because `app.framework.migrations` does not exist.
 
-- [ ] **Step 4: Install and configure Alembic**
+- [x] **Step 4: Install and configure Alembic**
 
 Add `alembic>=1.14,<2` to `requirements-api.txt`, install it into `.venv`, and run:
 
@@ -193,7 +193,7 @@ Add `alembic>=1.14,<2` to `requirements-api.txt`, install it into `.venv`, and r
 
 Set `target_metadata = Base.metadata` in `migrations/env.py`, import the users, conversations, knowledge, and trace model modules there, and override `sqlalchemy.url` from `DB_URL`.
 
-- [ ] **Step 5: Generate and inspect the baseline revision**
+- [x] **Step 5: Generate and inspect the baseline revision**
 
 Generate against a temporary empty SQLite URL:
 
@@ -204,7 +204,7 @@ $env:DB_URL='sqlite:///./data/alembic-baseline-temp.db'
 
 Inspect `upgrade()` and `downgrade()` to ensure every current table, index, unique constraint, and foreign key is explicit. Delete the temporary database after inspection without adding it to Git.
 
-- [ ] **Step 6: Isolate legacy adoption**
+- [x] **Step 6: Isolate legacy adoption**
 
 Move the existing `missing_columns` mapping and guarded `ALTER TABLE` loop from `Database.create_schema()` into:
 
@@ -215,7 +215,7 @@ def adopt_pre_alembic_schema(database: Database) -> None:
 
 Do not call it for databases already containing `alembic_version`.
 
-- [ ] **Step 7: Implement the migration entry point**
+- [x] **Step 7: Implement the migration entry point**
 
 ```python
 def upgrade_database(database: Database) -> None:
@@ -229,11 +229,11 @@ def upgrade_database(database: Database) -> None:
 
 `build_alembic_config(url: str) -> Config` must resolve `alembic.ini` from the repository root and set `sqlalchemy.url` programmatically.
 
-- [ ] **Step 8: Switch application startup**
+- [x] **Step 8: Switch application startup**
 
 Change lifespan startup from `container.database.create_schema()` to `upgrade_database(container.database)`. Keep `create_schema()` as a deprecated test-only compatibility wrapper that delegates to `upgrade_database` until existing tests are migrated.
 
-- [ ] **Step 9: Run migration and existing backend tests**
+- [x] **Step 9: Run migration and existing backend tests**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_migrations.py -v
@@ -242,7 +242,7 @@ Change lifespan startup from `container.database.create_schema()` to `upgrade_da
 
 Expected: migration tests pass and the existing suite remains green.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```powershell
 git add alembic.ini migrations app/framework app/application_core.py requirements-api.txt tests/test_migrations.py pytest.ini

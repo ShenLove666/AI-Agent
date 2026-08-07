@@ -1,10 +1,10 @@
 ## 1. Repository safety and schema lifecycle
 
 - [x] 1.1 Extend `.gitignore` for generated frontend, Python, test, database, upload, and local-secret outputs; initialize and inspect a local Git baseline without staging ignored or external files.
-- [ ] 1.2 Add failing migration tests for empty SQLite upgrade, recognized pre-Alembic adoption with preserved rows, and rejection of an unknown partial schema.
-- [ ] 1.3 Add Alembic configuration and a reviewed baseline revision that represents the complete pre-change schema and supports SQLite batch operations.
-- [ ] 1.4 Extract the existing compatibility mutations into a quarantined legacy adopter, implement the programmatic migration entry point, and switch application startup to `upgrade head`.
-- [ ] 1.5 Verify empty upgrade, legacy adoption, downgrade behavior, and the existing backend suite before committing the schema-lifecycle work.
+- [x] 1.2 Add failing migration tests for empty SQLite upgrade, recognized pre-Alembic adoption with preserved rows, and rejection of an unknown partial schema.
+- [x] 1.3 Add Alembic configuration and a reviewed baseline revision that represents the complete pre-change schema and supports SQLite batch operations.
+- [x] 1.4 Extract the existing compatibility mutations into a quarantined legacy adopter, implement the programmatic migration entry point, and switch application startup to `upgrade head`.
+- [x] 1.5 Verify empty upgrade, legacy adoption, downgrade behavior, and the existing backend suite before committing the schema-lifecycle work.
 
 ## 2. Demo ownership and document provenance
 
