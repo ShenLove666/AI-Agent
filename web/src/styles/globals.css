@@ -2839,16 +2839,18 @@ textarea {
 }
 
 .sidebar-scroll {
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: stable;
 }
 
 .sidebar-scroll::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+  width: 4px;
+  height: 4px;
 }
 
 .sidebar-scroll::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: transparent;
   border-radius: 2px;
 }
 
@@ -2857,12 +2859,7 @@ textarea {
 }
 
 .sidebar-scroll:hover {
-  scrollbar-width: thin;
-}
-
-.sidebar-scroll:hover::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
 }
 
 .sidebar-scroll:hover::-webkit-scrollbar-thumb {
