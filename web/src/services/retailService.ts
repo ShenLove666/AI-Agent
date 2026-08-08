@@ -29,6 +29,20 @@ export type RetailDataSource = {
   rejectedRows: number;
   isDemo: boolean;
 };
+export type RetailDataSourceQuality = {
+  id: number;
+  datasetKey: string;
+  version: string;
+  schema: Record<string, unknown>;
+  counts: Record<string, number>;
+  acceptedRows: number;
+  rejectedRows: number;
+  limitations: string[];
+  selectionRules: string[];
+  transformVersion: string;
+  manifestSha256: string;
+  provenance: "observed";
+};
 export type RetailRule = {
   id: number;
   from: string;
@@ -71,6 +85,8 @@ export type RetailOverview = {
 export const getRetailOverview = () => api.get<RetailOverview, RetailOverview>("/retail/overview");
 export const getRetailDataSources = () =>
   api.get<RetailDataSource[], RetailDataSource[]>("/retail/data-sources");
+export const getRetailDataSourceQuality = (id: number) =>
+  api.get<never, RetailDataSourceQuality>(`/data-sources/${id}/quality`);
 export const createRetailCampaign = (ruleId: number) => api.post("/retail/campaigns", { ruleId });
 export const transitionRetailTask = (taskId: number, status: string) =>
   api.post(`/retail/optimization-tasks/${taskId}/transition`, { status });

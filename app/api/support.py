@@ -104,6 +104,16 @@ def case_detail(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.detail(db, _owner(db, user), case_id), traceId=current_trace_id())
 
 
+@router.get("/cases/{case_id}/provenance")
+def case_provenance(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.case_provenance(db, _owner(db, user), case_id), traceId=current_trace_id())
+
+
+@router.get("/coverage")
+def support_coverage(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.coverage(db, _owner(db, user)), traceId=current_trace_id())
+
+
 @router.post("/cases/{case_id}/transition")
 def transition(case_id: int, payload: TransitionRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(

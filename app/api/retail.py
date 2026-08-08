@@ -13,6 +13,7 @@ from app.modules.commerce.service import RetailDataError, RetailService
 
 
 router = APIRouter(prefix="/retail", tags=["instant-retail"])
+data_source_router = APIRouter(prefix="/data-sources", tags=["data-provenance"])
 service = RetailService()
 
 
@@ -48,6 +49,17 @@ def retail_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
 @router.get("/data-sources")
 def retail_data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.data_sources(db, _owner(db, user)), traceId=current_trace_id())
+
+
+@data_source_router.get("")
+def data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.data_sources(db, _owner(db, user)), traceId=current_trace_id())
+
+
+@data_source_router.get("/{source_id}/quality")
+def data_source_quality(source_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+    data = _safe(lambda: service.data_source_quality(db, _owner(db, user), source_id))
+    return ApiResponse(data=data, traceId=current_trace_id())
 
 
 @router.post("/imports")

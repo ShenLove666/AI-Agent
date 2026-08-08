@@ -167,6 +167,43 @@ class SupportService:
             "suggestions": [self._suggestion(item, decisions.get(item.id)) for item in suggestions],
         }
 
+    def case_provenance(self, db: Session, owner_id: int, case_id: int) -> dict:
+        return self.detail(db, owner_id, case_id)["provenance"]
+
+    def coverage(self, db: Session, owner_id: int) -> dict:
+        cases = list(db.scalars(select(SupportCase).where(SupportCase.owner_id == owner_id)))
+        categories: dict[str, int] = {}
+        statuses: dict[str, int] = {}
+        source_versions: dict[str, int] = {}
+        demo = 0
+        for case in cases:
+            labels = _json(case.labels_json, [])
+            known_categories = {"refund", "cancellation", "promotion", "product", "delivery", "payment", "food_safety", "invoice", "account"}
+            category = next(
+                (
+                    str(item).removeprefix("category:")
+                    for item in labels
+                    if str(item).removeprefix("category:") in known_categories
+                ),
+                "uncategorized",
+            )
+            categories[category] = categories.get(category, 0) + 1
+            statuses[case.status] = statuses.get(case.status, 0) + 1
+            version = case.generator_version or "ordinary"
+            source_versions[version] = source_versions.get(version, 0) + 1
+            demo += int(case.is_demo)
+        total = len(cases)
+        return {
+            "totalCases": total,
+            "categories": categories,
+            "statuses": statuses,
+            "sourceVersions": source_versions,
+            "demoCases": demo,
+            "ordinaryCases": total - demo,
+            "provenance": "demo" if total and demo == total else ("mixed" if demo else "production"),
+            "unsupportedSegments": [key for key in ("refund", "cancellation", "promotion", "product", "delivery", "payment", "food_safety", "invoice", "account") if categories.get(key, 0) == 0],
+        }
+
     def require_case(self, db: Session, owner_id: int, case_id: int) -> SupportCase:
         item = db.scalar(
             select(SupportCase).where(SupportCase.id == case_id, SupportCase.owner_id == owner_id)
@@ -279,21 +316,43 @@ class SupportService:
             if release
             else ()
         )
-        chunks = (
+        eligible_documents = (
             list(
                 db.scalars(
-                    select(KnowledgeChunk)
-                    .where(KnowledgeChunk.document_id.in_(document_ids), KnowledgeChunk.enabled.is_(True))
-                    .order_by(KnowledgeChunk.document_id, KnowledgeChunk.position)
-                    .limit(4)
+                    select(KnowledgeDocument).where(
+                        KnowledgeDocument.id.in_(document_ids),
+                        KnowledgeDocument.uploader_id == owner_id,
+                        KnowledgeDocument.enabled.is_(True),
+                        KnowledgeDocument.review_status == "current",
+                        or_(
+                            KnowledgeDocument.next_review_at.is_(None),
+                            KnowledgeDocument.next_review_at >= date.today(),
+                        ),
+                    )
                 )
             )
             if document_ids
             else []
         )
+        documents_by_id = {item.id: item for item in eligible_documents}
+        chunks = (
+            list(
+                db.scalars(
+                    select(KnowledgeChunk)
+                    .where(
+                        KnowledgeChunk.document_id.in_(documents_by_id),
+                        KnowledgeChunk.enabled.is_(True),
+                    )
+                    .order_by(KnowledgeChunk.document_id, KnowledgeChunk.position)
+                    .limit(4)
+                )
+            )
+            if documents_by_id
+            else []
+        )
         citations = [
-            {"chunkId": item.id, "documentId": item.document_id, "content": item.content[:260], "releaseVersion": release.version}
-            for item in chunks
+            self._citation(item, documents_by_id[item.document_id], release.version, index)
+            for index, item in enumerate(chunks, 1)
         ]
         risk_flags = [flag for flag, terms in RISK_TERMS.items() if any(term in question for term in terms)]
         started = time.perf_counter()
@@ -453,7 +512,35 @@ class SupportService:
         document_ids = [item.document_id for item in memberships]
         documents = list(db.scalars(select(KnowledgeDocument).where(KnowledgeDocument.id.in_(document_ids))))
         stale = [item.filename for item in documents if item.review_status != "current" or (item.next_review_at is not None and item.next_review_at < date.today())]
-        unattributed = [item.filename for item in documents if item.content_origin == "public_summary" and (not item.source_url or not item.source_publisher or not item.source_retrieved_at)]
+        unattributed = [
+            item.filename
+            for item in documents
+            if item.content_origin == "public_summary"
+            and (
+                not item.source_title
+                or not item.source_url
+                or not item.source_publisher
+                or not item.source_retrieved_at
+                or not _json(item.applicability_json, [])
+                or not (item.license_or_usage_note or item.source_usage_note)
+            )
+        ]
+        conflicts = [
+            item.filename
+            for item in documents
+            if (
+                item.content_origin == "public_summary"
+                and item.source_jurisdiction == "虚构演示商家"
+            )
+            or (
+                item.content_origin == "synthetic"
+                and bool(item.source_url or item.source_publisher)
+            )
+            or (
+                item.content_origin in {"public_summary", "synthetic"}
+                and not _json(item.applicability_json, [])
+            )
+        ]
         hash_drift = []
         for membership in memberships:
             document = db.get(KnowledgeDocument, membership.document_id)
@@ -462,9 +549,19 @@ class SupportService:
             ).hexdigest()
             if current_hash != membership.document_hash:
                 hash_drift.append(membership.filename_snapshot)
-        if stale or unattributed or hash_drift:
+        if stale or unattributed or conflicts or hash_drift:
             release.processing_status = "blocked"; db.commit()
-            raise AppError("KNOWLEDGE_PROVENANCE_INVALID", "知识版本存在过期、缺少来源或内容漂移的文档", 409, {"stale": stale, "unattributed": unattributed, "hashDrift": hash_drift})
+            raise AppError(
+                "KNOWLEDGE_PROVENANCE_INVALID",
+                "知识版本存在过期、缺少来源、来源冲突或内容漂移的文档",
+                409,
+                {
+                    "stale": stale,
+                    "unattributed": unattributed,
+                    "conflicts": conflicts,
+                    "hashDrift": hash_drift,
+                },
+            )
         ready = int(db.scalar(select(func.count(KnowledgeDocument.id)).where(KnowledgeDocument.id.in_(document_ids), KnowledgeDocument.status.in_(("ready", "indexed")), KnowledgeDocument.enabled.is_(True))) or 0)
         chunk_count = int(db.scalar(select(func.count(KnowledgeChunk.id)).where(KnowledgeChunk.document_id.in_(document_ids), KnowledgeChunk.enabled.is_(True))) or 0)
         if ready != len(document_ids) or chunk_count == 0:
@@ -693,6 +790,39 @@ class SupportService:
             "decision": decision.decision if decision else None,
             "finalContent": decision.final_content if decision else None,
             "createdAt": item.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _citation(
+        chunk: KnowledgeChunk,
+        document: KnowledgeDocument,
+        release_version: str,
+        index: int,
+    ) -> dict:
+        """Return one citation contract shared by support UI and source preview."""
+        content = chunk.content[:260]
+        return {
+            "index": index,
+            "chunkId": chunk.id,
+            "documentId": document.id,
+            "docId": str(document.id),
+            "docName": document.source_title or document.filename,
+            "content": content,
+            "excerpt": content,
+            "releaseVersion": release_version,
+            "sourceType": "url" if document.source_url else "file",
+            "url": document.source_url,
+            "canonicalUrl": document.source_url,
+            "publisher": document.source_publisher,
+            "retrievedAt": (
+                document.source_retrieved_at.isoformat()
+                if document.source_retrieved_at
+                else None
+            ),
+            "applicability": _json(document.applicability_json, []),
+            "exclusions": _json(document.exclusions_json, []),
+            "reviewStatus": document.review_status,
+            "contentOrigin": document.content_origin,
         }
 
     @staticmethod

@@ -380,6 +380,32 @@ class RetailService:
             "isDemo": source.is_demo,
         } for source, record in rows]
 
+    def data_source_quality(self, db: Session, owner_id: int, source_id: int) -> dict:
+        row = db.execute(
+            select(DataSource, CommerceImport)
+            .outerjoin(CommerceImport, CommerceImport.data_source_id == DataSource.id)
+            .where(DataSource.id == source_id, DataSource.owner_id == owner_id)
+        ).first()
+        if row is None:
+            raise RetailDataError("数据来源不存在")
+        source, record = row
+        report = json.loads(record.quality_report_json or "{}") if record else {}
+        return {
+            "id": source.id,
+            "datasetKey": source.dataset_key,
+            "version": source.version,
+            "schema": json.loads(source.schema_json or "{}"),
+            "counts": report.get("counts", {}),
+            "acceptedRows": record.accepted_row_count if record else 0,
+            "rejectedRows": record.rejected_row_count if record else 0,
+            "limitations": json.loads(source.limitations_json or "[]"),
+            "selectionRules": report.get("selectionRules", []),
+            "transformVersion": source.transform_version,
+            "manifestSha256": source.manifest_sha256,
+            "provenance": "observed",
+            "isDemo": source.is_demo,
+        }
+
     def overview(self, db: Session, owner_id: int) -> dict:
         profile = db.scalar(select(MerchantProfile).where(MerchantProfile.owner_id == owner_id))
         latest = db.scalar(select(CommerceImport).where(CommerceImport.owner_id == owner_id).order_by(CommerceImport.id.desc()))

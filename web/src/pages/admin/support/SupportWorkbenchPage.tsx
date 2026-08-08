@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { CaseProvenanceView } from "./CaseProvenanceView";
 import {
   assignSupportCase,
   decideSupportSuggestion,
@@ -342,49 +343,7 @@ export function SupportWorkbenchPage() {
                 </div>
               </header>
               <div className="flex-1 space-y-5 overflow-auto p-5">
-                {detail.provenance?.dataSource && (
-                  <section
-                    className="rounded-2xl border border-blue-200 bg-blue-50/70 p-4"
-                    aria-label="案例数据来源"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="text-xs font-semibold uppercase tracking-wider text-blue-700">
-                          案例数据来源
-                        </p>
-                        <h3 className="mt-1 text-sm font-semibold text-slate-900">
-                          {detail.provenance.dataSource.title}
-                        </h3>
-                        <p className="mt-1 text-xs text-slate-500">
-                          记录 {detail.provenance.sourceRecordKey} · 生成器{" "}
-                          {detail.provenance.generatorVersion}
-                        </p>
-                      </div>
-                      <Badge className="bg-blue-600 hover:bg-blue-600">来源关联演示</Badge>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {Object.entries(detail.provenance.fieldLineage).map(([field, lineage]) => (
-                        <span
-                          key={field}
-                          className={cn(
-                            "rounded-full px-2 py-1 text-[11px]",
-                            lineage.provenance === "observed"
-                              ? "bg-emerald-100 text-emerald-700"
-                              : lineage.provenance === "derived"
-                                ? "bg-violet-100 text-violet-700"
-                                : "bg-amber-100 text-amber-700"
-                          )}
-                        >
-                          {field}: {lineage.provenance}
-                        </span>
-                      ))}
-                    </div>
-                    <p className="mt-3 text-[11px] leading-5 text-slate-500">
-                      观测数据只提供购物篮与商品；顾客表述、工单状态和处理结果是确定性 synthetic
-                      场景，不代表真实顾客或业务效果。
-                    </p>
-                  </section>
-                )}
+                <CaseProvenanceView value={detail.provenance ? { ...detail.provenance, caseId: detail.id, caseKey: detail.caseKey, isDemo: detail.isDemo } : null} />
                 {detail.messages.map((message) => (
                   <div
                     key={message.id}

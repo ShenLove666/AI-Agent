@@ -23,10 +23,17 @@ export interface SupportSuggestion {
   status: string;
   content: string | null;
   citations: Array<{
-    title?: string;
+    docName?: string;
     content?: string;
+    excerpt?: string;
     releaseVersion?: string;
     documentId?: number;
+    canonicalUrl?: string | null;
+    publisher?: string | null;
+    retrievedAt?: string | null;
+    applicability?: string[];
+    exclusions?: string[];
+    reviewStatus?: string;
   }>;
   riskFlags: string[];
   modelId: string;
@@ -70,6 +77,21 @@ export interface SupportCaseDetail extends SupportCaseSummary {
   }>;
   events: Array<{ id: number; type: string; payload: Record<string, unknown>; occurredAt: string }>;
   suggestions: SupportSuggestion[];
+}
+export type CaseProvenance = SupportCaseDetail["provenance"] & {
+  caseId: number;
+  caseKey: string;
+  isDemo: boolean;
+};
+export interface SupportCoverage {
+  totalCases: number;
+  categories: Record<string, number>;
+  statuses: Record<string, number>;
+  sourceVersions: Record<string, number>;
+  demoCases: number;
+  ordinaryCases: number;
+  provenance: "demo" | "mixed" | "production";
+  unsupportedSegments: string[];
 }
 export interface SupportMetrics {
   totalCases: number;
@@ -154,6 +176,9 @@ export const getSupportCases = (params: Record<string, unknown> = {}) =>
   api.get<never, SupportCaseSummary[]>("/support/cases", { params });
 export const getSupportCase = (id: number) =>
   api.get<never, SupportCaseDetail>(`/support/cases/${id}`);
+export const getCaseProvenance = (id: number) =>
+  api.get<never, CaseProvenance>(`/support/cases/${id}/provenance`);
+export const getSupportCoverage = () => api.get<never, SupportCoverage>("/support/coverage");
 export const getSupportMetrics = () => api.get<never, SupportMetrics>("/support/metrics");
 export const assignSupportCase = (id: number, assigneeId: number | null, expectedVersion: number) =>
   api.post<never, SupportCaseDetail>(`/support/cases/${id}/assign`, {

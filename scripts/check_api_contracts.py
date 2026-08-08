@@ -26,8 +26,10 @@ ACTIVE_SERVICE_PATHS = tuple(
         "dashboardService.ts",
         "knowledgeService.ts",
         "ragTraceService.ts",
+        "retailService.ts",
         "sessionService.ts",
         "settingsService.ts",
+        "supportService.ts",
         "userService.ts",
     )
 )

@@ -32,10 +32,13 @@ def test_real_multiline_generic_call_is_extracted_from_active_session_service():
     calls = extract_service_calls(ACTIVE_SERVICE_PATHS)
 
     assert ApiCall("GET", "/conversations") in calls
-    assert len(calls) == 47
+    # Includes the active retail and support workbench services as well as the
+    # original chat/session surface. Keep this count intentional so newly
+    # activated clients cannot silently bypass the OpenAPI gate.
+    assert len(calls) == 72
 
     calls.add(ApiCall("POST", "/rag/v3/chat"))
-    assert len(calls) == 48
+    assert len(calls) == 73
 
 
 def test_template_parameters_are_normalized():

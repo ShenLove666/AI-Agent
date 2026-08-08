@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { KnowledgeSourcesView } from "./KnowledgeSourcesView";
 import {
   activateKnowledgeRelease,
   decideKnowledgeRelease,
@@ -19,12 +20,14 @@ import {
   getKnowledgeReleases,
   getKnowledgeSources,
   getQualityOverview,
+  getSupportCoverage,
   resolveKnowledgeGap,
   runSupportEvaluation,
   type EvaluationOverview,
   type KnowledgeRelease,
   type KnowledgeSource,
-  type QualityOverview
+  type QualityOverview,
+  type SupportCoverage
 } from "@/services/supportService";
 
 export type SupportOperationsView = "knowledge" | "quality" | "evaluation" | "reports";
@@ -63,6 +66,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [quality, setQuality] = useState<QualityOverview | null>(null);
   const [evaluation, setEvaluation] = useState<EvaluationOverview | null>(null);
+  const [coverage, setCoverage] = useState<SupportCoverage | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const meta = titles[view];
@@ -76,16 +80,18 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [releaseRows, sourceRows, qualityData, evaluationData] = await Promise.all([
+      const [releaseRows, sourceRows, qualityData, evaluationData, coverageData] = await Promise.all([
         getKnowledgeReleases(),
         getKnowledgeSources(),
         getQualityOverview(),
-        getEvaluationOverview()
+        getEvaluationOverview(),
+        getSupportCoverage()
       ]);
       setReleases(releaseRows);
       setSources(sourceRows);
       setQuality(qualityData);
       setEvaluation(evaluationData);
+      setCoverage(coverageData);
     } catch {
       toast.error("运营闭环数据加载失败，请确认后端已启动并完成迁移");
     } finally {
@@ -194,58 +200,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
       )}
 
       {view === "knowledge" && (
-        <section className="rounded-2xl border bg-white p-5">
-          <div className="flex items-end justify-between gap-3">
-            <div>
-              <h2 className="font-semibold">知识来源与复核状态</h2>
-              <p className="mt-1 text-xs text-slate-500">
-                官方摘要与虚构商家 SOP 分开标注；过期或缺少归属的文档不能发布。
-              </p>
-            </div>
-            <Badge variant="outline">{sources.length} 份</Badge>
-          </div>
-          <div className="mt-4 grid gap-3 lg:grid-cols-2">
-            {sources.map((source) => (
-              <article key={source.id} className="rounded-xl border border-slate-200 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-slate-900">{source.title}</h3>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {source.publisher || "项目虚构商家"} · {source.jurisdiction}
-                    </p>
-                  </div>
-                  <Badge
-                    className={
-                      source.contentOrigin === "public_summary"
-                        ? "bg-emerald-600"
-                        : "bg-amber-500 text-slate-950"
-                    }
-                  >
-                    {source.contentOrigin}
-                  </Badge>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                  <span>状态 {source.reviewStatus}</span>
-                  <span>下次复核 {source.nextReviewAt || "内部 SOP 按版本复核"}</span>
-                  <span>SHA {source.checksum?.slice(0, 10)}</span>
-                </div>
-                <p className="mt-3 text-xs leading-5 text-slate-500">
-                  适用：{source.applicability.join("、")}；排除：{source.exclusions.join("、")}
-                </p>
-                {source.canonicalUrl && (
-                  <a
-                    className="mt-3 inline-block text-xs font-medium text-blue-600 hover:underline"
-                    href={source.canonicalUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    查看官方原文 ↗
-                  </a>
-                )}
-              </article>
-            ))}
-          </div>
-        </section>
+        <KnowledgeSourcesView sources={sources} />
       )}
 
       {view === "quality" && (
@@ -369,7 +324,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
       )}
 
       {view === "reports" && (
-        <Reports quality={quality} evaluation={evaluation} releases={releases} />
+        <Reports quality={quality} evaluation={evaluation} releases={releases} coverage={coverage} />
       )}
     </div>
   );
@@ -387,11 +342,13 @@ function Metric({ label, value }: { label: string; value: number | string | unde
 function Reports({
   quality,
   evaluation,
-  releases
+  releases,
+  coverage
 }: {
   quality: QualityOverview | null;
   evaluation: EvaluationOverview | null;
   releases: KnowledgeRelease[];
+  coverage: SupportCoverage | null;
 }) {
   const latest = evaluation?.runs[0];
   return (
@@ -431,6 +388,12 @@ function Reports({
             {quality?.provenance === "demo" ? "当前为演示数据" : "当前含真实业务数据"}
           </Badge>
         </div>
+      </section>
+      <section className="rounded-xl border bg-white p-5" aria-label="案例覆盖与数据口径">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">案例覆盖与数据口径</h2><p className="mt-1 text-xs text-slate-500">真实观测字段与生成场景分开统计，不把演示结果包装成线上效果。</p></div><Badge className={coverage?.provenance === "production" ? "bg-emerald-600" : "bg-amber-500 text-slate-950"}>{coverage?.provenance === "mixed" ? "混合数据" : coverage?.provenance === "production" ? "正式数据" : "演示数据"}</Badge></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3"><Metric label="来源关联演示案例" value={coverage?.demoCases ?? 0}/><Metric label="普通业务案例" value={coverage?.ordinaryCases ?? 0}/><Metric label="案例总量" value={coverage?.totalCases ?? 0}/></div>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-600">{Object.entries(coverage?.sourceVersions ?? {}).map(([version,count]) => <span key={version} className="rounded-md border bg-slate-50 px-2 py-1">来源版本 {version} · {count} 条</span>)}</div>
+        {!!coverage?.unsupportedSegments.length && <p className="mt-3 text-xs text-amber-700">暂未覆盖：{coverage.unsupportedSegments.join("、")}</p>}
       </section>
     </>
   );

@@ -19,13 +19,12 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { DataSourcesView } from "./DataSourcesView";
 import {
   createRetailCampaign,
-  getRetailDataSources,
   getRetailOverview,
   getRetailReport,
   transitionRetailTask,
-  type RetailDataSource,
   type RetailOverview
 } from "@/services/retailService";
 
@@ -70,7 +69,6 @@ function OriginBadge({ origin }: { origin: "observed" | "derived" | "synthetic" 
 
 export function RetailOperationsPage() {
   const [data, setData] = useState<RetailOverview | null>(null);
-  const [sources, setSources] = useState<RetailDataSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -78,12 +76,8 @@ export function RetailOperationsPage() {
     setLoading(true);
     setError("");
     try {
-      const [overview, dataSources] = await Promise.all([
-        getRetailOverview(),
-        getRetailDataSources()
-      ]);
+      const overview = await getRetailOverview();
       setData(overview);
-      setSources(dataSources);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "运营数据加载失败");
     } finally {
@@ -233,60 +227,7 @@ export function RetailOperationsPage() {
         ))}
       </section>
 
-      <section
-        aria-labelledby="retail-data-sources"
-        className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-      >
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h2 id="retail-data-sources" className="font-semibold text-slate-900">
-              数据来源与可用边界
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              所有源文件均已固化校验；缺失字段保持不可用，不用模拟值填充。
-            </p>
-          </div>
-          <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-            {sources.length} 个已验证来源
-          </span>
-        </div>
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          {sources.map((source) => (
-            <article
-              key={source.id}
-              className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="font-medium text-slate-900">{source.title}</h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    {source.publisher} · {source.license} · {source.version}
-                  </p>
-                </div>
-                <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700">
-                  observed
-                </span>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
-                {Object.entries(source.counts).map(([key, value]) => (
-                  <span key={key} className="rounded-lg bg-white px-2 py-1 ring-1 ring-slate-200">
-                    {key}: {format(value)}
-                  </span>
-                ))}
-              </div>
-              <ul className="mt-3 space-y-1 text-xs leading-5 text-slate-500">
-                {source.limitations.slice(0, 4).map((item) => (
-                  <li key={item}>• {item}</li>
-                ))}
-              </ul>
-              <div className="mt-3 flex items-center justify-between text-[11px] text-slate-400">
-                <span>转换 {source.transformVersion}</span>
-                <span>SHA {source.manifestSha256.slice(0, 12)}</span>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      <DataSourcesView />
 
       <section className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

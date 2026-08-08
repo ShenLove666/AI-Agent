@@ -57,6 +57,7 @@ export const supportOperationsMocks = {
   getKnowledgeSources: vi.fn().mockResolvedValue([]),
   getQualityOverview: vi.fn().mockResolvedValue(quality),
   getEvaluationOverview: vi.fn().mockResolvedValue(evaluation),
+  getSupportCoverage: vi.fn().mockResolvedValue({totalCases:16,categories:{refund:8},statuses:{resolved:9},sourceVersions:{"retail-v1":12},demoCases:12,ordinaryCases:4,provenance:"mixed",unsupportedSegments:[]}),
   activateKnowledgeRelease: vi.fn(),
   decideKnowledgeRelease: vi.fn(),
   resolveKnowledgeGap: vi.fn(),

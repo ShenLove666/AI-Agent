@@ -1306,13 +1306,14 @@ class DemoSeedService:
             ("优惠券使用条件", "满减券和会员折扣可以同时使用吗？", "promotion", "normal"),
             ("缺货替换确认", "牛奶缺货了，能换成同价的低脂奶吗？", "product", "normal"),
             ("临期商品售后", "收到的面包明天就过期，可以申请售后吗？", "refund", "high"),
-            ("会员积分到账", "昨天的订单为什么还没有增加积分？", "membership", "normal"),
+            ("账号安全核验", "有人索要登录验证码并声称可以代办退款，我应该提供吗？", "account", "urgent"),
             ("发票开具", "即时零售订单在哪里申请电子发票？", "invoice", "low"),
             ("地址修改", "订单已经接单了，还能修改配送地址吗？", "delivery", "high"),
-            ("冷藏品温度异常", "酸奶送到时已经不冰了，还能喝吗？", "safety", "urgent"),
+            ("冷藏品温度异常", "酸奶送到时已经不冰了，还能喝吗？", "food_safety", "urgent"),
             ("退款到账时间", "退款审核通过后多久原路返回？", "refund", "normal"),
             ("赠品缺失", "活动页面写了赠品，但订单里没有收到。", "promotion", "normal"),
             ("重复扣款", "同一个订单银行卡显示扣了两次款。", "payment", "urgent"),
+            ("鲜活商品退货边界", "商品没有质量问题，但我不想要了，能直接按七日无理由退货吗？", "refund", "high"),
         )
         local_source = db.scalar(select(DataSource).where(
             DataSource.owner_id == user.id,
@@ -1360,8 +1361,15 @@ class DemoSeedService:
                     "high",
                 )
             else:
-                fresh = observed_category in {"果蔬", "肉类", "熟食"}
-                allowed = (0, 4, 8, 9) if fresh else (1, 2, 3, 5, 6, 7, 9, 10, 11)
+                fresh_text = f"{observed_category} {observed_product or ''}".lower()
+                fresh = any(
+                    marker in fresh_text
+                    for marker in (
+                        "果", "蔬", "肉", "鱼", "鲜", "奶", "熟食",
+                        "fruit", "vegetable", "meat", "fish", "dairy",
+                    )
+                )
+                allowed = (0, 4, 8, 9, 12) if fresh else (1, 2, 3, 5, 6, 7, 9, 10, 11)
                 title, question, category, priority = scenarios[allowed[index % len(allowed)]]
             if observed_product:
                 title = f"{title}｜{observed_product}"
@@ -1370,10 +1378,14 @@ class DemoSeedService:
                 "product": {"provenance": "observed", "source_field": "description" if context_kind == "cancellation" else "product_name"},
                 "source_record_key": {"provenance": "observed", "source_field": "invoice" if context_kind == "cancellation" else "basket_key"},
                 "question": {"provenance": "synthetic", "method": "scenario-template-v3"},
+                "customer_wording": {"provenance": "synthetic", "method": "scenario-template-v3"},
+                "issue_reason": {"provenance": "synthetic", "method": "scenario-template-v3"},
                 "status": {"provenance": "synthetic", "method": "coverage-matrix"},
+                "resolution": {"provenance": "synthetic", "method": "coverage-matrix"},
             }
             if context_kind == "cancellation":
-                lineage["invoice_status"] = {"provenance": "derived", "method": "invoice C prefix or negative quantity"}
+                lineage["invoice_status"] = {"provenance": "observed", "source_field": "invoice_status"}
+                lineage["cancellation_reason"] = {"provenance": "synthetic", "method": "unavailable; no reason generated"}
             case_key = f"support-demo-{index + 1:03d}"
             support_case = db.scalar(
                 select(SupportCase).where(
@@ -1392,7 +1404,10 @@ class DemoSeedService:
                     status=status,
                     priority=priority,
                     assignee_id=user.id if status != "pending" else None,
-                    labels_json=json.dumps([category, "即时零售"], ensure_ascii=False),
+                    labels_json=json.dumps(
+                        [category, "即时零售"] + (["policy_review"] if "鲜活商品退货边界" in title else []),
+                        ensure_ascii=False,
+                    ),
                     unread=status == "pending",
                     resolution_code="policy_explained" if status == "resolved" else None,
                     resolution_note="已依据规则完成答复" if status == "resolved" else None,
@@ -1417,7 +1432,10 @@ class DemoSeedService:
                     support_case.generator_version = "retail-support-v3"
                     support_case.generator_seed = 20260807
                     support_case.subject = title
-                    support_case.labels_json = json.dumps([category, "即时零售"], ensure_ascii=False)
+                    support_case.labels_json = json.dumps(
+                        [category, "即时零售"] + (["policy_review"] if "鲜活商品退货边界" in title else []),
+                        ensure_ascii=False,
+                    )
                     support_case.field_lineage_json = json.dumps(lineage, ensure_ascii=False)
             first_message = db.scalar(
                 select(SupportMessage).where(

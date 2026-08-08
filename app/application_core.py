@@ -24,7 +24,7 @@ from app.api.knowledge_chunk_fixes import router as knowledge_chunk_fixes_router
 from app.api.knowledge_fixes import router as knowledge_fixes_router
 from app.api.knowledge_mutations import router as knowledge_mutation_router
 from app.api.management import router as management_router
-from app.api.retail import router as retail_router
+from app.api.retail import data_source_router, router as retail_router
 from app.api.system import create_system_router
 from app.api.support import router as support_router
 from app.container import build_container as build_ai_container
@@ -199,6 +199,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         chat_router,
         management_router,
         retail_router,
+        data_source_router,
         support_router,
         dashboard_router,
         knowledge_fixes_router,
