@@ -1303,6 +1303,9 @@ class SupportService:
         item.updated_at = datetime.utcnow()
         if resolution == "return_to_agent":
             case.status = "in_progress"
+        elif resolution in {"request_more_evidence", "transfer_specialist"}:
+            # 等待补充材料 / 转交专员：工单保持升级处理中，不视为已解决
+            case.status = "escalated"
         else:
             case.status = "resolved"
         case.updated_at = datetime.utcnow()

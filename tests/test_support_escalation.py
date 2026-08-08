@@ -135,6 +135,32 @@ def test_supervisor_return_returns_case_to_agent():
         database.engine.dispose()
 
 
+def test_request_more_evidence_keeps_case_escalated():
+    """要求补充材料/转专员不是最终解决：工单保持 escalated，等待后续处理。"""
+    database, db, user, case = _fixture()
+    service = SupportService()
+    try:
+        raised = service.raise_escalation(
+            db, user.id, case.id, user.id, "food_safety", "食品安全需补充材料"
+        )
+        resolved = service.resolve_escalation(
+            db,
+            user.id,
+            raised["id"],
+            user.id,
+            "request_more_evidence",
+            "请补充商品照片与批次",
+        )
+        assert resolved["status"] == "resolved"
+        assert resolved["resolution"] == "request_more_evidence"
+        persisted = db.get(SupportCase, case.id)
+        assert persisted is not None
+        assert persisted.status == "escalated"
+    finally:
+        db.close()
+        database.engine.dispose()
+
+
 def test_escalation_overview_counts():
     database, db, user, case = _fixture()
     service = SupportService()
