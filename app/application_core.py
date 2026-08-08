@@ -34,7 +34,9 @@ from app.framework.database import Database
 from app.framework.http import install_http_conventions
 from app.framework.migrations import upgrade_database
 from app.infra_ai.providers.cross_encoder import CrossEncoderRerankModel
-from app.infra_ai.providers.sentence_transformer import SentenceTransformerEmbeddingModel
+from app.infra_ai.providers.sentence_transformer import (
+    SentenceTransformerEmbeddingModel,
+)
 from app.infra_ai.router import ChatModelRouter
 from app.modules.conversations.service import ConversationService
 from app.modules.knowledge.search import SqlKeywordSearchChannel
@@ -89,7 +91,9 @@ def build_vector_components():
         return None, None, None
     project_root = Path(__file__).resolve().parents[1]
     bundled_model = project_root / "models" / "bge-small-zh-v1.5"
-    model_path = os.getenv("EMBED_MODEL_PATH") or (str(bundled_model) if bundled_model.is_dir() else None)
+    model_path = os.getenv("EMBED_MODEL_PATH") or (
+        str(bundled_model) if bundled_model.is_dir() else None
+    )
     if not model_path:
         return None, None, None
     embeddings = SentenceTransformerEmbeddingModel(
@@ -98,7 +102,9 @@ def build_vector_components():
     )
     if backend == "milvus":
         store = MilvusVectorStore(
-            uri=os.getenv("MILVUS_URI", str(project_root / "data" / "milvus-ragent.db")),
+            uri=os.getenv(
+                "MILVUS_URI", str(project_root / "data" / "milvus-ragent.db")
+            ),
             token=os.getenv("MILVUS_TOKEN"),
             dimension=int(os.getenv("EMBED_DIMENSION", "512")),
             collection_name=os.getenv("MILVUS_COLLECTION", "ragent_chunks_v2"),
@@ -218,7 +224,24 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     frontend_dist = Path(__file__).resolve().parents[1] / "web" / "dist"
     frontend_assets = frontend_dist / "assets"
     if frontend_assets.is_dir():
-        app.mount("/assets", StaticFiles(directory=frontend_assets), name="frontend-assets")
+
+        class ImmutableStaticFiles(StaticFiles):
+            """构建产物文件名带内容哈希，可安全一年长缓存。"""
+
+            def file_response(
+                self, *args, **kwargs
+            ):  # pragma: no cover - 依赖 FastAPI 内部签名
+                response = super().file_response(*args, **kwargs)
+                response.headers.update(
+                    {"Cache-Control": "public, max-age=31536000, immutable"}
+                )
+                return response
+
+        app.mount(
+            "/assets",
+            ImmutableStaticFiles(directory=frontend_assets),
+            name="frontend-assets",
+        )
 
     @app.get("/{path:path}", include_in_schema=False)
     async def serve_frontend(path: str, request: Request):
@@ -233,11 +256,20 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
                 },
             )
         requested_file = (frontend_dist / path).resolve()
-        if path and frontend_dist in requested_file.parents and requested_file.is_file():
-            return FileResponse(requested_file)
+        if (
+            path
+            and frontend_dist in requested_file.parents
+            and requested_file.is_file()
+        ):
+            # 构建产物文件名带内容哈希，可安全长缓存
+            return FileResponse(
+                requested_file,
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
         index_file = frontend_dist / "index.html"
         if index_file.is_file():
-            return FileResponse(index_file)
+            # SPA 入口必须每次校验，避免缓存旧 index 引用已删除的旧 chunk
+            return FileResponse(index_file, headers={"Cache-Control": "no-cache"})
         return {"message": "Frontend has not been built; run `npm run build` in web/."}
 
     return app
