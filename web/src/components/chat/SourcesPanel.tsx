@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 
 import { SourceIcon } from "@/components/chat/SourceIcon";
 import { cn } from "@/lib/utils";
-import { canOpenSource, openSource, sourceMetaLabel } from "@/lib/source";
+import { canOpenSource, isSourceMetaIncomplete, openSource, sourceMetaLabel } from "@/lib/source";
 import { useChatStore } from "@/stores/chatStore";
 
 /**
@@ -45,24 +45,32 @@ export function SourcesPanel() {
         open ? "w-[360px] border-l border-[#dce5e9]" : "w-0"
       )}
       aria-hidden={!open}
-      inert={open ? undefined : ("" as unknown as boolean)}
+      ref={(el) => {
+        if (!el) return;
+        if (open) el.removeAttribute("inert");
+        else el.setAttribute("inert", "");
+      }}
     >
       {open ? (
         <div className="flex h-full w-[360px] flex-col bg-[#f7f9fa]">
           <div className="border-b border-[#dfe7eb] bg-white px-5 py-4">
             <div className="flex items-center justify-between">
               <div>
-                <span className="text-[15px] font-semibold text-[var(--merchant-text)]">参考来源</span>
-                <p className="mt-0.5 text-xs text-[var(--merchant-text-muted)]">本次回答引用 {shownSources.length} 条知识证据</p>
+                <span className="text-[15px] font-semibold text-[var(--merchant-text)]">
+                  参考来源
+                </span>
+                <p className="mt-0.5 text-xs text-[var(--merchant-text-muted)]">
+                  本次回答引用 {shownSources.length} 条知识证据
+                </p>
               </div>
-            <button
-              type="button"
-              onClick={closeSourcesPanel}
-              className="rounded-full p-1.5 text-[#999999] transition-colors hover:bg-[#F5F5F5] hover:text-[#666666]"
-              aria-label="关闭"
-            >
-              <X className="h-4 w-4" />
-            </button>
+              <button
+                type="button"
+                onClick={closeSourcesPanel}
+                className="rounded-full p-1.5 text-[#999999] transition-colors hover:bg-[#F5F5F5] hover:text-[#666666]"
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
           </div>
 
@@ -78,23 +86,27 @@ export function SourcesPanel() {
                     className="w-full rounded-2xl border border-[#e0e7ea] bg-white p-4 text-left shadow-[0_4px_14px_rgba(8,43,69,0.035)] transition-all enabled:hover:-translate-y-0.5 enabled:hover:border-[var(--merchant-cyan-border)] enabled:hover:shadow-[0_8px_20px_rgba(8,43,69,0.08)] disabled:cursor-default"
                   >
                     <div className="flex items-start gap-2.5">
-                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[#EDEDED] text-[11px] font-medium text-[#666666]">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-[#EDEDED] text-[11px] font-medium text-[#666666]">
                         {source.index ?? idx + 1}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm font-medium text-[#1A1A1A]">
                           {source.docName || "未命名文档"}
                         </div>
-                        <div className="mt-1 flex items-center gap-1.5 text-xs text-[#9AA0A6]">
+                        <div className="mt-1 flex items-center gap-1.5 text-xs text-[#6B7280]">
                           <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                             <SourceIcon source={source} className="h-3.5 w-3.5" />
                           </span>
-                          <span className="truncate">
-                            {sourceMetaLabel(source)}
-                          </span>
+                          {isSourceMetaIncomplete(source) ? (
+                            <span className="truncate rounded-full bg-amber-50 px-1.5 py-0.5 font-medium text-amber-700">
+                              {sourceMetaLabel(source)}
+                            </span>
+                          ) : (
+                            <span className="truncate">{sourceMetaLabel(source)}</span>
+                          )}
                         </div>
                         {source.excerpt ? (
-                          <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-[#8A8F94]">
+                          <p className="mt-2 line-clamp-3 text-xs leading-relaxed text-[#5F6B76]">
                             {source.excerpt}
                           </p>
                         ) : null}

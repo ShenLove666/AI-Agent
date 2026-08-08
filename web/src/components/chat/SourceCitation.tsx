@@ -3,7 +3,14 @@ import { ArrowUpRight } from "lucide-react";
 import { SourceIcon } from "@/components/chat/SourceIcon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { canOpenSource, displayExcerpt, displayName, openSource, sourceMetaLabel } from "@/lib/source";
+import {
+  canOpenSource,
+  displayExcerpt,
+  displayName,
+  isSourceMetaIncomplete,
+  openSource,
+  sourceMetaLabel
+} from "@/lib/source";
 import { useChatStore } from "@/stores/chatStore";
 import type { SourceRef } from "@/types";
 
@@ -82,9 +89,15 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
           >
             <div className="flex items-center gap-2">
               <SourceIcon source={source} className="h-4 w-4 shrink-0" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-[#8A8F94] dark:text-[#A1A1AA]">
-                {sourceMetaLabel(source)}
-              </span>
+              {isSourceMetaIncomplete(source) ? (
+                <span className="min-w-0 flex-1 truncate rounded-full bg-amber-50 px-2 py-0.5 text-[12px] font-medium text-amber-700">
+                  {sourceMetaLabel(source)}
+                </span>
+              ) : (
+                <span className="min-w-0 flex-1 truncate text-[12px] text-[#6B7280] dark:text-[#A1A1AA]">
+                  {sourceMetaLabel(source)}
+                </span>
+              )}
               <span className="flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-[#F2F2F3] px-1 text-[10px] font-medium text-[#8A8F94] dark:bg-[#3F3F46] dark:text-[#D4D4D8]">
                 {index}
               </span>
@@ -95,7 +108,7 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
 
             <p className="mt-2.5 line-clamp-2 text-[13.5px] font-semibold leading-[1.5]">{title}</p>
             {detail ? (
-              <p className="mt-1 truncate text-[11px] text-[#A8ADB3] dark:text-[#8F8F98]">
+              <p className="mt-1 truncate text-[11px] text-[#8A8F94] dark:text-[#9F9FA8]">
                 {detail}
               </p>
             ) : null}

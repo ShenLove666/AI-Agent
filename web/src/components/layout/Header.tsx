@@ -17,7 +17,7 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   const roleLabel = user?.role === "admin" ? "平台管理员" : "商家运营";
 
   return (
-    <header className="relative z-20 shrink-0 border-b border-[var(--merchant-border)] bg-white">
+    <header className="relative z-20 shrink-0 border-b border-[var(--merchant-border)] bg-white shadow-[0_1px_4px_rgba(8,43,69,0.04)]">
       <div className="flex h-[var(--merchant-header-height)] min-w-0 items-center justify-between gap-3 px-3 sm:px-5">
         <div className="flex min-w-0 items-center gap-2.5">
           <Button

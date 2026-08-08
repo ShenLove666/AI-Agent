@@ -63,7 +63,7 @@ export function ChatInput() {
     <div className="space-y-2">
       <div
         className={cn(
-          "relative flex min-w-0 flex-col rounded-[18px] border bg-white px-3 pb-2 pt-3 shadow-[0_10px_30px_rgba(8,43,69,0.075)] transition-all duration-200 sm:px-5 sm:pt-4",
+          "relative flex min-w-0 flex-col rounded-[20px] border bg-white px-3 pb-2 pt-3 shadow-[0_10px_30px_rgba(8,43,69,0.075)] transition-all duration-200 sm:px-5 sm:pt-4",
           isFocused
             ? "border-[var(--merchant-cyan)] shadow-[var(--merchant-shadow-md)]"
             : "border-[var(--merchant-border)] hover:border-[var(--merchant-cyan-border)]"
@@ -74,7 +74,9 @@ export function ChatInput() {
             ref={textareaRef}
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder={deepThinkingEnabled ? "输入需要深入核对的售后场景..." : "继续补充订单与售后信息..."}
+            placeholder={
+              deepThinkingEnabled ? "输入需要深入核对的售后场景..." : "继续补充订单与售后信息..."
+            }
             className="max-h-40 min-h-[52px] w-full resize-none border-0 bg-transparent px-1 pb-3 pt-2 text-sm leading-6 text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
             rows={1}
             onFocus={() => setIsFocused(true)}
@@ -88,7 +90,11 @@ export function ChatInput() {
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 const nativeEvent = event.nativeEvent as KeyboardEvent;
-                if (nativeEvent.isComposing || isComposingRef.current || nativeEvent.keyCode === 229) {
+                if (
+                  nativeEvent.isComposing ||
+                  isComposingRef.current ||
+                  nativeEvent.keyCode === 229
+                ) {
                   return;
                 }
                 event.preventDefault();
@@ -114,7 +120,12 @@ export function ChatInput() {
             )}
           >
             <span className="inline-flex items-center gap-2">
-              <Brain className={cn("h-3.5 w-3.5", deepThinkingEnabled && "text-[var(--merchant-cyan-strong)]")} />
+              <Brain
+                className={cn(
+                  "h-3.5 w-3.5",
+                  deepThinkingEnabled && "text-[var(--merchant-cyan-strong)]"
+                )}
+              />
               深度思考
               {deepThinkingEnabled ? (
                 <span className="h-2 w-2 rounded-full bg-[var(--merchant-cyan)] animate-pulse" />
@@ -132,8 +143,8 @@ export function ChatInput() {
             className={cn(
               "ml-auto rounded-full p-2.5 transition-all duration-200",
               isStreaming
-                  ? "bg-orange-100 text-[var(--merchant-alert)] hover:bg-orange-200"
-                  : hasContent
+                ? "bg-orange-100 text-[var(--merchant-alert)] hover:bg-orange-200"
+                : hasContent
                   ? "bg-[var(--merchant-navy)] text-white hover:bg-[#0d3b5d]"
                   : "cursor-not-allowed bg-slate-100 text-slate-300"
             )}

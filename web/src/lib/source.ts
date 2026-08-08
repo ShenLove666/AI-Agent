@@ -42,7 +42,7 @@ const PROVENANCE_LABELS: Record<string, string> = {
   observed: "观测数据",
   derived: "衍生指标",
   "observed+derived": "观测与衍生数据",
-  synthetic: "演示数据",
+  synthetic: "演示数据"
 };
 
 /** 来源状态行：内部业务证据没有文档链接，但并不代表来源信息缺失。 */
@@ -53,6 +53,13 @@ export function sourceMetaLabel(source: SourceRef) {
     return provenance ? `内部经营数据 · ${provenance}` : "内部经营数据";
   }
   return "来源信息不完整";
+}
+
+/** 来源元信息是否缺失（无链接、非内部数据），用于提示警示样式。 */
+export function isSourceMetaIncomplete(source: SourceRef) {
+  if (canOpenSource(source)) return false;
+  if (normalizeType(source.sourceType) === "internal_data") return false;
+  return true;
 }
 
 export function isHttpUrl(value: string) {
@@ -73,6 +80,20 @@ export function canOpenSource(source: SourceRef) {
 export function openSource(source: SourceRef) {
   if (source.url !== undefined && source.url !== null) {
     if (!isHttpUrl(source.url)) return;
+    try {
+      // 仅允许 http/https 且拒绝内网/本地地址，防止开放重定向与内网探测
+      const url = new URL(source.url);
+      const host = url.hostname.toLowerCase();
+      const isLocal =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "::1" ||
+        /^(0|10|127|169\.254|172\.(1[6-9]|2\d|3[01])|192\.168)\./.test(host) ||
+        host.endsWith(".local");
+      if (isLocal) return;
+    } catch {
+      return;
+    }
     window.open(source.url, "_blank", "noopener,noreferrer");
     return;
   }
