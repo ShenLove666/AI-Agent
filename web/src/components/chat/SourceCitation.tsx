@@ -3,7 +3,7 @@ import { ArrowUpRight } from "lucide-react";
 import { SourceIcon } from "@/components/chat/SourceIcon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { canOpenSource, displayExcerpt, displayName, openSource, sourceSite } from "@/lib/source";
+import { canOpenSource, displayExcerpt, displayName, openSource, sourceMetaLabel } from "@/lib/source";
 import { useChatStore } from "@/stores/chatStore";
 import type { SourceRef } from "@/types";
 
@@ -83,7 +83,7 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
             <div className="flex items-center gap-2">
               <SourceIcon source={source} className="h-4 w-4 shrink-0" />
               <span className="min-w-0 flex-1 truncate text-[12px] text-[#8A8F94] dark:text-[#A1A1AA]">
-                {sourceCanOpen ? sourceSite(source) : "来源信息不完整"}
+                {sourceMetaLabel(source)}
               </span>
               <span className="flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-[#F2F2F3] px-1 text-[10px] font-medium text-[#8A8F94] dark:bg-[#3F3F46] dark:text-[#D4D4D8]">
                 {index}

@@ -38,6 +38,23 @@ export function sourceSite(source: SourceRef) {
   return ext ? `${base} · ${ext}` : base;
 }
 
+const PROVENANCE_LABELS: Record<string, string> = {
+  observed: "观测数据",
+  derived: "衍生指标",
+  "observed+derived": "观测与衍生数据",
+  synthetic: "演示数据",
+};
+
+/** 来源状态行：内部业务证据没有文档链接，但并不代表来源信息缺失。 */
+export function sourceMetaLabel(source: SourceRef) {
+  if (canOpenSource(source)) return sourceSite(source);
+  if (normalizeType(source.sourceType) === "internal_data") {
+    const provenance = PROVENANCE_LABELS[normalizeType(source.provenance)];
+    return provenance ? `内部经营数据 · ${provenance}` : "内部经营数据";
+  }
+  return "来源信息不完整";
+}
+
 export function isHttpUrl(value: string) {
   try {
     const url = new URL(value);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openSource } from "./source";
+import { openSource, sourceMetaLabel } from "./source";
 
 function stubWindowOpen() {
   const open = vi.fn();
@@ -48,5 +48,17 @@ describe("openSource", () => {
     openSource({ docId: "undefined", docName: "broken citation" });
 
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("sourceMetaLabel", () => {
+  it("labels complete internal commerce evidence instead of calling it incomplete", () => {
+    expect(
+      sourceMetaLabel({
+        docName: "购物篮关联规则",
+        sourceType: "internal_data",
+        provenance: "derived",
+      })
+    ).toBe("内部经营数据 · 衍生指标");
   });
 });

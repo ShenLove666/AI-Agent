@@ -30,6 +30,7 @@ export interface SourceRef {
   fileType?: string | null;
   url?: string | null;
   excerpt?: string;
+  provenance?: "observed" | "derived" | "observed+derived" | "synthetic" | string;
 }
 
 export interface AnswerVersion {

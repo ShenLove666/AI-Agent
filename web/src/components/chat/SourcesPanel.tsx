@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 
 import { SourceIcon } from "@/components/chat/SourceIcon";
 import { cn } from "@/lib/utils";
-import { canOpenSource, openSource, sourceSite } from "@/lib/source";
+import { canOpenSource, openSource, sourceMetaLabel } from "@/lib/source";
 import { useChatStore } from "@/stores/chatStore";
 
 /**
@@ -90,7 +90,7 @@ export function SourcesPanel() {
                             <SourceIcon source={source} className="h-3.5 w-3.5" />
                           </span>
                           <span className="truncate">
-                            {canOpenSource(source) ? sourceSite(source) : "来源信息不完整"}
+                            {sourceMetaLabel(source)}
                           </span>
                         </div>
                         {source.excerpt ? (
