@@ -173,4 +173,3 @@ def create_system_router(settings: Settings) -> APIRouter:
 
 def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
