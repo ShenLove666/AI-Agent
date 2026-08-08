@@ -1,182 +1,324 @@
-# 邻里鲜选 AI 运营台
+<h1 align="center">邻里鲜选 AI 运营台</h1>
 
-一个面向即时零售商家的 AI 产品运营项目。后端使用 Python 与 FastAPI，前端使用 React 18；用真实购物篮关系串联运营洞察、搭配购方案、AI 客服、Agent 评测、优化任务和周报输出。
+<p align="center">
+  <strong>面向即时零售商家的 Agentic RAG 客服与经营决策平台</strong><br/>
+  让 AI 自主判断是否检索知识、查询订单或分析经营数据，并把每条结论追溯到证据。
+</p>
 
-## 最快查看即时零售效果
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-API-009688?style=flat-square&logo=fastapi&logoColor=white" />
+  <img alt="LangGraph" src="https://img.shields.io/badge/Agent-LangGraph-1C3C3C?style=flat-square" />
+  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" />
+  <img alt="Milvus" src="https://img.shields.io/badge/Vector-Milvus-00A1EA?style=flat-square" />
+  <img alt="Tests" src="https://img.shields.io/badge/quality-tested-16A34A?style=flat-square" />
+</p>
 
-项目数据库已导入用户授权的购物篮数据时，只需：
+<p align="center">
+  <img src="assets/agentic-commerce-chat.png" alt="邻里鲜选 Agentic Commerce 对话与经营证据界面" width="100%" />
+</p>
+
+## 🚀 这是什么项目？
+
+邻里鲜选不是一个只会回答问题的“知识库聊天框”，而是一套围绕即时零售真实工作流构建的 AI 应用工程项目：
+
+- 顾客咨询退货、履约、促销或食品安全时，Agent 自主选择知识、订单、履约、退款与客服工具。
+- 商家询问商品搭配、缺货风险或经营机会时，系统查询隔离后的交易事实并给出可复核依据。
+- 回答生成前由 Evidence Reviewer 检查相关性、覆盖度、冲突和高风险缺口，证据不足时受限重规划。
+- 每次运行记录计划、工具参数、证据、耗时和终止状态，可进入评测、优化任务和发布门禁。
+
+项目的完整闭环是：
+
+```text
+真实/公开数据 → 知识与经营事实 → Agent 自主规划 → 可追溯回答
+       ↑                                      ↓
+  知识发布 ← 缺口与优化任务 ← 反馈 / Trace / Eval
+```
+
+> 本项目以 [nageoffer/ragent](https://github.com/nageoffer/ragent) 为学习与改造起点，重构为 Python / FastAPI 后端，并扩展了即时零售数据、LangGraph Agent、证据审查、客服质量闭环和商家运营工作台。上游项目与本项目的技术实现、业务范围并不相同。
+
+## 🧭 快速导航
+
+| &nbsp; | 入口 | 说明 |
+|:---:|:---|:---|
+| ⚡ | [快速开始](#quick-start) | 初始化环境、导入演示数据并启动 |
+| 🏗️ | [核心设计](#architecture) | Agent、RAG、模型路由和业务工具架构 |
+| ✨ | [项目能力](#features) | 已落地的产品与工程能力 |
+| 📊 | [数据与可信度](#data) | 数据来源、口径和 provenance |
+| 🧪 | [测试与验证](#quality) | 一键验证与覆盖范围 |
+| ⚙️ | [配置与部署](#deployment) | 模型、向量库和服务器部署 |
+| 📚 | [设计文档](#documents) | 架构、可靠性和演进记录 |
+
+## 💡 为什么要做它？
+
+很多 RAG 项目的链路只有 `Embedding → TopK → LLM`，可以演示，却难以回答真实业务中的几个问题：
+
+1. 用户问的是规则、订单还是经营分析，系统应该查什么？
+2. 搜到内容是否真的足够支撑结论，证据冲突怎么办？
+3. 模型超时、空回答或供应商故障时，系统如何降级？
+4. AI 回答效果如何评测，问题如何回流到知识和产品迭代？
+5. 演示数据、衍生指标和真实观测数据如何避免混为一谈？
+
+邻里鲜选把这些问题落到了代码和产品界面里。它更适合作为 **AI Application Engineer / Agent Engineer / RAG Engineer / AI 产品运营** 方向的工程作品，而不是一个框架套壳 Demo。
+
+<a id="architecture"></a>
+
+## 🏗️ 核心设计
+
+### 系统架构
+
+```mermaid
+flowchart TD
+    UI["React 商家工作台"] --> API["FastAPI API / SSE"]
+    API --> AUTH["JWT 与商家所有权隔离"]
+    API --> AGENT["LangGraph Agent Runtime"]
+
+    AGENT --> PLAN["Planner"]
+    PLAN --> TOOLS["Tool Registry + Pydantic 校验"]
+    TOOLS --> KB["Knowledge Search"]
+    TOOLS --> COMMERCE["商品 / 购物篮分析"]
+    TOOLS --> ORDER["订单 / 履约 / 退款"]
+    TOOLS --> SUPPORT["客服案例 / 质量指标"]
+
+    KB --> RETRIEVAL["Keyword + Vector → Weighted RRF → Rerank"]
+    RETRIEVAL --> EVIDENCE["Evidence Reviewer"]
+    COMMERCE --> EVIDENCE
+    ORDER --> EVIDENCE
+    SUPPORT --> EVIDENCE
+    EVIDENCE -->|"证据不足"| PLAN
+    EVIDENCE -->|"证据充分"| ROUTER["LLM Router / Circuit Breaker"]
+    ROUTER --> ANSWER["回答 + 引用 + 推荐追问"]
+    ANSWER --> OBSERVE["Trace / Feedback / Eval / Quality Gate"]
+```
+
+### Agentic RAG 主链路
+
+```text
+Question
+   ↓
+Planner ── 决定是否调用工具、调用哪个工具
+   ↓
+Tools ──── knowledge / commerce / order / support
+   ↓
+Evidence Reviewer ── relevance / coverage / contradiction / authority
+   ├─ insufficient → 带观察结果重新规划（有步数与调用预算）
+   └─ ready        → 组织可引用上下文
+   ↓
+Model Router ── 主模型 / 备用模型 / 超时 / 熔断 / 空回答降级
+   ↓
+SSE Answer ── thinking / response / sources / finish
+```
+
+<details>
+<summary><b>为什么同时使用 LangGraph 与自研业务模块？</b></summary>
+
+LangGraph 负责有状态编排：`Planner → Tools → Reviewer → Re-plan`。检索、模型路由、熔断、会话一致性、数据权限和业务 SQL 仍由项目自己的模块实现。
+
+这种边界避免把所有逻辑堆进一个 Agent Prompt，也避免为了“用了框架”而牺牲可测试性。Planner 不可用时存在确定性 fallback；工具参数由 Pydantic 校验；运行受 `max_steps` 和 `max_tool_calls` 约束，不允许无限循环。
+
+</details>
+
+<details>
+<summary><b>混合检索为什么不是简单向量 TopK？</b></summary>
+
+知识检索并发执行关键词与向量通道，使用数据库 Chunk ID 去重，再通过 Weighted RRF 融合不同分值空间。融合结果可以进入 CrossEncoder 重排；重排不可用时保留融合排序，不让整个问答失败。
+
+```text
+Keyword ─┐
+         ├─ Dedup → Weighted RRF → Optional Rerank → Metadata Enrichment
+Vector  ─┘
+```
+
+指定知识库时，关键词和向量通道使用同一 Scope；任何单通道异常都不会拖垮完整请求。
+
+</details>
+
+<details>
+<summary><b>模型调用如何处理生产故障？</b></summary>
+
+- 多供应商按优先级路由，主模型失败后切换备用模型。
+- 区分总超时、首 Token 超时和 Token 间空闲超时。
+- 三态熔断器隔离持续故障的供应商，并在恢复窗口后试探。
+- 客户端取消会传播到生成任务，避免后台继续消耗模型额度。
+- 空回答、异常流和失败消息都有明确状态，不伪装为成功结果。
+
+</details>
+
+<a id="features"></a>
+
+## ✨ 项目能力
+
+### 1. Agent 与可追溯问答
+
+- LangGraph ReAct 查询规划与工具自主路由。
+- 知识、交易、订单、履约、退款、顾客快照和客服案例工具。
+- Evidence Reviewer 检查证据相关性、覆盖度、冲突、权威性和高风险字段。
+- SSE 流式思考、正文、来源与结束事件；刷新后可恢复完整状态。
+- 来源区分知识文档、内部经营数据、观测数据、衍生指标和演示数据。
+- 点赞、点踩、重新生成、推荐追问与对话版本持久化。
+
+### 2. 知识与检索工程
+
+- 多知识库和商家所有权隔离。
+- TXT、Markdown、PDF、DOCX 上传、解析、分块和预览。
+- 关键词 + Milvus 向量混合检索、Weighted RRF、可选 Rerank。
+- 已发布知识版本、候选版本、知识缺口和上线前评测。
+- 本地 `BGE-small-zh-v1.5` Embedding，输出 512 维向量。
+
+### 3. 即时零售运营
+
+- 购物篮支持度、置信度、提升度与共现次数计算。
+- 关联规则筛选、排序、证据下钻和搭配购方案创建。
+- 商品、订单、履约、退款和顾客历史上下文。
+- AI 工具渗透率、回答好评率、知识命中率和高频意图分析。
+- 运营问题转化为优化任务、周报与可审计动作。
+
+### 4. 客服质量闭环
+
+- 工单队列、会话区、订单上下文和 AI Copilot 三栏工作台。
+- AI 只生成建议草稿；人工确认后才能模拟或真实外发。
+- 负反馈、知识未命中、慢响应和失败运行聚合为知识缺口。
+- 固定评测集覆盖 retrieval、reasoning、refusal、multi-tool 与高风险场景。
+- 高风险用例失败会阻止候选知识版本上线。
+
+### 5. 工程可靠性
+
+| 能力 | 实现 |
+|:---|:---|
+| 请求一致性 | requestId 指纹、处理中拒绝重复、成功结果回放、失败可安全重试 |
+| 会话一致性 | Turn / Message 状态机、版本化回答、异常历史过滤、取消不写成功缓存 |
+| 模型容错 | 多候选路由、三态熔断、首包/空闲/总超时、空响应 fallback |
+| 数据安全 | JWT、商家所有权过滤、上传类型和大小校验、工具参数校验 |
+| 可观测性 | Trace Run / Node、工具调用、证据 ID、耗时、终止状态与错误码 |
+| 数据迁移 | Alembic 自动升级、旧 SQLite 安全识别、未知 schema fail closed |
+| 外发安全 | 人工确认、审计记录、Demo 模拟发送、生产 HMAC Webhook |
+
+<a id="data"></a>
+
+## 📊 数据与可信度
+
+项目不把所有数据都包装成“真实业务数据”，而是显式记录 lineage 与 provenance：
+
+| 数据 | 规模 | 类型 | 用途 |
+|:---|---:|:---|:---|
+| 用户授权购物篮快照 | 9,835 个匿名购物篮、43,367 条商品出现记录 | `observed` | 商品共现和关联规则 |
+| UCI Online Retail II 固定快照 | 5,000 条公开交易 | `observed` | 时间、数量、单价、国家和取消标记分析 |
+| 关联规则与经营指标 | 基于交易确定性计算 | `derived` | 搭配建议与证据下钻 |
+| 商家售后知识 | 12 份原创摘要/决策表 | `public_summary` / `synthetic` | 退货、消费者权益、食品安全与商家 SOP |
+| 客服案例 | 360 条来源关联案例 | `synthetic` / grounded demo | 客服工作台和质量运营 |
+| Agent 评测 | 50 个固定用例 | `evaluation_only` | 上线门禁，不进入 Agent 输入 |
+
+授权原始目录只读，仓库保存确定性 gzip 快照和 SHA256 清单。公开法规只保存项目原创摘要、官方 URL、发布方、检索日期与适用范围，不复制官方全文。演示商家 SOP 明确标记为虚构内容，不能冒充真实商家承诺。
+
+> 购物篮数据不含当前价格、库存、活动和门店信息。因此系统可以说明历史共现关系，但不能承诺实际优惠或实时可售。
+
+## 🖥️ 产品工作台
+
+| 页面 | 主要用途 |
+|:---|:---|
+| AI 对话 | Agent 自主选工具、流式回答、证据侧栏、反馈与追问 |
+| 即时零售运营 | 今日待办、异常、经营 KPI、关联规则、搭配购动作 |
+| 客服工作台 | 工单、会话、订单/顾客上下文、AI 建议与人工确认 |
+| 知识发布 | 来源管理、候选版本、发布记录和回滚依据 |
+| 质量与缺口 | 负反馈、未命中、高风险问题与优化任务 |
+| 上线前评测 | Agent Trace、指标、用例明细和高风险门禁 |
+| 运行追踪 | Planner、工具、Reviewer、生成节点及耗时瀑布图 |
+
+<a id="quick-start"></a>
+
+## ⚡ 快速开始
+
+环境要求：
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 18+
+- Windows PowerShell（本文命令）
+
+### 已完成初始化：一条命令启动
 
 ```powershell
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`。管理后台使用 `support-admin / AdminDemo@2026`；普通商家对话使用 `merchant-demo / AdminDemo@2026`。日常启动不需要重复执行 `npm install` 或 `npm run build`。
+打开 `http://127.0.0.1:8081/login`。
 
-首次完整初始化（会导入项目内已校验快照、12 篇知识和 360 条来源关联案例）：
+| 账号 | 默认密码 | 数据范围 |
+|:---|:---|:---|
+| `merchant-demo` | `AdminDemo@2026` | 拥有演示知识、交易、订单和客服数据；用于完整产品演示 |
+| `support-admin` | `AdminDemo@2026` | 独立平台管理员；新建时没有商家经营数据 |
 
-```powershell
-uv pip install --python .\.venv\Scripts\python.exe -r requirements-api.txt
-.\.venv\Scripts\python.exe scripts\setup_local_ai.py
-$env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
-.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
-```
+> 两个账号的数据严格隔离。使用空管理员账号提问经营问题时返回 0 条来源是正确行为，不应绕过租户权限读取 `merchant-demo` 的数据。
 
-数据口径：授权数据贡献 9,835 个匿名购物篮和 43,367 条商品出现记录，不含价格、时间、顾客、门店或履约；UCI Online Retail II 的 CC BY 4.0 固定快照贡献 5,000 条带时间、数量、英镑单价、国家和取消标记的公开交易。两份数据分别记录 lineage，不混合声称销售增长。授权原始目录只读，仓库保存确定性 gzip 快照与 SHA256 清单。
-
-## 目前具备的能力
-
-- JWT 注册与登录，用户数据、会话和知识库相互隔离
-- 多知识库管理，支持上传 TXT、Markdown、PDF 和 DOCX；格式与 50MB 大小限制由服务端强制校验
-- 文档解析、结构化切块与向量索引；Pipeline 模块保留为后续演进基础，当前上传链路使用直接分块
-- 关键词与向量检索通道并发执行，单个通道异常不会拖垮整次请求
-- 基于数据库 Chunk ID 的 Weighted RRF 真正融合、可选 CrossEncoder 重排和元数据补全
-- LangGraph ReAct 查询规划、工具自主路由、证据审查、受限重试、引用生成、同步回答与 SSE 流式回答
-- 结构化 Evidence Reviewer：检查意图相关性、证据覆盖、冲突、权威性和高风险缺失字段
-- 商家所有权隔离的订单、商品、履约、退款和顾客快照，并在客服工作台聚合展示
-- 人工确认后的外发审计；本地 Demo 明确标记模拟发送，生产可切换 HMAC 签名 Webhook
-- 对话可选择全部或指定知识库作为检索范围，关键词与向量通道使用同一 Scope
-- 深度思考模式：按供应商切换推理模型/思考开关，并流式展示、持久化思考过程
-- SSE 请求幂等、首 Token/空闲/总生成超时和即时取消传播
-- 失败重试保持 Prompt 历史一致，空模型回答触发故障转移，失败消息返回真实数据库 ID
-- 流式聊天使用 JSON POST，问题不会进入 URL；requestId 指纹防止不同请求误复用缓存
-- 大模型多供应商优先级、故障转移和三态熔断器
-- RAG Trace：记录改写、检索、Prompt 和生成节点的耗时与状态
-- 商家运营洞察：统计 AI 工具渗透率、反馈覆盖率、回答好评率、知识命中率和高频经营意图
-- 即时零售购物篮分析：计算支持度、置信度、提升度并下钻真实订单证据
-- 从关联规则创建搭配购方案，展示 Agent 评测运行、优化任务状态与证据化周报
-- 规则化质量运营：将负反馈、知识未命中、慢响应和失败运行转化为可导出的诊断报告与优化动作
-- SQLite 业务库 + 项目内 Milvus Lite 3.2 持久化向量库；本地 BGE-small-zh-v1.5 已下载并实测 512 维检索
-- 新版管理界面覆盖对话、知识库、运行追踪和系统状态
-
-## 技术结构
-
-```text
-Browser
-  └─ React 18 / Vite
-       └─ /api/v1
-            └─ FastAPI
-                 ├─ users / conversations / knowledge
-                 ├─ ingestion pipeline
-                 ├─ LangGraph ReAct coordinator
-                 │    ├─ knowledge_search (keyword + Milvus)
-                 │    ├─ commerce_data (verified SQL snapshots)
-                 │    ├─ order / fulfillment / refund tools
-                 │    └─ support_cases (provenance-aware SQL)
-                 ├─ structured evidence review / bounded retry / trace
-                 ├─ human confirmation / outbound audit
-                 └─ model router
-                      ├─ primary API
-                      └─ backup API (optional)
-```
-
-核心目录：
-
-```text
-app/
-├─ api/                # HTTP 接口与依赖
-├─ framework/          # 配置、数据库、错误响应、Trace ID
-├─ infra_ai/           # 模型协议、供应商适配、路由与熔断
-└─ modules/
-   ├─ users/
-   ├─ conversations/
-   ├─ knowledge/
-   ├─ ingestion/
-   ├─ retrieval/
-   ├─ vector/
-   └─ rag/
-web/src/               # React 管理界面
-tests/                 # 架构、业务、检索、RAG 与前端入口测试
-legacy/                # 改造前代码，只作迁移参考
-```
-
-## 使用 uv 本地启动
-
-环境要求：Python 3.11+、[uv](https://docs.astral.sh/uv/)、Node.js 18+。
-
-### 1. 创建虚拟环境并安装依赖
-
-PowerShell：
+### 首次完整初始化
 
 ```powershell
 uv venv .venv
-uv pip install --python .venv\Scripts\python.exe -r requirements-dev.txt
+uv pip install --python .\.venv\Scripts\python.exe -r requirements-dev.txt
+
+Set-Location web
+npm install
+npm run build
+Set-Location ..
+
+.\.venv\Scripts\python.exe scripts\setup_local_ai.py
+$env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
+.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
+.\.venv\Scripts\python.exe -m app.cli create-admin --username support-admin --password "AdminDemo@2026"
+.\.venv\Scripts\python.exe server.py
 ```
 
-`requirements-dev.txt` 是 API 优先的精简环境，不会下载 PyTorch、BGE-M3 或 PaddleOCR 等大体积模型依赖。
+日常启动不需要重复执行 `npm install`、`npm run build` 或 `seed-demo`。
 
-### 2. 配置大模型 API
-
-当前内置 DeepSeek 作为主供应商；也可以配置任意 OpenAI 兼容接口作为备用供应商。
+### 配置 DeepSeek
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "替换为自己的密钥"
 $env:DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 $env:DEEPSEEK_MODEL = "deepseek-v4-flash"
 $env:DEEPSEEK_REASONING_MODEL = "deepseek-v4-flash"
-
-# 可选备用接口
-$env:BACKUP_LLM_API_KEY = "替换为备用密钥"
-$env:BACKUP_LLM_BASE_URL = "https://example.com/v1"
-$env:BACKUP_LLM_MODEL = "model-id"
-$env:BACKUP_LLM_REASONING_MODEL = "reasoning-model-id"
 ```
 
-密钥只放在环境变量或服务器的私密环境文件中，不要提交到 Git。
-DeepSeek V4 Flash 同时支持普通对话和深度思考；模型环境变量是可选覆盖项，未设置时也会使用该默认模型。
+密钥只应放在环境变量或服务器私密环境文件中，不要提交到 Git。
 
-### 3. 构建界面并启动
-
-```powershell
-Set-Location web
-npm install
-npm run build
-Set-Location ..
-
-uv run python server.py
-```
-
-浏览器访问 `http://127.0.0.1:8081`。FastAPI 会直接托管 `web/dist`，生产环境不需要再暴露 Vite 的 3000 端口。
-
-应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0007_v3_order_outbound`：
+### 开发模式
 
 ```powershell
-.\.venv\Scripts\alembic.exe upgrade head
-```
+# 终端 1：后端
+.\.venv\Scripts\python.exe server.py
 
-已识别的 pre-Alembic SQLite 会保留现有数据并升级；无法安全识别的部分 schema 会拒绝启动，不会猜测性修改。生产数据库降级前应先停服务并备份，降级不会在启动时自动执行。
-
-开发界面时可使用热更新：
-
-```powershell
-# 终端 1
-uv run python server.py
-
-# 终端 2
+# 终端 2：前端热更新
 Set-Location web
 npm run dev
 ```
 
-此时访问 `http://127.0.0.1:3000`，Vite 会把 `/api` 转发到 8081。
+访问 `http://127.0.0.1:3000`；Vite 会把 `/api` 代理到 8081。生产构建由 FastAPI 直接托管 `web/dist`。
 
-## 检索模式
+<a id="deployment"></a>
 
-### 轻量模式
+## ⚙️ 配置与部署
 
-设置 `VECTOR_BACKEND=disabled`。系统使用 jieba 关键词检索和 SQLite，适合开发、接口联调和小数据演示。
+### 检索模式
 
-### 本地小模型 + 内存向量库
+#### 本地 Embedding + Milvus Lite（默认演示）
 
-安装 `sentence-transformers` 后设置本地模型目录：
+仓库发现 `models/bge-small-zh-v1.5` 后启用本地 Embedding，并将向量持久化到 `data/milvus-ragent.db`。首次下载与检查：
 
 ```powershell
-$env:EMBED_MODEL_PATH = "D:\models\bge-small-zh-v1.5"
-$env:EMBED_DIMENSION = "512"
-$env:VECTOR_BACKEND = "memory"
+.\.venv\Scripts\python.exe scripts\setup_local_ai.py
 ```
 
-可使用体积更小的中文 Embedding 模型，不强制下载 BGE-M3。`EMBED_DIMENSION` 必须与所选模型实际输出维度一致。内存后端适合开发，服务重启后应重新索引。
+#### 内存向量库（测试）
 
-### Milvus 持久化向量
+```powershell
+$env:VECTOR_BACKEND = "memory"
+$env:EMBED_MODEL_PATH = "D:\models\bge-small-zh-v1.5"
+$env:EMBED_DIMENSION = "512"
+```
+
+服务重启后需要重新建立内存索引。
+
+#### Milvus Standalone（服务器）
 
 ```powershell
 $env:VECTOR_BACKEND = "milvus"
@@ -184,161 +326,122 @@ $env:MILVUS_URI = "http://127.0.0.1:19530"
 $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 ```
 
-需要精排时，再单独设置 `RERANK_MODEL_PATH`；不设置就不会加载 Reranker。
+Milvus Lite 适合单机演示；生产环境建议使用有持久化磁盘、备份和监控的 Milvus Standalone。
 
-## 常用配置
+#### 仅关键词模式
+
+```powershell
+$env:VECTOR_BACKEND = "none"
+```
+
+该模式适合接口联调。知识库仍可走关键词检索，经营 SQL 工具不受影响，但它不能证明向量检索已经部署。
+
+### 常用环境变量
 
 | 环境变量 | 默认值 | 说明 |
-|---|---|---|
-| `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | SQLAlchemy 数据库地址；旧 `ragent.db` 会保留但不会被默认覆盖 |
-| `API_PREFIX` | `/api/v1` | API 统一前缀 |
-| `CORS_ORIGINS` | `http://localhost:3000` | 逗号分隔的跨域来源 |
-| `RETRIEVAL_TIMEOUT_SECONDS` | `8` | 检索通道超时 |
+|:---|:---|:---|
+| `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | SQLAlchemy 数据库地址 |
+| `API_PREFIX` | `/api/v1` | API 前缀 |
+| `CORS_ORIGINS` | `http://localhost:3000` | 允许的跨域来源 |
+| `VECTOR_BACKEND` | 自动发现/配置 | `milvus`、`memory` 或 `none` |
+| `EMBED_MODEL_PATH` | 项目内 BGE 路径 | 本地 Embedding 模型目录 |
+| `EMBED_DIMENSION` | `512` | 必须与模型输出维度一致 |
 | `RETRIEVAL_CANDIDATE_LIMIT` | `20` | 融合前候选数 |
 | `RETRIEVAL_CONTEXT_LIMIT` | `6` | 进入 Prompt 的上下文数 |
-| `CHAT_TIMEOUT_SECONDS` | `120` | 模型调用超时 |
-| `CHAT_FIRST_TOKEN_TIMEOUT_SECONDS` | `20` | 流式生成首 Token 超时 |
-| `CHAT_IDLE_TIMEOUT_SECONDS` | `30` | 流式生成 Token 间最大空闲时间 |
-| `MAX_UPLOAD_FILE_SIZE` | `52428800` | 服务端允许的单文件最大字节数 |
-| `CUSTOMER_CHANNEL` | `demo` | 客服外发渠道；`demo` 只模拟发送，`webhook` 调用外部渠道 |
-| `CUSTOMER_WEBHOOK_URL` | 未设置 | `CUSTOMER_CHANNEL=webhook` 时的 HTTPS 接收地址 |
-| `CUSTOMER_WEBHOOK_SECRET` | 未设置 | Webhook HMAC-SHA256 签名密钥，禁止提交到仓库 |
-| `DEEPSEEK_REASONING_MODEL` | `deepseek-v4-flash` | 开启深度思考时使用的 DeepSeek 模型 |
-| `MIMO_REASONING_MODEL` | 与普通模型相同 | 小米 MiMo 深度思考模型；同时发送 thinking 开关 |
-| `BACKUP_LLM_REASONING_MODEL` | 未设置 | 备用接口的推理模型 ID |
-| `CIRCUIT_FAILURE_THRESHOLD` | `3` | 供应商熔断阈值 |
-| `CIRCUIT_RECOVERY_SECONDS` | `30` | 熔断恢复等待时间 |
+| `CHAT_FIRST_TOKEN_TIMEOUT_SECONDS` | `20` | 首 Token 超时 |
+| `CHAT_IDLE_TIMEOUT_SECONDS` | `30` | Token 间空闲超时 |
+| `CHAT_TIMEOUT_SECONDS` | `120` | 总生成超时 |
+| `MAX_UPLOAD_FILE_SIZE` | `52428800` | 单文件最大字节数 |
+| `CUSTOMER_CHANNEL` | `demo` | `demo` 模拟发送；`webhook` 调外部渠道 |
+| `CUSTOMER_WEBHOOK_URL` | 未设置 | 生产 Webhook HTTPS 地址 |
+| `CUSTOMER_WEBHOOK_SECRET` | 未设置 | HMAC-SHA256 密钥 |
 
-## API 概览
+### 数据迁移
 
-所有业务接口位于 `/api/v1`：
-
-| 模块 | 主要接口 |
-|---|---|
-| 系统 | `GET /health`、`GET /architecture` |
-| 鉴权 | `POST /auth/register`、`POST /auth/login` |
-| 会话 | `GET/POST /conversations`、`PATCH /conversations/{id}`、`GET /conversations/{id}/messages` |
-| 知识库 | `GET/POST /knowledge-bases`、上传/查询/删除文档 |
-| 对话 | `POST /chat`、`POST /chat/stream` |
-| 管理 | `GET /management/traces`、`/models`、`/settings` |
-| 商家运营 | `GET /admin/dashboard/operations`（渗透、质量、意图与问题诊断） |
-
-启动后可在 `/docs` 查看 OpenAPI 文档。
-
-客户端可为每轮问答传入 `request_id`（流式兼容接口使用 `requestId`）。服务端会持久化请求状态；重复提交已完成的请求会直接回放原回答，处理中的重复请求会被拒绝，失败请求则允许安全重试。
-
-流式兼容接口为 `POST /api/v1/rag/v3/chat`，请求体使用 JSON。幂等指纹覆盖会话、问题、RAG/深度思考开关和知识库范围；相同 `requestId` 携带不同参数会返回 `409 IDEMPOTENCY_CONFLICT`。手动停止的请求记录为 `cancelled`，不会把部分回答作为成功缓存回放。
-
-深度思考模式会把模型的 reasoning 增量以独立 SSE 事件返回，并随助手消息持久化；刷新页面后，思考内容、思考耗时、引用、投票、消息状态和推荐问题均可恢复。
-
-聊天输入区的“全部知识库”菜单可选择一个或多个知识库。空选择表示检索当前用户的全部知识库；指定后，后端会同时约束关键词和向量检索通道。
-
-### 管理员账号
-
-首次部署可创建管理员：
-
-```powershell
-.\.venv\Scripts\python.exe -m app.cli create-admin --username admin
-```
-
-如果已经注册了同名普通账号，可由拥有服务器文件权限的运维人员显式提升；提升后必须退出并重新登录：
-
-```powershell
-.\.venv\Scripts\python.exe -m app.cli promote-admin --username admin
-```
-
-## 本地演示数据
-
-项目内置一个可离线、可重复创建的商家售后演示目录。演示用户名固定为 `merchant-demo`，密码不在仓库中且至少需要 10 个字符。非交互运行应通过本机环境变量 `DEMO_SEED_PASSWORD` 提供；未设置时 CLI 会安全地交互提示。以下命令可以直接从仓库根目录复制执行：
-
-```powershell
-$env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
-.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
-.\.venv\Scripts\python.exe -m app.cli seed-demo
-```
-
-`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、12 份文档、两份交易快照、360 条客服案例、评测集、50 个评测用例和演示会话。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
-
-如需只清理演示数据，非交互环境必须显式确认：
-
-```powershell
-.\.venv\Scripts\python.exe -m app.cli clear-demo --yes
-```
-
-演示知识库固定包含 12 份项目原创摘要/决策表，并在数据库记录来源、适用范围、排除项、复核日期和 provenance；核心来源包括：
-
-- 国家市场监督管理总局的[《网络购买商品七日无理由退货暂行办法》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/fgs/art/2023/art_26ca8fe29e184edd899fa0a7a060d935.html)：项目原创简短摘要；
-- 国家市场监督管理总局的[《中华人民共和国消费者权益保护法实施条例》页面](https://www.samr.gov.cn/zw/zfxxgk/fdzdgknr/bgt/art/2024/art_0aea188276a44f0baf940ab95ee00e0a.html)：项目原创简短摘要；
-- 全国人大《电子商务法》、市场监管总局食品安全法规库的项目原创主题摘要；
-- 两份虚构商家 SOP，明确标记为 `synthetic`，不冒充法律或真实商家承诺。
-
-十份 `public_summary` 均保存官方 URL、发布方、检索日期和用途说明；仓库内容不是官方页面副本，如有差异以官方原文为准。seed/reset 全程读取本地文件，不需要联网；已配置的本地 BGE 模型与 Milvus Lite 会建立持久化向量索引。
-
-### AI 客服质量闭环演示
-
-新工作台围绕一个可落地场景组织：即时零售商家处理配送、退款、促销、商品和食品安全咨询，AI 只能基于当前已发布知识版本提出草稿，人工审核后才会发送。质检失败会聚合成知识缺口，候选版本必须通过固定评测集和高风险门禁才能启用。
-
-首次运行可直接复制：
+应用启动时会自动执行等价于 `alembic upgrade head` 的迁移，迁移成功后才接受请求。也可显式执行：
 
 ```powershell
 $env:DB_URL = "sqlite:///./data/ragent-v4-flash.db"
-$env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
 .\.venv\Scripts\python.exe -m alembic upgrade head
-.\.venv\Scripts\python.exe -m app.cli seed-demo --reset
-.\.venv\Scripts\python.exe -m app.cli create-admin --username support-admin --password "AdminDemo@2026"
-.\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，管理后台使用 `support-admin / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、36 组订单/履约/退款上下文、50 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
+当前迁移 head 为 `0007_v3_order_outbound`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
 
-仓库默认发现 `models/bge-small-zh-v1.5` 后启用本地 Embedding，并把向量写入 `data/milvus-ragent.db`；`VECTOR_BACKEND=memory` 可显式切换为测试内存模式。模型不可用时关键词检索和人工工作台仍可运行。Milvus Lite 用于本地演示；生产环境应在有足够磁盘的 Linux 主机上部署 Milvus Standalone。
+### 服务器部署
 
-## 当前阶段的能力边界
+服务监听 `0.0.0.0:8081`。公网部署建议由 Nginx/Caddy 提供 HTTPS，并反向代理到 `127.0.0.1:8081`。前后端应使用同一入口，避免登录、SSE 或来源预览跳到错误端口。
 
-当前 Agent 运行时采用 LangGraph 的有界 Planner → Tools → Evidence Reviewer 状态图。知识、交易、客服工具均通过 Pydantic 注册表校验；证据不足会携带上轮计划、观察和错误重新调用 Planner，而不是原样重复检索。所有工具均为只读并强制商家所有权范围；联网搜索只在配置真实 `YDC_API_KEY` 后才应注册，当前不展示不可用的假功能。
+部署时至少持久化：
 
-### Agent Eval 质量门禁
+- `data/`：SQLite、Milvus Lite 与演示数据；
+- `models/`：本地 Embedding / Rerank 模型；
+- 私密环境文件：模型 API 密钥与 Webhook 密钥。
 
-“上线前评测”会逐条运行与聊天主链相同的 Agent Runtime，并保存运行模式、终止状态、工具调用、证据 ID、轨迹和耗时。参考答案不会传给 Agent，也不会被复制为生成答案，只参与人工比对；确定性评分包括预期要点覆盖、预期证据召回、引用正确性、回答 groundedness、拒答/升级正确性和延迟。食品安全、伪造凭证等强制拒答用例失败时，上线审批直接被门禁阻断。
+<a id="quality"></a>
 
-接口演示顺序：
+## 🧪 测试与验证
 
-1. 在“知识发布”选择已发布候选版本。
-2. 调用 `POST /api/v1/support/evaluations`，请求体为 `{"releaseId": <版本ID>}`。
-3. 用 `GET /api/v1/support/evaluations/{runId}` 查看每条用例的 `runtimeMode`、`tools`、`evidenceIds`、`metrics` 与 `trace`。
-4. 只有 `highRiskFailures=0` 时，才可通过 `POST /api/v1/support/release-decisions` 批准同一个知识版本。
-
-`deterministic_fallback` 表示没有调用模型服务的离线可复现运行，只能证明工具、轨迹、规则评分和门禁链路正确，不能当作模型质量成绩；`model_backed` 才表示配置模型后的真实生成运行。两种结果在报告中分开显示。当前评分版本为 `agent-eval-v1`，属于保守、可复现的规则评分；尚未加入 LLM-as-judge。知识图谱、写操作工具和自动执行高风险运营动作仍不在本阶段范围内。
-
-## 测试
+从仓库根目录运行完整验证：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-这是 canonical 本地验证命令，可从任意工作目录通过脚本绝对路径调用。它依次执行 Python 编译、后端 pytest、启用中的前端 API/OpenAPI 契约检查、Vitest、ESLint 和 Vite 生产构建；任一阶段失败都会立即停止并返回非零状态。脚本使用仓库自己的 `.venv` 和 `web` Node 环境，不依赖已经启动的 8081 服务。
+验证顺序包括：
 
-只运行后端测试时可使用：
+1. Python 编译检查；
+2. 后端 pytest；
+3. 前端 API / OpenAPI 契约检查；
+4. Vitest；
+5. ESLint；
+6. Vite 生产构建。
+
+任一阶段失败会立即停止并传递真实退出码。脚本使用项目自己的 `.venv` 和 `web` 环境，不依赖已启动的 8081 服务。
+
+单独运行：
 
 ```powershell
+# 后端
 .\.venv\Scripts\python.exe -m pytest -q
+
+# 前端
+Set-Location web
+npm test
+npm run lint
+npm run build
 ```
 
-后端测试使用临时 SQLite 数据库。目前覆盖鉴权、会话、文档入库、检索融合、向量检索、RAG 对话、运行追踪、迁移、演示 seed/reset、评测输入模型和 API 契约。
+测试覆盖鉴权、租户隔离、会话状态、文档入库、检索融合、向量检索、Agent 工具、证据审查、SSE、取消与超时、模型路由、迁移、演示数据幂等、客服闭环、评测门禁和前端关键交互。
 
-## 服务器部署提示
+## ⚠️ 当前能力边界
 
-服务监听 `0.0.0.0:8081`。对外部署时建议只让 Nginx/Caddy 暴露 80 或 443，并反向代理到 `127.0.0.1:8081`；前后端使用同一个入口，可避免登录请求跳到错误端口。若浏览器仍访问到旧的 8080 地址，应清理旧前端缓存并确认反向代理配置没有保留旧 `/login` 路由。
+- 当前是可实际运行的单机/作品集系统，不等同于完成容量规划与合规认证的企业 SaaS。
+- 联网搜索尚未接入当前 Agent Runtime；页面不展示不可用的假功能。
+- Agent 业务工具默认只读；高风险外发和运营动作必须人工确认。
+- `deterministic_fallback` 只能证明工具、轨迹和门禁链路可复现，不能作为真实模型质量成绩。
+- 当前 groundedness 是确定性保守评分，尚未替代完整的 claim-level LLM-as-judge。
+- 知识图谱、多 Agent 群聊和自动执行高风险业务动作不在当前 MVP 范围。
+- SQLite 与 Milvus Lite 适合单机演示；生产多实例需要外部数据库、Milvus Standalone、备份和可观测基础设施。
 
-更详细的演进说明见：
+<a id="documents"></a>
 
-- `docs/python-ragent-architecture.md`
-- `docs/python-migration-status.md`
-- `docs/python-phase3-vector-and-trace.md`
-- `docs/production-rag-reliability.md`
-- `docs/chat-product-completeness.md`
-- `docs/v2.1-state-and-retrieval-scope.md`
-- `docs/v2.2-pre-turn-consistency.md`
-- `docs/superpowers/specs/2026-08-07-merchant-ai-operations-closed-loop-design.md`（批准的总体设计）
-- `docs/superpowers/plans/2026-08-07-demo-evaluation-foundation.md`（本阶段实现计划）
-- `openspec/changes/establish-demo-evaluation-foundation/`（proposal、design、specs 与 tasks）
+## 📚 设计文档
+
+| 文档 | 内容 |
+|:---|:---|
+| [`docs/python-ragent-architecture.md`](docs/python-ragent-architecture.md) | Python 重构架构与模块边界 |
+| [`docs/production-rag-reliability.md`](docs/production-rag-reliability.md) | 流式输出、超时、取消和模型容错 |
+| [`docs/chat-product-completeness.md`](docs/chat-product-completeness.md) | 对话产品完整性审计 |
+| [`docs/jd-alignment-ai-product-operations.md`](docs/jd-alignment-ai-product-operations.md) | 与 AI 产品运营 JD 的能力映射 |
+| [`docs/v2.1-state-and-retrieval-scope.md`](docs/v2.1-state-and-retrieval-scope.md) | 会话状态与检索范围一致性 |
+| [`docs/v2.2-pre-turn-consistency.md`](docs/v2.2-pre-turn-consistency.md) | Turn 创建与失败恢复 |
+| [`docs/implementation-gap-audit.md`](docs/implementation-gap-audit.md) | 实现缺口与非目标审计 |
+
+## 🤝 致谢
+
+- [nageoffer/ragent](https://github.com/nageoffer/ragent)：项目最初的产品界面、RAG 工程方向与学习参考。
+- [LangGraph](https://github.com/langchain-ai/langgraph)：有状态 Agent 编排。
+- [Milvus](https://github.com/milvus-io/milvus)：向量检索基础设施。
+- [FastAPI](https://github.com/fastapi/fastapi) 与 [React](https://github.com/facebook/react)：应用后端与前端基础。
+
+如果你在阅读这个项目，建议从 `app/modules/rag/`、`app/modules/retrieval/`、`app/modules/evaluation/` 和 `web/src/pages/admin/` 开始，再结合 Trace 与评测页面理解完整闭环。
