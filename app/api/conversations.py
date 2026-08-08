@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUserId, DbSession
+from app.api.source_refs import source_ref
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.conversations.models import ConversationTurn, Message
@@ -38,6 +39,10 @@ def serialize_conversation(item):
 
 
 def serialize_message(item: Message, versions: list[Message] | None = None) -> dict:
+    def sources(citations_json: str | None) -> list[dict]:
+        raw = json.loads(citations_json) if citations_json else []
+        return [source_ref(citation, index) for index, citation in enumerate(raw, 1)]
+
     return {
         "id": item.id,
         "conversationId": item.conversation_id,
@@ -46,7 +51,7 @@ def serialize_message(item: Message, versions: list[Message] | None = None) -> d
         "role": item.role,
         "content": item.content,
         "citations": item.citations_json,
-        "sources": json.loads(item.citations_json) if item.citations_json else [],
+        "sources": sources(item.citations_json),
         "messageStatus": item.message_status or "NORMAL",
         "vote": item.vote,
         "thinkingContent": item.thinking_content,
@@ -60,9 +65,7 @@ def serialize_message(item: Message, versions: list[Message] | None = None) -> d
                 "id": version.id,
                 "version": version.version,
                 "content": version.content,
-                "sources": (
-                    json.loads(version.citations_json) if version.citations_json else []
-                ),
+                "sources": sources(version.citations_json),
                 "messageStatus": version.message_status or "NORMAL",
                 "vote": version.vote,
                 "thinkingContent": version.thinking_content,

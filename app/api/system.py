@@ -13,6 +13,7 @@ from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.rag.schemas import ChatRequest
+from app.api.source_refs import source_ref
 from app.modules.rag.task_registry import registry as task_registry
 
 
@@ -112,7 +113,7 @@ def create_system_router(settings: Settings) -> APIRouter:
                     elif event_type == "thinking":
                         yield _sse("message", {"type": "think", "delta": data})
                     elif event_type == "citations":
-                        citations = [_source_ref(item, index) for index, item in enumerate(data, 1)]
+                        citations = [source_ref(item, index) for index, item in enumerate(data, 1)]
                     elif event_type == "done":
                         yield _sse(
                             "finish",
@@ -173,34 +174,3 @@ def create_system_router(settings: Settings) -> APIRouter:
 def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-
-_INTERNAL_SOURCE_NAMES = {
-    "commerce_association_rules": "购物篮关联规则",
-    "commerce_product_metrics": "商品交易指标",
-    "support_cases": "客服案例",
-    "support_quality_labels": "客服质检指标",
-    "knowledge_gaps": "知识缺口",
-    "orders": "订单事实",
-    "fulfillments": "履约事实",
-    "refunds": "退款事实",
-    "customer_snapshots": "顾客历史快照",
-}
-
-
-def _source_ref(item: dict, index: int) -> dict:
-    metadata = item.get("metadata") or {}
-    source_name = item.get("source") or ""
-    if source_name in _INTERNAL_SOURCE_NAMES:
-        return {
-            "index": index,
-            "docName": _INTERNAL_SOURCE_NAMES[source_name],
-            "sourceType": "internal_data",
-            "provenance": metadata.get("provenance") or item.get("provenance") or "derived",
-            "excerpt": item.get("content") or "",
-        }
-    return {
-        "index": index,
-        "docId": str(metadata.get("document_id") or item.get("id") or ""),
-        "docName": metadata.get("filename") or item.get("source") or "知识库文档",
-        "excerpt": item.get("content") or "",
-    }
