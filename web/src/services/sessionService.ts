@@ -50,9 +50,13 @@ export async function listMessages(conversationId: string): Promise<Conversation
   const rows = await api.get<unknown, Array<Record<string, unknown>>>(`/conversations/${conversationId}/messages`);
   return rows.map((row) => {
     let sources: SourceRef[] = [];
-    try {
-      sources = typeof row.citations === "string" ? JSON.parse(row.citations) : ((row.citations as SourceRef[]) || []);
-    } catch { sources = []; }
+    if (Array.isArray(row.sources)) {
+      sources = row.sources as SourceRef[];
+    } else {
+      try {
+        sources = typeof row.citations === "string" ? JSON.parse(row.citations) : ((row.citations as SourceRef[]) || []);
+      } catch { sources = []; }
+    }
     return {
       id: row.id as string,
       conversationId,
