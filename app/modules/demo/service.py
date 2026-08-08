@@ -45,6 +45,14 @@ from app.modules.support.models import (
 from app.modules.users.models import User
 from app.modules.commerce.service import RetailService
 from app.modules.commerce.models import Basket, BasketItem, CommerceImport, Product
+from app.modules.orders.models import (
+    CustomerSnapshot,
+    Fulfillment,
+    Order,
+    OrderItem,
+    OutboundMessage,
+    Refund,
+)
 from app.modules.provenance.models import DataSource
 
 
@@ -103,6 +111,7 @@ class DemoClearResult:
     removed_files: int = 0
     removed_vectors: int = 0
     removed_support_records: int = 0
+    removed_order_records: int = 0
     external_cleanup_errors: tuple[str, ...] = ()
 
     @property
@@ -122,6 +131,7 @@ class DemoClearResult:
                 self.removed_trace_runs,
                 self.removed_trace_nodes,
                 self.removed_support_records,
+                self.removed_order_records,
             )
         )
 
@@ -357,6 +367,8 @@ class DemoSeedService:
                 )
             )
         demo_users = set(demo_user_ids)
+
+        self._validate_order_ownership(db, demo_users)
 
         base_ids = tuple(
             db.scalars(
@@ -693,6 +705,7 @@ class DemoSeedService:
         self, db: Session, plan: _OwnershipPlan
     ) -> dict[str, int]:
         support_removed = self._delete_support_rows(db, plan.user_ids)
+        order_removed = self._delete_order_rows(db, plan.user_ids)
         for owner_id in plan.user_ids:
             RetailService().clear_managed_snapshots(db, owner_id, commit=False)
         counts = {
@@ -706,6 +719,7 @@ class DemoSeedService:
                 db, RagTraceRun, RagTraceRun.id, plan.trace_run_ids
             ),
             "removed_support_records": support_removed,
+            "removed_order_records": order_removed,
         }
         if plan.turn_ids:
             db.execute(
@@ -764,6 +778,7 @@ class DemoSeedService:
             )
         )
         deletions = (
+            (OutboundMessage, OutboundMessage.owner_id.in_(user_ids)),
             (SupportReleaseDecision, SupportReleaseDecision.owner_id.in_(user_ids)),
             (SupportQualityLabel, SupportQualityLabel.owner_id.in_(user_ids)),
             (ReplyDecision, ReplyDecision.case_id.in_(case_ids)),
@@ -780,6 +795,89 @@ class DemoSeedService:
             result = db.execute(delete(model).where(predicate))
             removed += int(result.rowcount or 0)
         return removed
+
+    @staticmethod
+    def _delete_order_rows(db: Session, user_ids: tuple[int, ...]) -> int:
+        if not user_ids or not inspect(db.get_bind()).has_table("orders"):
+            return 0
+        order_ids = tuple(
+            db.scalars(select(Order.id).where(Order.owner_id.in_(user_ids)))
+        )
+        deletions = (
+            (Refund, Refund.order_id.in_(order_ids)),
+            (Fulfillment, Fulfillment.order_id.in_(order_ids)),
+            (OrderItem, OrderItem.order_id.in_(order_ids)),
+            (Order, Order.id.in_(order_ids)),
+            (CustomerSnapshot, CustomerSnapshot.owner_id.in_(user_ids)),
+        )
+        removed = 0
+        for model, predicate in deletions:
+            result = db.execute(delete(model).where(predicate))
+            removed += int(result.rowcount or 0)
+        return removed
+
+    @staticmethod
+    def _validate_order_ownership(db: Session, demo_users: set[int]) -> None:
+        if not demo_users or not inspect(db.get_bind()).has_table("orders"):
+            return
+        mismatched_case = db.scalar(
+            select(SupportCase.id)
+            .join(Order, Order.id == SupportCase.order_id)
+            .where(
+                or_(
+                    SupportCase.owner_id.in_(demo_users),
+                    Order.owner_id.in_(demo_users),
+                ),
+                SupportCase.owner_id != Order.owner_id,
+            )
+            .limit(1)
+        )
+        mismatched_customer = db.scalar(
+            select(Order.id)
+            .join(CustomerSnapshot, CustomerSnapshot.id == Order.customer_snapshot_id)
+            .where(
+                or_(
+                    Order.owner_id.in_(demo_users),
+                    CustomerSnapshot.owner_id.in_(demo_users),
+                ),
+                Order.owner_id != CustomerSnapshot.owner_id,
+            )
+            .limit(1)
+        )
+        mismatched_product = db.scalar(
+            select(OrderItem.id)
+            .join(Order, Order.id == OrderItem.order_id)
+            .join(Product, Product.id == OrderItem.product_id)
+            .where(
+                or_(Order.owner_id.in_(demo_users), Product.owner_id.in_(demo_users)),
+                Order.owner_id != Product.owner_id,
+            )
+            .limit(1)
+        )
+        mismatched_outbound = db.scalar(
+            select(OutboundMessage.id)
+            .join(SupportCase, SupportCase.id == OutboundMessage.case_id)
+            .where(
+                or_(
+                    OutboundMessage.owner_id.in_(demo_users),
+                    SupportCase.owner_id.in_(demo_users),
+                ),
+                OutboundMessage.owner_id != SupportCase.owner_id,
+            )
+            .limit(1)
+        )
+        if any(
+            item is not None
+            for item in (
+                mismatched_case,
+                mismatched_customer,
+                mismatched_product,
+                mismatched_outbound,
+            )
+        ):
+            raise DemoOwnershipError(
+                "ownership violation: order context crosses demo boundary"
+            )
 
     def _cleanup_externals(
         self, plan: _OwnershipPlan, file_deletions: tuple[Path, ...]
@@ -1387,6 +1485,15 @@ class DemoSeedService:
                 lineage["invoice_status"] = {"provenance": "observed", "source_field": "invoice_status"}
                 lineage["cancellation_reason"] = {"provenance": "synthetic", "method": "unavailable; no reason generated"}
             case_key = f"support-demo-{index + 1:03d}"
+            order = self._upsert_order_context(
+                db,
+                user,
+                index=index,
+                product_name=observed_product,
+                product_category=observed_category,
+                issue_category=category,
+                cancelled=context_kind == "cancellation",
+            )
             support_case = db.scalar(
                 select(SupportCase).where(
                     SupportCase.owner_id == user.id,
@@ -1418,6 +1525,7 @@ class DemoSeedService:
                     generator_version="retail-support-v3",
                     generator_seed=20260807,
                     field_lineage_json=json.dumps(lineage, ensure_ascii=False),
+                    order_id=order.id,
                     created_at=now,
                     updated_at=now,
                 )
@@ -1437,6 +1545,7 @@ class DemoSeedService:
                         ensure_ascii=False,
                     )
                     support_case.field_lineage_json = json.dumps(lineage, ensure_ascii=False)
+                support_case.order_id = order.id
             first_message = db.scalar(
                 select(SupportMessage).where(
                     SupportMessage.case_id == support_case.id,
@@ -1562,6 +1671,192 @@ class DemoSeedService:
                 )
         db.commit()
         return created, reused
+
+    @staticmethod
+    def _upsert_order_context(
+        db: Session,
+        user: User,
+        *,
+        index: int,
+        product_name: str | None,
+        product_category: str,
+        issue_category: str,
+        cancelled: bool,
+    ) -> Order:
+        """Create deterministic order facts without presenting generated fields as observed."""
+
+        order_no = f"NB-DEMO-{index + 1:03d}"
+        customer_key = f"demo-customer-{index + 1:03d}"
+        customer = db.scalar(
+            select(CustomerSnapshot).where(
+                CustomerSnapshot.owner_id == user.id,
+                CustomerSnapshot.customer_key == customer_key,
+            )
+        )
+        captured_at = datetime(2026, 8, 7, 8, 0) + timedelta(minutes=index * 17)
+        if customer is None:
+            customer = CustomerSnapshot(
+                owner_id=user.id,
+                customer_key=customer_key,
+                display_name=f"顾客{index + 1:02d}",
+                tier=("新客", "常购顾客", "高价值顾客")[index % 3],
+                order_count=1 + (index * 7) % 24,
+                refund_count=index % 4,
+                lifetime_value_minor=6800 + index * 2190,
+                captured_at=captured_at,
+                is_demo=True,
+                lineage_json=json.dumps(
+                    {
+                        "allFields": {
+                            "provenance": "synthetic",
+                            "method": "support-scenario-v1",
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(customer)
+            db.flush()
+
+        order = db.scalar(
+            select(Order).where(
+                Order.owner_id == user.id,
+                Order.order_no == order_no,
+            )
+        )
+        if cancelled:
+            order_status = "cancelled"
+        elif issue_category == "delivery":
+            order_status = "delivering"
+        elif issue_category == "refund":
+            order_status = "refund_review"
+        else:
+            order_status = "delivered"
+        order_lineage = {
+            "productReference": {
+                "provenance": "observed" if product_name else "synthetic",
+                "source": "verified-retail-snapshot" if product_name else "support-scenario-v1",
+            },
+            "orderState": {
+                "provenance": "synthetic",
+                "method": "support-scenario-v1",
+            },
+            "amount": {
+                "provenance": "synthetic",
+                "method": "deterministic-price-matrix-v1",
+            },
+        }
+        if order is None:
+            order = Order(
+                owner_id=user.id,
+                order_no=order_no,
+                customer_snapshot_id=customer.id,
+                status=order_status,
+                currency="CNY",
+                total_amount_minor=3990 + (index % 8) * 870,
+                placed_at=captured_at,
+                is_demo=True,
+                lineage_json=json.dumps(order_lineage, ensure_ascii=False),
+                created_at=captured_at,
+                updated_at=captured_at,
+            )
+            db.add(order)
+            db.flush()
+        else:
+            order.customer_snapshot_id = customer.id
+            order.status = order_status
+            order.total_amount_minor = 3990 + (index % 8) * 870
+            order.placed_at = captured_at
+            order.is_demo = True
+            order.lineage_json = json.dumps(order_lineage, ensure_ascii=False)
+
+        product = (
+            db.scalar(
+                select(Product).where(
+                    Product.owner_id == user.id,
+                    Product.name == product_name,
+                )
+            )
+            if product_name
+            else None
+        )
+        item = db.scalar(
+            select(OrderItem).where(OrderItem.order_id == order.id).limit(1)
+        )
+        item_lineage = {
+            "productName": {
+                "provenance": "observed" if product_name else "synthetic",
+                "source": "verified-retail-snapshot" if product_name else "support-scenario-v1",
+            },
+            "quantity": {"provenance": "synthetic", "method": "fixed-one"},
+            "unitPrice": {
+                "provenance": "synthetic",
+                "method": "deterministic-price-matrix-v1",
+            },
+        }
+        if item is None:
+            item = OrderItem(order_id=order.id)
+            db.add(item)
+        item.product_id = product.id if product else None
+        item.sku = product.source_key if product else f"DEMO-SKU-{index + 1:03d}"
+        item.product_name = product_name or f"{product_category or '未分类'}演示商品"
+        item.quantity = 1
+        item.unit_price_minor = order.total_amount_minor
+        item.lineage_json = json.dumps(item_lineage, ensure_ascii=False)
+
+        estimated = captured_at + timedelta(minutes=45)
+        fulfillment = db.scalar(
+            select(Fulfillment).where(Fulfillment.order_id == order.id).limit(1)
+        )
+        if fulfillment is None:
+            fulfillment = Fulfillment(order_id=order.id)
+            db.add(fulfillment)
+        fulfillment.status = (
+            "cancelled"
+            if cancelled
+            else ("delayed" if issue_category == "delivery" else "delivered")
+        )
+        fulfillment.carrier = "邻里配送（演示）"
+        fulfillment.tracking_no = None
+        fulfillment.estimated_delivery_at = estimated
+        fulfillment.delivered_at = (
+            None
+            if cancelled or issue_category == "delivery"
+            else estimated + timedelta(minutes=(index % 4) * 4)
+        )
+        fulfillment.current_location = None
+        fulfillment.updated_at = estimated
+        fulfillment.lineage_json = json.dumps(
+            {
+                "allFields": {
+                    "provenance": "synthetic",
+                    "method": "support-scenario-v1",
+                },
+                "currentLocation": {"provenance": "unavailable"},
+            },
+            ensure_ascii=False,
+        )
+
+        refund = db.scalar(select(Refund).where(Refund.order_id == order.id).limit(1))
+        if refund is None:
+            refund = Refund(order_id=order.id)
+            db.add(refund)
+        refund.status = "reviewing" if issue_category == "refund" else "not_requested"
+        refund.amount_minor = order.total_amount_minor if issue_category == "refund" else 0
+        refund.reason = "演示售后场景" if issue_category == "refund" else None
+        refund.requested_at = captured_at + timedelta(hours=2) if issue_category == "refund" else None
+        refund.resolved_at = None
+        refund.lineage_json = json.dumps(
+            {
+                "allFields": {
+                    "provenance": "synthetic",
+                    "method": "support-scenario-v1",
+                }
+            },
+            ensure_ascii=False,
+        )
+        db.flush()
+        return order
 
     def expand_grounded_support(self, db: Session, *, target_cases: int = 360) -> tuple[int, int]:
         """Expand only the complete CLI demo after verified retail snapshots exist."""

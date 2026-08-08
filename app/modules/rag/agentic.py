@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
@@ -62,11 +63,26 @@ class AgentDecision:
         return tuple(str(call.arguments.get("query", "")).strip() for call in self.calls if str(call.arguments.get("query", "")).strip())
 
 
+class EvidenceReview(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    intent: str
+    relevance: float = Field(ge=0, le=1)
+    coverage: float = Field(ge=0, le=1)
+    conflicts: tuple[str, ...] = ()
+    authority_sufficient: bool
+    missing_fields: tuple[str, ...] = ()
+    risk: Literal["low", "medium", "high"]
+    decision: Literal["ready", "replan", "escalate", "refuse"]
+    summary: str
+
+
 @dataclass(frozen=True, slots=True)
 class AgenticRun:
     decision: AgentDecision
     results: tuple[SearchResult, ...]
     review: str
+    review_details: EvidenceReview
     steps: tuple[dict[str, Any], ...]
     terminal_state: Literal["direct", "grounded", "refused", "escalated"]
     runtime_mode: Literal["deterministic_fallback", "model_backed"]
@@ -90,6 +106,7 @@ class _State(TypedDict, total=False):
     initial_decision: AgentDecision
     results: list[SearchResult]
     review: str
+    review_details: EvidenceReview
     review_feedback: str
     plan_count: int
     tool_calls: int
@@ -134,7 +151,24 @@ class AgenticRagCoordinator:
         })
         decision = state.get("initial_decision") or state["decision"]
         terminal = state.get("terminal_state") or self._terminal_for(state["decision"].mode, bool(state.get("results")))
-        return AgenticRun(decision, tuple(state.get("results", [])), state.get("review", "not_required"), tuple(state.get("steps", [])), terminal, decision.runtime_mode)
+        review_details = state.get("review_details") or EvidenceReview(
+            intent="general",
+            relevance=1,
+            coverage=1,
+            authority_sufficient=True,
+            risk="low",
+            decision="ready",
+            summary="无需证据审查",
+        )
+        return AgenticRun(
+            decision,
+            tuple(state.get("results", [])),
+            state.get("review", "not_required"),
+            review_details,
+            tuple(state.get("steps", [])),
+            terminal,
+            decision.runtime_mode,
+        )
 
     def _fallback_decision(self, question: str, history: list[dict[str, Any]], feedback: str) -> AgentDecision:
         lowered = question.lower()
@@ -143,6 +177,30 @@ class AgenticRagCoordinator:
         if any(term in lowered for term in ("伪造", "欺骗", "假截图")):
             return AgentDecision("refuse", (), "请求涉及欺骗或伪造", "deterministic_fallback")
         used = {call["name"] for plan in history for call in plan.get("calls", [])}
+        order_match = re.search(
+            r"订单\s*(?:号|[:：#])?\s*([A-Za-z0-9][A-Za-z0-9_-]{4,79})",
+            question,
+            re.IGNORECASE,
+        )
+        if order_match and not history:
+            order_no = order_match.group(1)
+            order_tools = ["commerce.get_order"]
+            if any(term in lowered for term in ("配送", "送达", "物流", "骑手", "到达", "迟到", "延误")):
+                order_tools.append("commerce.get_delivery_status")
+            if any(term in lowered for term in ("退款", "退货", "售后", "赔付")):
+                order_tools.append("commerce.get_refund_status")
+            if any(term in lowered for term in ("顾客", "客户", "历史", "会员")):
+                order_tools.append("commerce.get_customer_history")
+            calls = tuple(
+                ToolCallPlan(name=name, arguments={"order_no": order_no})
+                for name in order_tools
+            )
+            return AgentDecision(
+                "research",
+                calls,
+                "检测到订单号，优先查询订单及问题所需的实时业务事实",
+                "deterministic_fallback",
+            )
         candidates: list[str] = []
         if any(term in lowered for term in ("购物篮", "订单", "商品", "销量", "关联", "搭配", "取消", "价格", "交易")):
             candidates.extend(("commerce.search_association_rules", "commerce.get_product_metrics"))
@@ -227,19 +285,148 @@ class AgenticRagCoordinator:
 
     async def _review_node(self, state: _State) -> dict[str, Any]:
         results = state.get("results", [])
-        if results:
-            review = "ready: 已获得带来源标记的工具证据"
-            terminal = "grounded"
-        elif state.get("plan_count", 0) < self.max_steps and state.get("tool_calls", 0) < self.max_tool_calls:
-            review = "retry: 当前计划没有获得可用证据，请改变工具或检索参数"
-            terminal = ""
-        else:
-            review = "escalate: 达到规划或工具预算上限仍无可靠证据"
-            terminal = "escalated"
+        can_replan = (
+            state.get("plan_count", 0) < self.max_steps
+            and state.get("tool_calls", 0) < self.max_tool_calls
+        )
+        details = self._review_evidence(state["question"], results, can_replan)
+        prefix = "retry" if details.decision == "replan" else details.decision
+        review = f"{prefix}: {details.summary}"
+        terminal = {
+            "ready": "grounded",
+            "replan": "",
+            "escalate": "escalated",
+            "refuse": "refused",
+        }[details.decision]
         return {
-            "review": review, "review_feedback": review, "terminal_state": terminal,
-            "steps": [*state.get("steps", []), {"agent": "evidence_reviewer", "review": review, "evidence": len(results), "plan": state.get("plan_count", 1)}],
+            "review": review,
+            "review_details": details,
+            "review_feedback": review,
+            "terminal_state": terminal,
+            "steps": [
+                *state.get("steps", []),
+                {
+                    "agent": "evidence_reviewer",
+                    "review": review,
+                    "details": details.model_dump(),
+                    "evidence": len(results),
+                    "plan": state.get("plan_count", 1),
+                },
+            ],
         }
+
+    @classmethod
+    def _review_evidence(
+        cls,
+        question: str,
+        results: list[SearchResult],
+        can_replan: bool,
+    ) -> EvidenceReview:
+        intent, required, risk = cls._intent_requirements(question)
+        present = {cls._fact_type(item) for item in results}
+        present.discard(None)
+        missing = tuple(sorted(required - present))
+        coverage = (
+            len(required & present) / len(required) if required else (1.0 if results else 0.0)
+        )
+        relevance = coverage if required else (1.0 if results else 0.0)
+        conflicts = cls._find_conflicts(results)
+        authority_sufficient = risk != "high" or any(
+            cls._fact_type(item) == "policy"
+            and bool(item.metadata.get("publisher"))
+            and item.metadata.get("review_status") == "current"
+            for item in results
+        )
+
+        if not results:
+            decision = "replan" if can_replan else "escalate"
+            summary = "当前计划没有获得可用证据"
+        elif conflicts:
+            decision = "escalate"
+            summary = "关键证据相互冲突，需要人工确认权威版本"
+        elif missing:
+            decision = "replan" if can_replan else "escalate"
+            summary = "证据未覆盖回答所需字段：" + "、".join(missing)
+        elif not authority_sufficient:
+            decision = "escalate"
+            summary = "高风险结论缺少当前有效且可归属的权威来源"
+        else:
+            decision = "ready"
+            summary = "证据相关、覆盖完整且满足风险要求"
+
+        return EvidenceReview(
+            intent=intent,
+            relevance=round(relevance, 4),
+            coverage=round(coverage, 4),
+            conflicts=conflicts,
+            authority_sufficient=authority_sufficient,
+            missing_fields=missing,
+            risk=risk,
+            decision=decision,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _intent_requirements(
+        question: str,
+    ) -> tuple[str, set[str], Literal["low", "medium", "high"]]:
+        lowered = question.lower()
+        has_order = bool(
+            re.search(
+                r"订单\s*(?:号|[:：#])?\s*[A-Za-z0-9][A-Za-z0-9_-]{4,79}",
+                question,
+                re.IGNORECASE,
+            )
+        )
+        if any(term in lowered for term in ("送达", "配送", "物流", "骑手", "延误", "迟到")):
+            return "delivery_status", {"order", "delivery"}, "medium"
+        if any(term in lowered for term in ("退款", "退货", "七日无理由", "赔付")):
+            required = {"policy"}
+            if has_order:
+                required.update(("order", "refund"))
+            return "refund_policy", required, "high"
+        if any(term in lowered for term in ("食品安全", "变质", "还能吃", "还能喝", "不冰")):
+            required = {"policy"}
+            if has_order:
+                required.add("order")
+            return "food_safety", required, "high"
+        if any(term in lowered for term in ("扣款", "支付", "验证码", "账号安全")):
+            return "account_or_payment_risk", {"policy"}, "high"
+        if any(term in lowered for term in ("规则", "政策", "依据", "法规")):
+            return "policy_lookup", {"policy"}, "medium"
+        return "general", set(), "low"
+
+    @staticmethod
+    def _fact_type(item: SearchResult) -> str | None:
+        explicit = item.metadata.get("factType") or item.metadata.get("fact_type")
+        if explicit:
+            return str(explicit)
+        channel = item.channel
+        if channel == "commerce.get_order":
+            return "order"
+        if channel == "commerce.get_delivery_status":
+            return "delivery"
+        if channel == "commerce.get_refund_status":
+            return "refund"
+        if channel == "commerce.get_customer_history":
+            return "customer_history"
+        if channel.startswith("knowledge") or item.metadata.get("document_id"):
+            return "policy"
+        return None
+
+    @staticmethod
+    def _find_conflicts(results: list[SearchResult]) -> tuple[str, ...]:
+        claims: dict[str, set[str]] = {}
+        for item in results:
+            key = item.metadata.get("claimKey")
+            value = item.metadata.get("claimValue")
+            if key is not None and value is not None:
+                claims.setdefault(str(key), set()).add(str(value))
+        return tuple(
+            f"{key}: {' <> '.join(sorted(values))}"
+            for key, values in sorted(claims.items())
+            if len(values) > 1
+        )
 
     @staticmethod
     def _after_review(state: _State) -> str:

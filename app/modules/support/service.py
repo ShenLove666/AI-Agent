@@ -15,6 +15,9 @@ from app.modules.evaluation.models import EvaluationCase, EvaluationDataset, Eva
 from app.modules.evaluation.runtime import AgentEvaluationRunner, SCORING_VERSION, execution_payload
 from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.knowledge.models import KnowledgeChunk, KnowledgeDocument
+from app.modules.orders.models import Order, OutboundMessage
+from app.modules.orders.service import OrderService
+from app.modules.support.outbound import OutboundService, build_customer_channel
 from app.modules.support.models import (
     KnowledgeGap,
     KnowledgeRelease,
@@ -170,6 +173,75 @@ class SupportService:
     def case_provenance(self, db: Session, owner_id: int, case_id: int) -> dict:
         return self.detail(db, owner_id, case_id)["provenance"]
 
+    def workspace(self, db: Session, owner_id: int, case_id: int) -> dict:
+        case = self.require_case(db, owner_id, case_id)
+        suggestion = db.scalar(
+            select(ReplySuggestion)
+            .where(ReplySuggestion.case_id == case.id)
+            .order_by(ReplySuggestion.id.desc())
+            .limit(1)
+        )
+        decision = (
+            db.scalar(
+                select(ReplyDecision).where(
+                    ReplyDecision.suggestion_id == suggestion.id
+                )
+            )
+            if suggestion
+            else None
+        )
+        outbound = list(
+            db.scalars(
+                select(OutboundMessage)
+                .where(
+                    OutboundMessage.owner_id == owner_id,
+                    OutboundMessage.case_id == case.id,
+                )
+                .order_by(OutboundMessage.id.desc())
+            )
+        )
+        order = (
+            db.scalar(
+                select(Order).where(
+                    Order.id == case.order_id,
+                    Order.owner_id == owner_id,
+                )
+            )
+            if case.order_id is not None
+            else None
+        )
+        message_count = int(
+            db.scalar(
+                select(func.count(SupportMessage.id)).where(
+                    SupportMessage.case_id == case.id
+                )
+            )
+            or 0
+        )
+        suggestion_count = int(
+            db.scalar(
+                select(func.count(ReplySuggestion.id)).where(
+                    ReplySuggestion.case_id == case.id
+                )
+            )
+            or 0
+        )
+        return {
+            "case": self._case_summary(db, case),
+            "order": (
+                OrderService().detail(db, owner_id, order.order_no) if order else None
+            ),
+            "activeSuggestion": (
+                self._suggestion(suggestion, decision) if suggestion else None
+            ),
+            "outboundMessages": [self._outbound(item) for item in outbound],
+            "diagnostics": {
+                "messageCount": message_count,
+                "suggestionCount": suggestion_count,
+                "outboundCount": len(outbound),
+            },
+        }
+
     def coverage(self, db: Session, owner_id: int) -> dict:
         cases = list(db.scalars(select(SupportCase).where(SupportCase.owner_id == owner_id)))
         categories: dict[str, int] = {}
@@ -272,21 +344,18 @@ class SupportService:
 
     def manual_reply(self, db: Session, owner_id: int, case_id: int, actor_id: int, content: str) -> dict:
         case = self.require_case(db, owner_id, case_id)
-        if not content.strip():
+        clean_content = content.strip()
+        if not clean_content:
             raise AppError("EMPTY_REPLY", "回复内容不能为空", 422)
-        message = SupportMessage(
+        OutboundService(build_customer_channel()).confirm(
+            db,
+            owner_id=owner_id,
             case_id=case.id,
             actor_id=actor_id,
-            role="agent",
-            content=content.strip(),
-            sent_to_customer=True,
+            content=clean_content,
+            expected_version=case.version,
+            idempotency_key=f"legacy-manual:{case.id}:{case.version}",
         )
-        db.add(message)
-        case.unread = False
-        case.version += 1
-        case.updated_at = datetime.utcnow()
-        self._event(db, case, actor_id, "manual_reply_sent", {})
-        db.commit()
         return self.detail(db, owner_id, case.id)
 
     async def generate_suggestion(self, db: Session, owner_id: int, case_id: int, actor_id: int, model_router) -> dict:
@@ -428,7 +497,24 @@ class SupportService:
         )
         db.add(item)
         if outgoing:
-            db.add(SupportMessage(case_id=case.id, actor_id=actor_id, role="agent", content=outgoing.strip(), suggestion_id=suggestion.id, sent_to_customer=True))
+            self._event(
+                db,
+                case,
+                actor_id,
+                f"suggestion_{decision}",
+                {"suggestionId": suggestion.id, "reason": reason},
+            )
+            OutboundService(build_customer_channel()).confirm(
+                db,
+                owner_id=owner_id,
+                case_id=case.id,
+                actor_id=actor_id,
+                content=outgoing,
+                expected_version=case.version,
+                idempotency_key=f"legacy-decision:{suggestion.id}",
+                suggestion_id=suggestion.id,
+            )
+            return self.detail(db, owner_id, case.id)
         if decision == "escalated":
             case.status = "escalated"
         case.unread = False
@@ -790,6 +876,21 @@ class SupportService:
             "decision": decision.decision if decision else None,
             "finalContent": decision.final_content if decision else None,
             "createdAt": item.created_at.isoformat(),
+        }
+
+    @staticmethod
+    def _outbound(item: OutboundMessage) -> dict:
+        return {
+            "id": item.id,
+            "channel": item.channel,
+            "status": item.status,
+            "externalId": item.external_id,
+            "failureReason": item.failure_reason,
+            "isDemo": item.is_demo,
+            "deliveryClaim": "simulated" if item.is_demo else "external-status",
+            "createdAt": item.created_at.isoformat(),
+            "sentAt": item.sent_at.isoformat() if item.sent_at else None,
+            "deliveredAt": item.delivered_at.isoformat() if item.delivered_at else None,
         }
 
     @staticmethod

@@ -8,11 +8,13 @@ import {
   FileText,
   Inbox,
   Loader2,
+  Package,
   RefreshCw,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
+  Truck,
   UserRoundCheck
 } from "lucide-react";
 import { toast } from "sonner";
@@ -30,12 +32,14 @@ import {
   getSupportCase,
   getSupportCases,
   getSupportMetrics,
+  getSupportWorkspace,
   sendManualReply,
   transitionSupportCase,
   type CaseStatus,
   type SupportCaseDetail,
   type SupportCaseSummary,
-  type SupportMetrics
+  type SupportMetrics,
+  type SupportWorkspace
 } from "@/services/supportService";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -57,6 +61,13 @@ const priorityTone = {
   normal: "text-slate-600",
   high: "text-orange-600",
   urgent: "text-rose-600"
+};
+const fulfillmentStatuses: Record<string, string> = {
+  pending: "待履约",
+  preparing: "备货中",
+  delivering: "配送中",
+  delivered: "已送达",
+  cancelled: "已取消"
 };
 
 function Metric({
@@ -131,6 +142,7 @@ export function SupportWorkbenchPage() {
   const [cases, setCases] = useState<SupportCaseSummary[]>([]);
   const [detail, setDetail] = useState<SupportCaseDetail | null>(null);
   const [metrics, setMetrics] = useState<SupportMetrics | null>(null);
+  const [workspace, setWorkspace] = useState<SupportWorkspace | null>(null);
   const [status, setStatus] = useState<string>("pending");
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
@@ -138,8 +150,9 @@ export function SupportWorkbenchPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const selectCase = useCallback(async (id: number) => {
-    const value = await getSupportCase(id);
+    const [value, context] = await Promise.all([getSupportCase(id), getSupportWorkspace(id)]);
     setDetail(value);
+    setWorkspace(context);
     const suggestion = value.suggestions.find((x) => !x.decision);
     setEdited(suggestion?.content || "");
   }, []);
@@ -171,6 +184,7 @@ export function SupportWorkbenchPage() {
     try {
       const value = await fn();
       setDetail(value);
+      setWorkspace(await getSupportWorkspace(value.id));
       setCases((list) => list.map((x) => (x.id === value.id ? value : x)));
       setMetrics(await getSupportMetrics());
       setEdited(value.suggestions.find((x) => !x.decision)?.content || "");
@@ -413,6 +427,66 @@ export function SupportWorkbenchPage() {
           )}
         </main>
         <aside className="border-l border-slate-200 bg-white">
+          <section className="border-b border-slate-200 p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
+                  <Package className="h-4 w-4" />
+                </span>
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900">订单上下文</h2>
+                  <p className="text-[11px] text-slate-400">客服判断所需的交易事实</p>
+                </div>
+              </div>
+              {workspace?.order?.isDemo && <Badge variant="outline">模拟订单</Badge>}
+            </div>
+            {workspace?.order ? (
+              <div className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-mono text-xs font-semibold text-slate-900">
+                      {workspace.order.orderNo}
+                    </p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      {workspace.order.items.map((item) => `${item.productName} ×${item.quantity}`).join("、")}
+                    </p>
+                  </div>
+                  <strong className="text-sm text-slate-900">
+                    ¥{(workspace.order.amount.minor / 100).toFixed(2)}
+                  </strong>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="rounded-lg bg-white p-2">
+                    <span className="text-slate-400">履约状态</span>
+                    <p className="mt-1 flex items-center gap-1 font-medium text-slate-800">
+                      <Truck className="h-3.5 w-3.5 text-cyan-600" />
+                      {fulfillmentStatuses[workspace.order.fulfillment?.status || ""] || "暂无履约"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-white p-2">
+                    <span className="text-slate-400">退款状态</span>
+                    <p className="mt-1 font-medium text-slate-800">
+                      {workspace.order.refund?.status || "无退款申请"}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-[10px] leading-4 text-slate-400">
+                  {workspace.order.fulfillment?.currentLocation
+                    ? `当前位置：${workspace.order.fulfillment.currentLocation}`
+                    : "当前位置未接入，不展示虚构轨迹"}
+                </p>
+              </div>
+            ) : (
+              <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-500">
+                当前工单未关联订单，可继续按知识规则处理。
+              </p>
+            )}
+            {workspace?.outboundMessages[0] && (
+              <p className="mt-3 text-[11px] text-slate-500">
+                最近发送：{workspace.outboundMessages[0].isDemo ? "模拟发送" : "外部渠道"} · {workspace.outboundMessages[0].status}
+              </p>
+            )}
+          </section>
           <header className="flex items-center justify-between border-b border-slate-200 p-4">
             <div className="flex items-center gap-3">
               <span className="rounded-xl bg-violet-100 p-2 text-violet-600">

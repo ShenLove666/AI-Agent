@@ -10,7 +10,7 @@
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026` 登录后进入“即时零售运营”。日常启动不需要重复执行 `npm install` 或 `npm run build`。
+访问 `http://127.0.0.1:8081/login`。管理后台使用 `support-admin / AdminDemo@2026`；普通商家对话使用 `merchant-demo / AdminDemo@2026`。日常启动不需要重复执行 `npm install` 或 `npm run build`。
 
 首次完整初始化（会导入项目内已校验快照、12 篇知识和 360 条来源关联案例）：
 
@@ -31,6 +31,9 @@ $env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
 - 关键词与向量检索通道并发执行，单个通道异常不会拖垮整次请求
 - 基于数据库 Chunk ID 的 Weighted RRF 真正融合、可选 CrossEncoder 重排和元数据补全
 - LangGraph ReAct 查询规划、工具自主路由、证据审查、受限重试、引用生成、同步回答与 SSE 流式回答
+- 结构化 Evidence Reviewer：检查意图相关性、证据覆盖、冲突、权威性和高风险缺失字段
+- 商家所有权隔离的订单、商品、履约、退款和顾客快照，并在客服工作台聚合展示
+- 人工确认后的外发审计；本地 Demo 明确标记模拟发送，生产可切换 HMAC 签名 Webhook
 - 对话可选择全部或指定知识库作为检索范围，关键词与向量通道使用同一 Scope
 - 深度思考模式：按供应商切换推理模型/思考开关，并流式展示、持久化思考过程
 - SSE 请求幂等、首 Token/空闲/总生成超时和即时取消传播
@@ -57,8 +60,10 @@ Browser
                  ├─ LangGraph ReAct coordinator
                  │    ├─ knowledge_search (keyword + Milvus)
                  │    ├─ commerce_data (verified SQL snapshots)
+                 │    ├─ order / fulfillment / refund tools
                  │    └─ support_cases (provenance-aware SQL)
-                 ├─ evidence review / bounded retry / trace
+                 ├─ structured evidence review / bounded retry / trace
+                 ├─ human confirmation / outbound audit
                  └─ model router
                       ├─ primary API
                       └─ backup API (optional)
@@ -132,7 +137,7 @@ uv run python server.py
 
 浏览器访问 `http://127.0.0.1:8081`。FastAPI 会直接托管 `web/dist`，生产环境不需要再暴露 Vite 的 3000 端口。
 
-应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0005_support_quality_loop`：
+应用在 FastAPI lifespan 启动阶段会自动执行等价于 `alembic upgrade head` 的迁移，并在迁移成功后才接受请求。也可以在启动前显式升级；当前 Alembic head 为 `0007_v3_order_outbound`：
 
 ```powershell
 .\.venv\Scripts\alembic.exe upgrade head
@@ -155,9 +160,9 @@ npm run dev
 
 ## 检索模式
 
-### 轻量模式（默认）
+### 轻量模式
 
-不设置 `EMBED_MODEL_PATH`。系统使用 jieba 关键词检索和 SQLite，适合开发、接口联调和小数据演示，没有模型下载成本。
+设置 `VECTOR_BACKEND=disabled`。系统使用 jieba 关键词检索和 SQLite，适合开发、接口联调和小数据演示。
 
 ### 本地小模型 + 内存向量库
 
@@ -195,6 +200,9 @@ $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 | `CHAT_FIRST_TOKEN_TIMEOUT_SECONDS` | `20` | 流式生成首 Token 超时 |
 | `CHAT_IDLE_TIMEOUT_SECONDS` | `30` | 流式生成 Token 间最大空闲时间 |
 | `MAX_UPLOAD_FILE_SIZE` | `52428800` | 服务端允许的单文件最大字节数 |
+| `CUSTOMER_CHANNEL` | `demo` | 客服外发渠道；`demo` 只模拟发送，`webhook` 调用外部渠道 |
+| `CUSTOMER_WEBHOOK_URL` | 未设置 | `CUSTOMER_CHANNEL=webhook` 时的 HTTPS 接收地址 |
+| `CUSTOMER_WEBHOOK_SECRET` | 未设置 | Webhook HMAC-SHA256 签名密钥，禁止提交到仓库 |
 | `DEEPSEEK_REASONING_MODEL` | `deepseek-v4-flash` | 开启深度思考时使用的 DeepSeek 模型 |
 | `MIMO_REASONING_MODEL` | 与普通模型相同 | 小米 MiMo 深度思考模型；同时发送 thinking 开关 |
 | `BACKUP_LLM_REASONING_MODEL` | 未设置 | 备用接口的推理模型 ID |
@@ -281,7 +289,7 @@ $env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、50 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
+访问 `http://127.0.0.1:8081/login`，管理后台使用 `support-admin / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、36 组订单/履约/退款上下文、50 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
 
 仓库默认发现 `models/bge-small-zh-v1.5` 后启用本地 Embedding，并把向量写入 `data/milvus-ragent.db`；`VECTOR_BACKEND=memory` 可显式切换为测试内存模式。模型不可用时关键词检索和人工工作台仍可运行。Milvus Lite 用于本地演示；生产环境应在有足够磁盘的 Linux 主机上部署 Milvus Standalone。
 

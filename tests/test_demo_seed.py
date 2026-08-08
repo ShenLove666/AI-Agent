@@ -37,7 +37,9 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.orders.models import Order, OrderItem
 from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
+from app.modules.support.models import SupportCase
 from app.modules.users.models import User
 from app.modules.vector.indexer import VectorIndexer
 
@@ -662,6 +664,59 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
     assert all(not path.exists() for path in demo_files)
 
 
+def test_seed_links_truthful_order_context_and_clear_preserves_ordinary_orders(
+    app, db: Session
+):
+    service = DemoSeedService(app.state.container)
+
+    service.seed(db, password="StrongDemo123!")
+    service.seed(db, password="StrongDemo123!")
+
+    demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
+    demo_orders = list(
+        db.scalars(
+            select(Order).where(Order.owner_id == demo_user.id).order_by(Order.order_no)
+        )
+    )
+    linked_case_count = db.scalar(
+        select(func.count(SupportCase.id)).where(
+            SupportCase.owner_id == demo_user.id,
+            SupportCase.order_id.is_not(None),
+        )
+    )
+    assert len(demo_orders) == 36
+    assert linked_case_count == 36
+    assert demo_orders[0].order_no == "NB-DEMO-001"
+    assert (
+        json.loads(demo_orders[0].lineage_json)["orderState"]["provenance"]
+        == "synthetic"
+    )
+    assert db.scalar(
+        select(func.count(OrderItem.id))
+        .join(Order)
+        .where(Order.owner_id == demo_user.id)
+    ) >= 36
+
+    ordinary = User(username="ordinary-order-owner", password_hash="hash")
+    db.add(ordinary)
+    db.flush()
+    ordinary_order = Order(
+        owner_id=ordinary.id,
+        order_no="NB-ORDINARY-001",
+        status="paid",
+        total_amount_minor=1234,
+        is_demo=False,
+    )
+    db.add(ordinary_order)
+    db.commit()
+    ordinary_order_id = ordinary_order.id
+
+    service.clear(db)
+
+    assert db.scalar(select(func.count(Order.id)).where(Order.owner_id == demo_user.id)) == 0
+    assert db.get(Order, ordinary_order_id) is not None
+
+
 class _OfflineEmbeddingModel:
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[float(index + 1)] for index, _text in enumerate(texts)]
@@ -766,6 +821,7 @@ def test_demo_cli_prompts_with_getpass_when_named_env_is_absent(
 ):
     database_url = f"sqlite:///{tmp_path / 'prompted-password.db'}"
     monkeypatch.setenv("DB_URL", database_url)
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
     monkeypatch.delenv("ABSENT_DEMO_PASSWORD", raising=False)
     prompts: list[str] = []
 

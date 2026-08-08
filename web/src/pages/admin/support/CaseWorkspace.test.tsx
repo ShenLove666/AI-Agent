@@ -5,6 +5,7 @@ import { SupportWorkbenchPage } from "./SupportWorkbenchPage";
 vi.mock("@/services/supportService",()=>({
  getSupportCases:vi.fn().mockResolvedValue([{id:2,caseKey:"demo-2",customerName:"周先生",channel:"app",subject:"配送超时处理",status:"in_progress",priority:"high",assigneeId:1,labels:["delivery"],unread:false,version:2,isDemo:true,lastMessage:"订单迟到了",updatedAt:"2026-08-07T00:00:00"}]),
  getSupportMetrics:vi.fn().mockResolvedValue({totalCases:1,pendingCases:0,resolvedCases:0,escalatedCases:0,resolutionRate:0,acceptanceRate:null,editRate:null,citationCoverage:null,provenance:"demo"}),
+ getSupportWorkspace:vi.fn().mockResolvedValue({case:{id:2},order:null,activeSuggestion:null,outboundMessages:[],diagnostics:{messageCount:1,suggestionCount:0,outboundCount:0}}),
  getSupportCase:vi.fn().mockResolvedValue({id:2,caseKey:"demo-2",customerName:"周先生",channel:"app",subject:"配送超时处理",status:"in_progress",priority:"high",assigneeId:1,labels:["delivery"],unread:false,version:2,isDemo:true,lastMessage:"订单迟到了",updatedAt:"2026-08-07T00:00:00",resolutionCode:null,resolutionNote:null,messages:[{id:2,role:"customer",content:"订单迟到了",sentToCustomer:false,suggestionId:null,createdAt:"2026-08-07T00:00:00"}],events:[],suggestions:[]}),
  assignSupportCase:vi.fn(),transitionSupportCase:vi.fn(),sendManualReply:vi.fn(),generateSupportSuggestion:vi.fn(),decideSupportSuggestion:vi.fn()
 }));

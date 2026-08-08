@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
+from app.framework.errors import AppError
 from app.modules.commerce.models import AssociationRule, Basket, BasketItem, CommerceImport, Product
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
+from app.modules.orders.service import OrderService
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import RetrievalRequest, SearchResult
 from app.modules.support.models import KnowledgeGap, SupportCase, SupportQualityLabel
@@ -44,6 +46,10 @@ class SupportSearchInput(_ToolInput):
     query: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=30)
     limit: int = Field(default=8, ge=1, le=20)
+
+
+class OrderLookupInput(_ToolInput):
+    order_no: str = Field(min_length=1, max_length=80)
 
 
 class ToolEvidence(BaseModel):
@@ -134,6 +140,16 @@ def _loads(value: str | None, fallback: Any) -> Any:
 
 
 def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRegistry:
+    order_service = OrderService()
+
+    def order_context(context: ToolContext, order_no: str) -> dict | None:
+        try:
+            return order_service.detail(context.db, context.owner_id, order_no)
+        except AppError as exc:
+            if exc.code == "ORDER_NOT_FOUND":
+                return None
+            raise
+
     async def knowledge_search(context: ToolContext, value: QueryInput) -> list[ToolEvidence]:
         if retrieval is None:
             rows = context.db.execute(
@@ -198,11 +214,89 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
         rows = list(context.db.scalars(query.order_by(KnowledgeGap.occurrence_count.desc()).limit(value.limit)))
         return [ToolEvidence(id=f"knowledge-gap:{item.id}", content=f"知识缺口：{item.title}；类别 {item.category}，严重度 {item.severity}，出现 {item.occurrence_count} 次。", source="knowledge_gaps", provenance="derived", metadata={"gap_id": item.id, "severity": item.severity}) for item in rows]
 
+    async def get_order(context: ToolContext, value: OrderLookupInput) -> list[ToolEvidence]:
+        detail = order_context(context, value.order_no)
+        if detail is None:
+            return []
+        amount = detail["amount"]
+        return [ToolEvidence(
+            id=f"order:{detail['id']}",
+            content=(
+                f"订单 {detail['orderNo']} 状态为 {detail['status']}，"
+                f"金额 {amount['minor']} {amount['currency']}（最小货币单位），"
+                f"共 {len(detail['items'])} 项商品。"
+            ),
+            source="orders",
+            provenance=detail["provenance"],
+            metadata={
+                "factType": "order",
+                "orderId": detail["id"],
+                "orderNo": detail["orderNo"],
+                "status": detail["status"],
+                "amount": amount,
+                "items": detail["items"],
+                "lineage": detail["lineage"],
+            },
+        )]
+
+    async def get_delivery_status(context: ToolContext, value: OrderLookupInput) -> list[ToolEvidence]:
+        detail = order_context(context, value.order_no)
+        fulfillment = detail.get("fulfillment") if detail else None
+        if fulfillment is None:
+            return []
+        return [ToolEvidence(
+            id=f"fulfillment:{fulfillment['id']}",
+            content=(
+                f"订单 {detail['orderNo']} 配送状态为 {fulfillment['status']}；"
+                f"预计送达 {fulfillment['estimatedDeliveryAt'] or '未知'}，"
+                f"实际送达 {fulfillment['deliveredAt'] or '尚未送达'}。"
+            ),
+            source="fulfillments",
+            provenance=detail["provenance"],
+            metadata={"factType": "delivery", "orderNo": detail["orderNo"], **fulfillment},
+        )]
+
+    async def get_refund_status(context: ToolContext, value: OrderLookupInput) -> list[ToolEvidence]:
+        detail = order_context(context, value.order_no)
+        refund = detail.get("refund") if detail else None
+        if refund is None:
+            return []
+        return [ToolEvidence(
+            id=f"refund:{refund['id']}",
+            content=(
+                f"订单 {detail['orderNo']} 退款状态为 {refund['status']}，"
+                f"退款金额 {refund['amountMinor']}（最小货币单位）。"
+            ),
+            source="refunds",
+            provenance=detail["provenance"],
+            metadata={"factType": "refund", "orderNo": detail["orderNo"], **refund},
+        )]
+
+    async def get_customer_history(context: ToolContext, value: OrderLookupInput) -> list[ToolEvidence]:
+        detail = order_context(context, value.order_no)
+        customer = detail.get("customer") if detail else None
+        if customer is None:
+            return []
+        return [ToolEvidence(
+            id=f"customer:{customer['id']}",
+            content=(
+                f"顾客 {customer['displayName']} 历史订单 {customer['orderCount']} 笔，"
+                f"退款 {customer['refundCount']} 笔。"
+            ),
+            source="customer_snapshots",
+            provenance="synthetic" if customer["isDemo"] else "observed",
+            metadata={"factType": "customer_history", "orderNo": detail["orderNo"], **customer},
+        )]
+
     tools = [
         AgentTool("knowledge.search", "检索当前商家的政策、SOP 与规则证据", QueryInput, knowledge_search),
         AgentTool("knowledge.get_document", "读取当前商家指定知识文档", RecordInput, knowledge_document),
         AgentTool("commerce.search_association_rules", "查询商品关联规则", AssociationInput, association_rules),
         AgentTool("commerce.get_product_metrics", "查询商品交易覆盖指标", ProductMetricsInput, product_metrics),
+        AgentTool("commerce.get_order", "按订单号查询订单与商品事实", OrderLookupInput, get_order),
+        AgentTool("commerce.get_delivery_status", "按订单号查询履约与配送事实", OrderLookupInput, get_delivery_status),
+        AgentTool("commerce.get_refund_status", "按订单号查询退款事实", OrderLookupInput, get_refund_status),
+        AgentTool("commerce.get_customer_history", "按订单号查询顾客历史快照", OrderLookupInput, get_customer_history),
         AgentTool("support.search_cases", "检索客服案例", SupportSearchInput, support_cases),
         AgentTool("support.get_quality_metrics", "查询客服质检指标", QueryInput, quality_metrics),
         AgentTool("support.get_knowledge_gaps", "查询待解决知识缺口", QueryInput, knowledge_gaps),

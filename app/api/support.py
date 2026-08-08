@@ -7,10 +7,12 @@ from app.api.dependencies import CurrentUser, DbSession
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.support.service import SupportService
+from app.modules.support.outbound import OutboundService, build_customer_channel
 
 
 router = APIRouter(prefix="/support", tags=["merchant-support"])
 service = SupportService()
+outbound_service = OutboundService(build_customer_channel())
 
 
 class TransitionRequest(BaseModel):
@@ -69,6 +71,13 @@ class QualityLabelRequest(BaseModel):
     suggestion_id: int | None = Field(default=None, alias="suggestionId")
 
 
+class OutboundRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=10000)
+    expected_version: int = Field(alias="expectedVersion", ge=1)
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=8, max_length=100)
+    suggestion_id: int | None = Field(default=None, alias="suggestionId")
+
+
 def _owner(db, user) -> int:
     return service.owner_for(db, user)
 
@@ -102,6 +111,14 @@ def list_cases(
 @router.get("/cases/{case_id}")
 def case_detail(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.detail(db, _owner(db, user), case_id), traceId=current_trace_id())
+
+
+@router.get("/cases/{case_id}/workspace")
+def case_workspace(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(
+        data=service.workspace(db, _owner(db, user), case_id),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/cases/{case_id}/provenance")
@@ -145,6 +162,28 @@ def labels(case_id: int, payload: LabelsRequest, db: DbSession, user: CurrentUse
 @router.post("/cases/{case_id}/replies")
 def manual_reply(case_id: int, payload: ReplyRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.manual_reply(db, _owner(db, user), case_id, int(user.id), payload.content), traceId=current_trace_id())
+
+
+@router.post("/cases/{case_id}/outbound")
+def confirm_outbound(
+    case_id: int,
+    payload: OutboundRequest,
+    db: DbSession,
+    user: CurrentUser,
+) -> ApiResponse:
+    return ApiResponse(
+        data=outbound_service.confirm(
+            db,
+            owner_id=_owner(db, user),
+            case_id=case_id,
+            actor_id=int(user.id),
+            content=payload.content,
+            expected_version=payload.expected_version,
+            idempotency_key=payload.idempotency_key,
+            suggestion_id=payload.suggestion_id,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/cases/{case_id}/suggestions")

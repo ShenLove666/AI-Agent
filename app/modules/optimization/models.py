@@ -23,3 +23,5 @@ class OptimizationTask(Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    association_rule_id: Mapped[int | None] = mapped_column(ForeignKey("commerce_association_rules.id", name="fk_optimization_task_rule"), nullable=True, index=True)
+    support_case_id: Mapped[int | None] = mapped_column(ForeignKey("support_cases.id", name="fk_optimization_task_support_case"), nullable=True, index=True)

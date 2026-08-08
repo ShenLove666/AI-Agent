@@ -34,6 +34,7 @@ class SupportCase(Base):
     generator_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
     generator_seed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     field_lineage_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
+    order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id", name="fk_support_case_order"), nullable=True, index=True)
 
 
 class SupportMessage(Base):

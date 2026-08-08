@@ -78,6 +78,77 @@ export interface SupportCaseDetail extends SupportCaseSummary {
   events: Array<{ id: number; type: string; payload: Record<string, unknown>; occurredAt: string }>;
   suggestions: SupportSuggestion[];
 }
+export interface SupportOrderContext {
+  id: number;
+  orderNo: string;
+  status: string;
+  amount: { currency: string; minor: number };
+  placedAt: string | null;
+  isDemo: boolean;
+  provenance: "observed" | "synthetic";
+  lineage: Record<string, unknown>;
+  items: Array<{
+    id: number;
+    sku: string;
+    productId: number | null;
+    productName: string;
+    quantity: number;
+    unitPriceMinor: number;
+    lineage: Record<string, unknown>;
+  }>;
+  fulfillment: null | {
+    id: number;
+    status: string;
+    carrier: string | null;
+    trackingNo: string | null;
+    estimatedDeliveryAt: string | null;
+    deliveredAt: string | null;
+    currentLocation: string | null;
+    delayMinutes: number | null;
+    delayProvenance: "derived" | "unavailable";
+    updatedAt: string;
+    lineage: Record<string, unknown>;
+  };
+  refund: null | {
+    id: number;
+    status: string;
+    amountMinor: number;
+    reason: string | null;
+    requestedAt: string | null;
+    resolvedAt: string | null;
+    lineage: Record<string, unknown>;
+  };
+  customer: null | {
+    id: number;
+    customerKey: string;
+    displayName: string;
+    tier: string;
+    orderCount: number;
+    refundCount: number;
+    lifetimeValueMinor: number;
+    capturedAt: string;
+    isDemo: boolean;
+    lineage: Record<string, unknown>;
+  };
+}
+export interface SupportWorkspace {
+  case: SupportCaseSummary;
+  order: SupportOrderContext | null;
+  activeSuggestion: SupportSuggestion | null;
+  outboundMessages: Array<{
+    id: number;
+    channel: string;
+    status: string;
+    externalId: string | null;
+    failureReason: string | null;
+    isDemo: boolean;
+    deliveryClaim: "simulated" | "external-status";
+    createdAt: string;
+    sentAt: string | null;
+    deliveredAt: string | null;
+  }>;
+  diagnostics: { messageCount: number; suggestionCount: number; outboundCount: number };
+}
 export type CaseProvenance = SupportCaseDetail["provenance"] & {
   caseId: number;
   caseKey: string;
@@ -176,6 +247,8 @@ export const getSupportCases = (params: Record<string, unknown> = {}) =>
   api.get<never, SupportCaseSummary[]>("/support/cases", { params });
 export const getSupportCase = (id: number) =>
   api.get<never, SupportCaseDetail>(`/support/cases/${id}`);
+export const getSupportWorkspace = (id: number) =>
+  api.get<never, SupportWorkspace>(`/support/cases/${id}/workspace`);
 export const getCaseProvenance = (id: number) =>
   api.get<never, CaseProvenance>(`/support/cases/${id}/provenance`);
 export const getSupportCoverage = () => api.get<never, SupportCoverage>("/support/coverage");

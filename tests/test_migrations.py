@@ -15,6 +15,7 @@ from app.modules.evaluation import models as evaluation_models  # noqa: F401,E40
 from app.modules.knowledge import models as knowledge_models  # noqa: F401,E402
 from app.modules.rag import trace_models as rag_trace_models  # noqa: F401,E402
 from app.modules.operations import models as operation_models  # noqa: F401,E402
+from app.modules.orders import models as order_models  # noqa: F401,E402
 from app.modules.provenance import models as provenance_models  # noqa: F401,E402
 from app.modules.optimization import models as optimization_models  # noqa: F401,E402
 from app.modules.support import models as support_models  # noqa: F401,E402
@@ -683,6 +684,51 @@ def test_evaluation_revision_creates_and_drops_dataset_tables(tmp_path):
 
     assert {"evaluation_datasets", "evaluation_cases"}.isdisjoint(
         inspect(database.engine).get_table_names()
+    )
+
+
+def test_v3_order_revision_creates_owned_business_aggregates_and_downgrades(tmp_path):
+    database = Database(f"sqlite:///{tmp_path / 'v3-order-revision.db'}")
+    config = build_alembic_config(
+        database.engine.url.render_as_string(hide_password=False)
+    )
+
+    command.upgrade(config, "head")
+
+    inspector = inspect(database.engine)
+    expected_tables = {
+        "orders",
+        "order_items",
+        "fulfillments",
+        "refunds",
+        "customer_snapshots",
+        "outbound_messages",
+    }
+    assert expected_tables <= set(inspector.get_table_names())
+    assert ("owner_id", "order_no") in {
+        tuple(constraint.get("column_names") or ())
+        for constraint in inspector.get_unique_constraints("orders")
+    }
+    assert ("owner_id", "idempotency_key") in {
+        tuple(constraint.get("column_names") or ())
+        for constraint in inspector.get_unique_constraints("outbound_messages")
+    }
+    assert {"order_id", "field_lineage_json"} <= {
+        column["name"] for column in inspector.get_columns("support_cases")
+    }
+    assert {"association_rule_id", "support_case_id"} <= {
+        column["name"] for column in inspector.get_columns("optimization_tasks")
+    }
+
+    command.downgrade(config, "0006_retail_data_provenance")
+
+    inspector = inspect(database.engine)
+    assert expected_tables.isdisjoint(inspector.get_table_names())
+    assert "order_id" not in {
+        column["name"] for column in inspector.get_columns("support_cases")
+    }
+    assert {"association_rule_id", "support_case_id"}.isdisjoint(
+        column["name"] for column in inspector.get_columns("optimization_tasks")
     )
 
 

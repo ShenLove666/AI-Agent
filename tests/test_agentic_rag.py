@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 from app.modules.rag.agentic import AgenticRagCoordinator
 from app.framework.database import Database
 from app.framework.migrations import upgrade_database
+from app.modules.orders.models import Fulfillment, Order
+from app.modules.users.models import User
 
 
 class _PlanningRouter:
@@ -68,5 +71,60 @@ def test_malformed_model_plan_uses_typed_deterministic_fallback(tmp_path: Path):
             assert result.runtime_mode == "deterministic_fallback"
             assert result.steps[0]["calls"][0]["name"] == "knowledge.search"
             assert result.terminal_state == "escalated"
+
+    asyncio.run(scenario())
+
+
+def test_offline_agent_uses_order_and_delivery_tools_when_order_number_is_present(
+    tmp_path: Path,
+):
+    async def scenario():
+        database = Database(f"sqlite:///{tmp_path / 'order-agent.db'}")
+        upgrade_database(database)
+        with database.session_factory() as db:
+            owner = User(username="order-agent", password_hash="hash")
+            db.add(owner)
+            db.flush()
+            order = Order(
+                owner_id=owner.id,
+                order_no="NB-AGENT-001",
+                status="delivering",
+                total_amount_minor=5600,
+                is_demo=True,
+            )
+            db.add(order)
+            db.flush()
+            db.add(
+                Fulfillment(
+                    order_id=order.id,
+                    status="delayed",
+                    estimated_delivery_at=datetime(2026, 8, 8, 11, 0),
+                    updated_at=datetime(2026, 8, 8, 10, 30),
+                )
+            )
+            db.commit()
+
+            result = await AgenticRagCoordinator(
+                None, None, max_steps=1
+            ).run(
+                db,
+                user_id=owner.id,
+                question="订单 NB-AGENT-001 什么时候送达？",
+            )
+
+            calls = result.steps[0]["calls"]
+            assert [call["name"] for call in calls] == [
+                "commerce.get_order",
+                "commerce.get_delivery_status",
+            ]
+            assert all(
+                call["arguments"] == {"order_no": "NB-AGENT-001"}
+                for call in calls
+            )
+            assert result.terminal_state == "grounded"
+            assert {item.channel for item in result.results} == {
+                "commerce.get_order",
+                "commerce.get_delivery_status",
+            }
 
     asyncio.run(scenario())
