@@ -63,7 +63,7 @@ export function ChatInput() {
     <div className="space-y-2">
       <div
         className={cn(
-          "relative flex min-w-0 flex-col rounded-[var(--merchant-radius-md)] border bg-white px-3 pb-2 pt-3 transition-all duration-200 sm:px-4",
+          "relative flex min-w-0 flex-col rounded-[18px] border bg-white px-3 pb-2 pt-3 shadow-[0_10px_30px_rgba(8,43,69,0.075)] transition-all duration-200 sm:px-5 sm:pt-4",
           isFocused
             ? "border-[var(--merchant-cyan)] shadow-[var(--merchant-shadow-md)]"
             : "border-[var(--merchant-border)] hover:border-[var(--merchant-cyan-border)]"
@@ -75,7 +75,7 @@ export function ChatInput() {
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder={deepThinkingEnabled ? "输入需要深入核对的售后场景..." : "继续补充订单与售后信息..."}
-            className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-1 pb-2 pt-2 text-sm text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
+            className="max-h-40 min-h-[52px] w-full resize-none border-0 bg-transparent px-1 pb-3 pt-2 text-sm leading-6 text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
             rows={1}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}

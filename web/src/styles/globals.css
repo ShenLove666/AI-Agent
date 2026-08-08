@@ -2914,11 +2914,13 @@ textarea {
 }
 
 .user-message {
-  background: #f5f5f5;
-  color: #333333;
-  padding: 10px 16px;
-  border-radius: 16px 16px 4px 16px;
-  max-width: 80%;
+  background: linear-gradient(135deg, #eaf8f9 0%, #f1f7f8 100%);
+  color: var(--merchant-text);
+  padding: 13px 18px;
+  border: 1px solid var(--merchant-cyan-border);
+  border-radius: 18px 18px 5px 18px;
+  box-shadow: 0 5px 16px rgba(8, 43, 69, 0.045);
+  max-width: 72%;
   width: fit-content;
   margin-left: auto;
   font-size: 15px;

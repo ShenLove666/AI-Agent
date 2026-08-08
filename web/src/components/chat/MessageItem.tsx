@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Brain, ChevronDown, ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
+import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 
 import { FeedbackButtons } from "@/components/chat/FeedbackButtons";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
@@ -78,7 +78,22 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
   const thinkingDuration = renderedMessage.thinkingDuration ? `${renderedMessage.thinkingDuration}秒` : "";
   return (
     <div className="group flex">
-      <div className="min-w-0 flex-1 space-y-4">
+      <div className="min-w-0 flex-1 space-y-3 rounded-[20px] border border-[#dfe7eb] bg-white p-5 shadow-[0_8px_24px_rgba(8,43,69,0.055)] lg:p-6">
+        <div className="flex items-center justify-between gap-4 border-b border-[#edf1f3] pb-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--merchant-navy)] text-white shadow-[0_5px_12px_rgba(8,43,69,0.18)]">
+              <Bot className="h-[18px] w-[18px]" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[var(--merchant-text)]">邻里售后助手</p>
+              <p className="truncate text-[11px] text-[var(--merchant-text-muted)]">基于已发布规则提供可追溯建议</p>
+            </div>
+          </div>
+          <span className="hidden items-center gap-1.5 rounded-full border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--merchant-cyan-strong)] sm:inline-flex">
+            <Sparkles className="h-3 w-3" />
+            AI 辅助
+          </span>
+        </div>
         {isThinking ? (
           <ThinkingIndicator content={renderedMessage.thinking} duration={renderedMessage.thinkingDuration} />
         ) : null}
@@ -143,7 +158,7 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
             <p className="text-xs font-medium text-rose-500">请求被拒绝</p>
           ) : null}
           {showFeedback || hasSources || canRecommend || Boolean(message.turnId) ? (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 border-t border-[#edf1f3] pt-3">
               {showFeedback ? (
                 <FeedbackButtons
                   messageId={renderedMessage.id}

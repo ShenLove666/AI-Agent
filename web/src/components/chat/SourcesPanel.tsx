@@ -42,17 +42,19 @@ export function SourcesPanel() {
     <aside
       className={cn(
         "h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out",
-        open ? "w-[380px] border-l border-[#EFEFEF]" : "w-0"
+        open ? "w-[360px] border-l border-[#dce5e9]" : "w-0"
       )}
       aria-hidden={!open}
       inert={open ? undefined : ("" as unknown as boolean)}
     >
       {open ? (
-        <div className="flex h-full w-[380px] flex-col bg-white">
-          <div className="flex items-center justify-between border-b border-[#F0F0F0] px-5 py-4">
-            <span className="text-[15px] font-semibold text-[#1A1A1A]">
-              参考来源 ({shownSources.length})
-            </span>
+        <div className="flex h-full w-[360px] flex-col bg-[#f7f9fa]">
+          <div className="border-b border-[#dfe7eb] bg-white px-5 py-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-[15px] font-semibold text-[var(--merchant-text)]">参考来源</span>
+                <p className="mt-0.5 text-xs text-[var(--merchant-text-muted)]">本次回答引用 {shownSources.length} 条知识证据</p>
+              </div>
             <button
               type="button"
               onClick={closeSourcesPanel}
@@ -61,10 +63,11 @@ export function SourcesPanel() {
             >
               <X className="h-4 w-4" />
             </button>
+            </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-3 py-3 sidebar-scroll">
-            <ul className="space-y-1">
+          <div className="flex-1 overflow-y-auto px-4 py-4 sidebar-scroll">
+            <ul className="space-y-2.5">
               {shownSources.map((source, idx) => (
                 <li key={`${source.docId}-${idx}`}>
                   <button
@@ -72,7 +75,7 @@ export function SourcesPanel() {
                     disabled={!canOpenSource(source)}
                     onClick={() => openSource(source)}
                     title={source.docName || "查看来源"}
-                    className="w-full rounded-xl p-3 text-left transition-all enabled:hover:bg-white enabled:hover:shadow-[0_2px_12px_rgba(0,0,0,0.06)] disabled:cursor-default"
+                    className="w-full rounded-2xl border border-[#e0e7ea] bg-white p-4 text-left shadow-[0_4px_14px_rgba(8,43,69,0.035)] transition-all enabled:hover:-translate-y-0.5 enabled:hover:border-[var(--merchant-cyan-border)] enabled:hover:shadow-[0_8px_20px_rgba(8,43,69,0.08)] disabled:cursor-default"
                   >
                     <div className="flex items-start gap-2.5">
                       <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[#EDEDED] text-[11px] font-medium text-[#666666]">
