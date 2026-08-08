@@ -17,12 +17,11 @@ from app.modules.users.models import User
 
 router = APIRouter(prefix="/biz-change-logs", tags=["biz-change-logs"])
 
-# 事件类型 -> (业务类型, 操作类型) 映射
+# 事件类型 -> (业务类型, 操作类型) 映射（与实际 SupportEvent.event_type 对齐）
 _EVENT_MAP: dict[str, tuple[str, str]] = {
     "case_created": ("SUPPORT_CASE", "CREATE"),
-    "case_transitioned": ("SUPPORT_CASE", "UPDATE"),
+    "status_changed": ("SUPPORT_CASE", "UPDATE"),
     "case_assigned": ("SUPPORT_CASE", "UPDATE"),
-    "case_labels_updated": ("SUPPORT_CASE", "UPDATE"),
     "case_escalated": ("SUPPORT_CASE", "UPDATE"),
     "escalation_accepted": ("SUPPORT_CASE", "UPDATE"),
     "escalation_resolved": ("SUPPORT_CASE", "UPDATE"),
@@ -32,7 +31,7 @@ _EVENT_MAP: dict[str, tuple[str, str]] = {
     "suggestion_edited": ("SUPPORT_CASE", "UPDATE"),
     "suggestion_rejected": ("SUPPORT_CASE", "UPDATE"),
     "suggestion_escalated": ("SUPPORT_CASE", "UPDATE"),
-    "outbound_sent": ("SUPPORT_CASE", "RUN"),
+    "outbound_confirmed": ("SUPPORT_CASE", "RUN"),
     "outbound_delivered": ("SUPPORT_CASE", "RUN"),
     "knowledge_release_published": ("KNOWLEDGE_BASE", "CREATE"),
     "knowledge_release_activated": ("KNOWLEDGE_BASE", "UPDATE"),
