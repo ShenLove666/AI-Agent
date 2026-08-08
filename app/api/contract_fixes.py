@@ -181,7 +181,6 @@ def public_sample_questions(user: CurrentUser) -> ApiResponse:
 _NOT_IMPLEMENTED_MODULES = (
     ("agents", "/agents"),
     ("dashboard", "/admin/dashboard"),
-    ("biz-change-logs", "/biz-change-logs"),
     ("ingestion-pipelines", "/ingestion/pipelines"),
     ("ingestion-tasks", "/ingestion/tasks"),
     ("intent-tree", "/intent-tree"),

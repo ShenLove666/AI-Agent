@@ -15,6 +15,7 @@ from app.api.chat import router as chat_router
 from app.api.compat_chat import router as compat_chat_router
 from app.api.compat_knowledge import router as compat_knowledge_router
 from app.api.compat_misc import router as compat_misc_router
+from app.api.biz_change_logs import router as biz_change_logs_router
 from app.api.compat_trace import router as compat_trace_router
 from app.api.contract_fixes import router as contract_fixes_router
 from app.api.conversations import router as conversation_router
@@ -217,6 +218,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
         compat_knowledge_router,
         compat_chat_router,
         compat_trace_router,
+        biz_change_logs_router,
         compat_misc_router,
     ):
         app.include_router(router, prefix=prefix)
