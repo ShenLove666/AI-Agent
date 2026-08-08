@@ -1578,7 +1578,44 @@ class SupportService:
         runner = AgentEvaluationRunner(coordinator)
         try:
             for case in dataset.cases:
-                execution = await runner.execute_case(db, owner_id=owner_id, case=case)
+                try:
+                    execution = await asyncio.wait_for(
+                        runner.execute_case(db, owner_id=owner_id, case=case),
+                        timeout=120,
+                    )
+                except asyncio.TimeoutError:
+                    # 单用例超时：记录失败结果，继续下一个，避免整个评测永久 running
+                    db.add(
+                        EvaluationResult(
+                            run_id=run.id,
+                            case_id=case.id,
+                            answer="",
+                            expected_point_score=0,
+                            citation_correct=False,
+                            refusal_correct=False,
+                            latency_ms=120000,
+                            evidence_json=json.dumps(
+                                {
+                                    "releaseId": release.id,
+                                    "scoringVersion": SCORING_VERSION,
+                                    "runtimeMode": "timeout",
+                                    "terminalState": "timed_out",
+                                    "tools": [],
+                                    "evidenceIds": [],
+                                    "metrics": {
+                                        "expectedPointScore": 0,
+                                        "citationCorrect": False,
+                                        "refusalCorrect": False,
+                                        "highRiskFailure": False,
+                                    },
+                                    "gateBlocked": False,
+                                    "trace": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    )
+                    continue
                 db.add(
                     EvaluationResult(
                         run_id=run.id,
