@@ -381,6 +381,19 @@ export function RetailOperationsPage() {
                     {statusLabel[item.status] || item.status}
                   </span>
                 </div>
+                {item.rule ? (
+                  <div className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-xs">
+                    <p className="font-medium text-slate-700">
+                      {item.rule.from}
+                      <ArrowRight className="mx-1 inline h-3 w-3 text-teal-600" />
+                      {item.rule.to}
+                    </p>
+                    <p className="mt-1 text-slate-500">
+                      共现 {item.rule.count} 单 · 支持度 {item.rule.support}% · 置信度{" "}
+                      {item.rule.confidence}% · 提升度 {item.rule.lift}
+                    </p>
+                  </div>
+                ) : null}
                 <p className="mt-2 text-xs text-slate-400">版本 v{item.version} · 保留规则快照</p>
               </div>
             ))}

@@ -3,8 +3,12 @@ import { Navigate, createBrowserRouter } from "react-router-dom";
 
 import { useAuthStore } from "@/stores/authStore";
 
-const LoginPage = lazy(() => import("@/pages/LoginPage").then((module) => ({ default: module.LoginPage })));
-const ChatPage = lazy(() => import("@/pages/ChatPage").then((module) => ({ default: module.ChatPage })));
+const LoginPage = lazy(() =>
+  import("@/pages/LoginPage").then((module) => ({ default: module.LoginPage }))
+);
+const ChatPage = lazy(() =>
+  import("@/pages/ChatPage").then((module) => ({ default: module.ChatPage }))
+);
 const ChangeLogsPage = lazy(() =>
   import("@/pages/ChangeLogsPage").then((module) => ({ default: module.ChangeLogsPage }))
 );
@@ -18,22 +22,39 @@ const AdminLayout = lazy(() =>
   import("@/pages/admin/AdminLayout").then((module) => ({ default: module.AdminLayout }))
 );
 const DashboardPage = lazy(() =>
-  import("@/pages/admin/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage }))
+  import("@/pages/admin/dashboard/DashboardPage").then((module) => ({
+    default: module.DashboardPage
+  }))
 );
 const OperationsPage = lazy(() =>
-  import("@/pages/admin/operations/OperationsPage").then((module) => ({ default: module.OperationsPage }))
+  import("@/pages/admin/operations/OperationsPage").then((module) => ({
+    default: module.OperationsPage
+  }))
 );
 const RetailOperationsPage = lazy(() =>
-  import("@/pages/admin/retail/RetailOperationsPage").then((module) => ({ default: module.RetailOperationsPage }))
+  import("@/pages/admin/retail/RetailOperationsPage").then((module) => ({
+    default: module.RetailOperationsPage
+  }))
 );
 const SupportWorkbenchPage = lazy(() =>
-  import("@/pages/admin/support/SupportWorkbenchPage").then((module) => ({ default: module.SupportWorkbenchPage }))
+  import("@/pages/admin/support/SupportWorkbenchPage").then((module) => ({
+    default: module.SupportWorkbenchPage
+  }))
 );
 const SupportOperationsPage = lazy(() =>
-  import("@/pages/admin/support/SupportOperationsPage").then((module) => ({ default: module.SupportOperationsPage }))
+  import("@/pages/admin/support/SupportOperationsPage").then((module) => ({
+    default: module.SupportOperationsPage
+  }))
+);
+const SupervisorQueuePage = lazy(() =>
+  import("@/pages/admin/support/SupervisorQueuePage").then((module) => ({
+    default: module.SupervisorQueuePage
+  }))
 );
 const KnowledgeListPage = lazy(() =>
-  import("@/pages/admin/knowledge/KnowledgeListPage").then((module) => ({ default: module.KnowledgeListPage }))
+  import("@/pages/admin/knowledge/KnowledgeListPage").then((module) => ({
+    default: module.KnowledgeListPage
+  }))
 );
 const KnowledgeDocumentsPage = lazy(() =>
   import("@/pages/admin/knowledge/KnowledgeDocumentsPage").then((module) => ({
@@ -41,16 +62,22 @@ const KnowledgeDocumentsPage = lazy(() =>
   }))
 );
 const KnowledgeChunksPage = lazy(() =>
-  import("@/pages/admin/knowledge/KnowledgeChunksPage").then((module) => ({ default: module.KnowledgeChunksPage }))
+  import("@/pages/admin/knowledge/KnowledgeChunksPage").then((module) => ({
+    default: module.KnowledgeChunksPage
+  }))
 );
 const RagTracePage = lazy(() =>
   import("@/pages/admin/traces/RagTracePage").then((module) => ({ default: module.RagTracePage }))
 );
 const RagTraceDetailPage = lazy(() =>
-  import("@/pages/admin/traces/RagTraceDetailPage").then((module) => ({ default: module.RagTraceDetailPage }))
+  import("@/pages/admin/traces/RagTraceDetailPage").then((module) => ({
+    default: module.RagTraceDetailPage
+  }))
 );
 const SystemSettingsPage = lazy(() =>
-  import("@/pages/admin/settings/SystemSettingsPage").then((module) => ({ default: module.SystemSettingsPage }))
+  import("@/pages/admin/settings/SystemSettingsPage").then((module) => ({
+    default: module.SystemSettingsPage
+  }))
 );
 const UserListPage = lazy(() =>
   import("@/pages/admin/users/UserListPage").then((module) => ({ default: module.UserListPage }))
@@ -107,7 +134,12 @@ function HomeRedirect() {
   const isInitialized = useAuthStore((state) => state.isInitialized);
   const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
-  return <Navigate to={isAuthenticated ? (user?.role === "admin" ? "/admin/support" : "/chat") : "/login"} replace />;
+  return (
+    <Navigate
+      to={isAuthenticated ? (user?.role === "admin" ? "/admin/support" : "/chat") : "/login"}
+      replace
+    />
+  );
 }
 
 export const router = createBrowserRouter([
@@ -117,51 +149,27 @@ export const router = createBrowserRouter([
   },
   {
     path: "/login",
-    element: (
-      <RedirectIfAuth>
-        {withPageSuspense(<LoginPage />)}
-      </RedirectIfAuth>
-    )
+    element: <RedirectIfAuth>{withPageSuspense(<LoginPage />)}</RedirectIfAuth>
   },
   {
     path: "/chat",
-    element: (
-      <RequireAuth>
-        {withPageSuspense(<ChatPage />)}
-      </RequireAuth>
-    )
+    element: <RequireAuth>{withPageSuspense(<ChatPage />)}</RequireAuth>
   },
   {
     path: "/chat/:sessionId",
-    element: (
-      <RequireAuth>
-        {withPageSuspense(<ChatPage />)}
-      </RequireAuth>
-    )
+    element: <RequireAuth>{withPageSuspense(<ChatPage />)}</RequireAuth>
   },
   {
     path: "/change-logs",
-    element: (
-      <RequireAuth>
-        {withPageSuspense(<ChangeLogsPage />)}
-      </RequireAuth>
-    )
+    element: <RequireAuth>{withPageSuspense(<ChangeLogsPage />)}</RequireAuth>
   },
   {
     path: "/preview/doc/:docId",
-    element: (
-      <RequireAuth>
-        {withPageSuspense(<DocPreviewPage />)}
-      </RequireAuth>
-    )
+    element: <RequireAuth>{withPageSuspense(<DocPreviewPage />)}</RequireAuth>
   },
   {
     path: "/admin",
-    element: (
-      <RequireAdmin>
-        {withPageSuspense(<AdminLayout />)}
-      </RequireAdmin>
-    ),
+    element: <RequireAdmin>{withPageSuspense(<AdminLayout />)}</RequireAdmin>,
     children: [
       {
         index: true,
@@ -170,6 +178,10 @@ export const router = createBrowserRouter([
       {
         path: "support",
         element: withPageSuspense(<SupportWorkbenchPage />)
+      },
+      {
+        path: "support-supervisor",
+        element: withPageSuspense(<SupervisorQueuePage />)
       },
       {
         path: "support-knowledge",

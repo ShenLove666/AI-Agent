@@ -7,19 +7,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
-from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
+from app.modules.knowledge.models import (
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from app.modules.users.models import User
 from app.modules.knowledge.uploads import save_upload, validate_upload
 
@@ -30,6 +35,7 @@ router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
 # ---------------------------------------------------------------------------
 # 通用辅助
 # ---------------------------------------------------------------------------
+
 
 def _resolve_base(db, base_id: int, user: User) -> KnowledgeBase:
     """管理员可访问全部知识库, 普通用户仅限本人; 两者都拿不到则 404/403"""
@@ -50,31 +56,38 @@ def _resolve_document(db, doc_id: int, user: User) -> KnowledgeDocument:
 
 
 def _chunk_count(db, document_id: int) -> int:
-    return db.scalar(
-        select(func.count(KnowledgeChunk.id)).where(
-            KnowledgeChunk.document_id == document_id
+    return (
+        db.scalar(
+            select(func.count(KnowledgeChunk.id)).where(
+                KnowledgeChunk.document_id == document_id
+            )
         )
-    ) or 0
+        or 0
+    )
 
 
 def _doc_count(db, base_id: int) -> int:
-    return db.scalar(
-        select(func.count(KnowledgeDocument.id)).where(
-            KnowledgeDocument.knowledge_base_id == base_id
+    return (
+        db.scalar(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.knowledge_base_id == base_id
+            )
         )
-    ) or 0
+        or 0
+    )
 
 
 # ---------------------------------------------------------------------------
 # 序列化 (RAGent 前端字段契约)
 # ---------------------------------------------------------------------------
 
+
 def base_vo(db, item: KnowledgeBase) -> dict:
     return {
         "id": item.id,
         "name": item.name,
-        "embeddingModel": "",
-        "collectionName": "",
+        "embeddingModel": os.getenv("EMBED_MODEL_PATH") or "bge-small-zh-v1.5",
+        "collectionName": os.getenv("MILVUS_COLLECTION", "ragent_chunks_v2"),
         "createdBy": item.owner_id,
         "documentCount": _doc_count(db, item.id),
         "createTime": item.created_at.isoformat(),
@@ -137,6 +150,7 @@ def page_result(items: list, total: int, current: int, size: int) -> dict:
 # 知识库
 # ---------------------------------------------------------------------------
 
+
 class BaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str | None = None
@@ -158,7 +172,6 @@ def list_bases(
     size: int = 10,
     name: str | None = None,
 ) -> ApiResponse:
-    container = request.app.state.container
     statement = select(KnowledgeBase)
     if user.role != "admin":
         statement = statement.where(KnowledgeBase.owner_id == user.id)
@@ -222,8 +235,12 @@ def delete_base(
     base_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
     item = _resolve_base(db, base_id, user)
-    db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_base_id == base_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id))
+    db.execute(
+        delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_base_id == base_id)
+    )
+    db.execute(
+        delete(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id)
+    )
     db.delete(item)
     db.commit()
     return ApiResponse(data=True, traceId=current_trace_id())
@@ -232,6 +249,7 @@ def delete_base(
 # ---------------------------------------------------------------------------
 # 文档
 # ---------------------------------------------------------------------------
+
 
 class DocumentUpdateRequest(BaseModel):
     docName: str | None = None
@@ -267,7 +285,9 @@ def list_documents(
         )
     )
     return ApiResponse(
-        data=page_result([document_vo(db, item) for item in items], total, current, size),
+        data=page_result(
+            [document_vo(db, item) for item in items], total, current, size
+        ),
         traceId=current_trace_id(),
     )
 
@@ -320,9 +340,8 @@ def search_documents(
     keyword: str = "",
     limit: int = 10,
 ) -> ApiResponse:
-    statement = (
-        select(KnowledgeDocument, KnowledgeBase)
-        .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
+    statement = select(KnowledgeDocument, KnowledgeBase).join(
+        KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id
     )
     if user.role != "admin":
         statement = statement.where(KnowledgeBase.owner_id == user.id)
@@ -344,7 +363,9 @@ def search_documents(
 
 
 @router.get("/docs/ingestion-spec-schema", response_model=ApiResponse)
-def ingestion_spec_schema(db: DbSession, user: CurrentUser, request: Request) -> ApiResponse:
+def ingestion_spec_schema(
+    db: DbSession, user: CurrentUser, request: Request
+) -> ApiResponse:
     return ApiResponse(
         data={
             "processMode": {"options": ["auto", "manual", "ocr"]},
@@ -387,10 +408,8 @@ def delete_document(
     db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == doc_id))
     path = Path(item.storage_path)
     if path.exists():
-        try:
+        with contextlib.suppress(OSError):
             path.unlink()
-        except OSError:
-            pass
     db.delete(item)
     db.commit()
     return ApiResponse(data=True, traceId=current_trace_id())
@@ -436,9 +455,7 @@ def preview_document(
 
 
 @router.get("/docs/{doc_id}/file")
-def download_document(
-    doc_id: int, db: DbSession, user: CurrentUser, request: Request
-):
+def download_document(doc_id: int, db: DbSession, user: CurrentUser, request: Request):
     item = _resolve_document(db, doc_id, user)
     path = Path(item.storage_path)
     if not path.exists():
@@ -455,6 +472,7 @@ def download_document(
 # ---------------------------------------------------------------------------
 # Chunk
 # ---------------------------------------------------------------------------
+
 
 class ChunkCreateRequest(BaseModel):
     content: str = Field(min_length=1)
@@ -476,7 +494,7 @@ def list_chunks(
     current: int = 1,
     size: int = 10,
 ) -> ApiResponse:
-    item = _resolve_document(db, doc_id, user)
+    _resolve_document(db, doc_id, user)
     statement = select(KnowledgeChunk).where(KnowledgeChunk.document_id == doc_id)
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     items = list(
@@ -589,7 +607,13 @@ def batch_set_chunks_enabled(
     chunkIds: str = "",
 ) -> ApiResponse:
     _resolve_document(db, doc_id, user)
-    ids = [int(part) for part in chunkIds.split(",") if part.strip().isdigit()]
+    ids: list[int] = []
+    for part in chunkIds.split(","):
+        try:
+            if part.strip().isdigit():
+                ids.append(int(part))
+        except ValueError:
+            continue
     if not value:
         for chunk_id in ids:
             chunk = db.get(KnowledgeChunk, chunk_id)

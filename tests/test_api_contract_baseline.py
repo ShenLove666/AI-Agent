@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
+
+from fastapi import FastAPI
 
 from app.main import create_app
 from scripts.check_api_contracts import (
@@ -14,7 +16,6 @@ from scripts.check_api_contracts import (
     main,
     normalize_path,
 )
-from fastapi import FastAPI
 
 
 def test_active_frontend_service_calls_exist_in_openapi():
@@ -35,15 +36,18 @@ def test_real_multiline_generic_call_is_extracted_from_active_session_service():
     # Includes the active retail and support workbench services as well as the
     # original chat/session surface. Keep this count intentional so newly
     # activated clients cannot silently bypass the OpenAPI gate.
-    assert len(calls) == 73
+    assert len(calls) == 81
 
     calls.add(ApiCall("POST", "/rag/v3/chat"))
-    assert len(calls) == 74
+    assert len(calls) == 82
 
 
 def test_template_parameters_are_normalized():
     """Changing a template parameter name must not create a false mismatch."""
-    assert normalize_path("/conversations/${conversationId}/messages") == "/conversations/{}/messages"
+    assert (
+        normalize_path("/conversations/${conversationId}/messages")
+        == "/conversations/{}/messages"
+    )
     assert normalize_path("users") == "/users"
     assert normalize_path("api/v1/users") == "/users"
 
@@ -52,10 +56,10 @@ def test_extraction_handles_type_arguments_and_api_prefix(tmp_path: Path):
     """Removing literal extraction would leave frontend calls outside the comparison."""
     service = tmp_path / "sampleService.ts"
     service.write_text(
-        '''
+        """
         api.get<Array<Record<string, unknown>>>("/api/v1/users");
         api.patch(`/api/v1/conversations/${conversationId}`, payload);
-        ''',
+        """,
         encoding="utf-8",
     )
 
@@ -70,7 +74,7 @@ def test_extraction_handles_type_arguments_and_api_prefix(tmp_path: Path):
 def test_dynamic_first_argument_fails_with_filename_line_and_method(tmp_path: Path):
     """A dynamic active endpoint cannot be verified and must never be silently skipped."""
     service = tmp_path / "dynamicService.ts"
-    service.write_text('api.post(url, payload);', encoding="utf-8")
+    service.write_text("api.post(url, payload);", encoding="utf-8")
 
     try:
         extract_service_calls([service])
@@ -84,10 +88,15 @@ def test_dynamic_first_argument_fails_with_filename_line_and_method(tmp_path: Pa
     assert "first argument must be a string or template literal" in message
 
 
-def test_comments_between_method_and_parenthesis_do_not_hide_dynamic_call(tmp_path: Path):
+def test_comments_between_method_and_parenthesis_do_not_hide_dynamic_call(
+    tmp_path: Path,
+):
     """A comment after an axios method must not bypass the dynamic-call guard."""
     service = tmp_path / "commentSeparatedDynamicService.ts"
-    service.write_text('api.post /* request URL resolved elsewhere */ (url, payload);', encoding="utf-8")
+    service.write_text(
+        "api.post /* request URL resolved elsewhere */ (url, payload);",
+        encoding="utf-8",
+    )
 
     try:
         extract_service_calls([service])
@@ -104,13 +113,13 @@ def test_api_like_text_in_comments_and_plain_strings_is_ignored(tmp_path: Path):
     """Non-code text must not be mistaken for an active frontend call."""
     service = tmp_path / "nonCodeApiTextService.ts"
     service.write_text(
-        '''
+        """
         // api.post(url)
         /* api.get(endpoint) */
         const single = 'api.delete(target)';
         const double = "api.patch(target)";
         const template = `api.put(target)`;
-        ''',
+        """,
         encoding="utf-8",
     )
 
@@ -120,7 +129,7 @@ def test_api_like_text_in_comments_and_plain_strings_is_ignored(tmp_path: Path):
 def test_template_interpolation_is_scanned_as_code(tmp_path: Path):
     """A dynamic axios call inside ${...} must not be hidden by a template literal."""
     service = tmp_path / "templateInterpolationService.ts"
-    service.write_text('const label = `${api.post(url, payload)}`;', encoding="utf-8")
+    service.write_text("const label = `${api.post(url, payload)}`;", encoding="utf-8")
 
     try:
         extract_service_calls([service])
@@ -133,11 +142,13 @@ def test_template_interpolation_is_scanned_as_code(tmp_path: Path):
     assert "POST" in message
 
 
-def test_regex_brace_inside_template_interpolation_does_not_hide_dynamic_call(tmp_path: Path):
+def test_regex_brace_inside_template_interpolation_does_not_hide_dynamic_call(
+    tmp_path: Path,
+):
     """A regex brace must not close ${...} before a later axios call is scanned."""
     service = tmp_path / "templateInterpolationRegexService.ts"
     service.write_text(
-        'const label = `${ /}/.test(x) && api.post(url, payload) }`;',
+        "const label = `${ /}/.test(x) && api.post(url, payload) }`;",
         encoding="utf-8",
     )
 
@@ -146,22 +157,26 @@ def test_regex_brace_inside_template_interpolation_does_not_hide_dynamic_call(tm
     except ContractExtractionError as error:
         message = str(error)
     else:
-        raise AssertionError("regex brace hid a dynamic call inside template interpolation")
+        raise AssertionError(
+            "regex brace hid a dynamic call inside template interpolation"
+        )
 
     assert "templateInterpolationRegexService.ts:1" in message
     assert "POST" in message
 
 
-def test_regex_literals_are_ignored_and_division_keeps_following_call_visible(tmp_path: Path):
+def test_regex_literals_are_ignored_and_division_keeps_following_call_visible(
+    tmp_path: Path,
+):
     """Regex text is non-code, while a division slash cannot swallow later axios calls."""
     service = tmp_path / "regexAndDivisionService.ts"
     service.write_text(
-        r'''
+        r"""
         const simple = /api.post(url)/;
         const escaped = /api\.delete\(target\)[/]/gi;
         const ratio = total / divisor;
         api.get("/after-division");
-        ''',
+        """,
         encoding="utf-8",
     )
 

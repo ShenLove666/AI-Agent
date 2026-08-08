@@ -24,6 +24,7 @@ import {
   KeyRound,
   Search,
   Share2,
+  ShieldAlert,
   ShieldCheck,
   Settings,
   Upload,
@@ -40,7 +41,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -85,6 +93,11 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/support",
         label: "客服工作台",
         icon: Inbox
+      },
+      {
+        path: "/admin/support-supervisor",
+        label: "主管队列",
+        icon: ShieldAlert
       },
       {
         path: "/admin/support-knowledge",
@@ -190,7 +203,7 @@ const menuGroups: MenuGroup[] = [
         label: "审计日志",
         icon: ShieldCheck,
         hidden: true
-      },
+      }
     ]
   },
   {
@@ -211,7 +224,7 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/settings",
         label: "系统设置",
         icon: Settings
-      },
+      }
     ]
   }
 ];
@@ -247,8 +260,10 @@ export function AdminLayout() {
     newPassword: "",
     confirmPassword: ""
   });
-  const [starCount, setStarCount] = useState<number | null>(null);
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ ingestion: true, intent: true });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    ingestion: true,
+    intent: true
+  });
   const [kbQuery, setKbQuery] = useState("");
   const [kbOptions, setKbOptions] = useState<KnowledgeBase[]>([]);
   const [docOptions, setDocOptions] = useState<KnowledgeDocumentSearchItem[]>([]);
@@ -265,24 +280,8 @@ export function AdminLayout() {
     navigate("/login");
   };
 
-  useEffect(() => {
-    let active = true;
-    fetch("https://api.github.com/repos/nageoffer/ragent")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!active) return;
-        const count = typeof data?.stargazers_count === "number" ? data.stargazers_count : null;
-        setStarCount(count);
-      })
-      .catch(() => {
-        if (active) {
-          setStarCount(null);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+  // Star 计数：GitHub API 未认证时被限流（403）产生控制台噪音，改为静态显示
+  const [starCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (!searchFocused) return;
@@ -297,10 +296,7 @@ export function AdminLayout() {
     let active = true;
     const handle = window.setTimeout(() => {
       setSearchLoading(true);
-      Promise.all([
-        getKnowledgeBases(1, 6, keyword),
-        searchKnowledgeDocuments(keyword, 6)
-      ])
+      Promise.all([getKnowledgeBases(1, 6, keyword), searchKnowledgeDocuments(keyword, 6)])
         .then(([kbData, docData]) => {
           if (!active) return;
           setKbOptions(kbData || []);
@@ -327,9 +323,7 @@ export function AdminLayout() {
 
   const breadcrumbs = useMemo(() => {
     const segments = location.pathname.split("/").filter(Boolean);
-    const items: { label: string; to?: string }[] = [
-      { label: "首页", to: "/admin/retail" }
-    ];
+    const items: { label: string; to?: string }[] = [{ label: "首页", to: "/admin/retail" }];
 
     if (segments[0] !== "admin") return items;
     const section = segments[1];
@@ -401,7 +395,8 @@ export function AdminLayout() {
   }, [starCount]);
   const isIngestionActive = location.pathname.startsWith("/admin/ingestion");
   const isIntentActive =
-    location.pathname.startsWith("/admin/intent-tree") || location.pathname.startsWith("/admin/intent-list");
+    location.pathname.startsWith("/admin/intent-tree") ||
+    location.pathname.startsWith("/admin/intent-list");
 
   useEffect(() => {
     setOpenGroups((prev) => ({
@@ -528,123 +523,128 @@ export function AdminLayout() {
         <nav className="flex-1 space-y-4 px-2 pb-4">
           {menuGroups.map((group) => (
             <div key={group.title} className="space-y-2">
-              {!collapsed && (
-                <p className="admin-sidebar__group-title">{group.title}</p>
-              )}
+              {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
               <div className="space-y-1">
-                {group.items.filter((item) => !item.hidden).flatMap((item) => {
-                  if (!item.children || item.children.length === 0) {
-                    const Icon = item.icon;
-                    const isActive = isLeafActive(item.path, item.search);
-                    return (
-                      <Link
-                        key={item.path}
-                        to={item.path}
-                        title={collapsed ? item.label : undefined}
-                        className={cn(
-                          "admin-sidebar__item",
-                          isActive && "admin-sidebar__item--active",
-                          collapsed && "justify-center"
-                        )}
-                      >
-                        <span
-                          className={cn(
-                            "admin-sidebar__item-indicator",
-                            isActive && "is-active"
-                          )}
-                        />
-                        <Icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
-                        {collapsed ? <span className="sr-only">{item.label}</span> : <span>{item.label}</span>}
-                      </Link>
-                    );
-                  }
-
-                  const isGroupActive = item.children.some((child) => isLeafActive(child.path, child.search));
-                  const groupId = item.id as string;
-                  const isOpen = openGroups[groupId];
-
-                  if (collapsed) {
-                    return item.children.map((child) => {
-                      const ChildIcon = child.icon;
-                      const isActive = isLeafActive(child.path, child.search);
+                {group.items
+                  .filter((item) => !item.hidden)
+                  .flatMap((item) => {
+                    if (!item.children || item.children.length === 0) {
+                      const Icon = item.icon;
+                      const isActive = isLeafActive(item.path, item.search);
                       return (
                         <Link
-                          key={child.label}
-                          to={`${child.path}${child.search || ""}`}
-                          title={child.label}
+                          key={item.path}
+                          to={item.path}
+                          title={collapsed ? item.label : undefined}
                           className={cn(
                             "admin-sidebar__item",
                             isActive && "admin-sidebar__item--active",
-                            "justify-center"
+                            collapsed && "justify-center"
                           )}
                         >
                           <span
-                            className={cn(
-                              "admin-sidebar__item-indicator",
-                              isActive && "is-active"
-                            )}
+                            className={cn("admin-sidebar__item-indicator", isActive && "is-active")}
                           />
-                          <ChildIcon className="admin-sidebar__item-icon" />
-                          <span className="sr-only">{child.label}</span>
+                          <Icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
+                          {collapsed ? (
+                            <span className="sr-only">{item.label}</span>
+                          ) : (
+                            <span>{item.label}</span>
+                          )}
                         </Link>
                       );
-                    });
-                  }
+                    }
 
-                      return (
-                        <div key={item.label} className="space-y-1">
-                          <button
-                            type="button"
-                            onClick={() => setOpenGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))}
+                    const isGroupActive = item.children.some((child) =>
+                      isLeafActive(child.path, child.search)
+                    );
+                    const groupId = item.id as string;
+                    const isOpen = openGroups[groupId];
+
+                    if (collapsed) {
+                      return item.children.map((child) => {
+                        const ChildIcon = child.icon;
+                        const isActive = isLeafActive(child.path, child.search);
+                        return (
+                          <Link
+                            key={child.label}
+                            to={`${child.path}${child.search || ""}`}
+                            title={child.label}
                             className={cn(
-                              "admin-sidebar__item admin-sidebar__item--group w-full text-white/60",
-                              isGroupActive && "admin-sidebar__item--group-active text-white"
+                              "admin-sidebar__item",
+                              isActive && "admin-sidebar__item--active",
+                              "justify-center"
                             )}
                           >
                             <span
                               className={cn(
                                 "admin-sidebar__item-indicator",
-                                isGroupActive && "is-group-active"
+                                isActive && "is-active"
                               )}
                             />
-                        <item.icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
-                        <span className="flex-1 text-left">{item.label}</span>
+                            <ChildIcon className="admin-sidebar__item-icon" />
+                            <span className="sr-only">{child.label}</span>
+                          </Link>
+                        );
+                      });
+                    }
+
+                    return (
+                      <div key={item.label} className="space-y-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))
+                          }
+                          className={cn(
+                            "admin-sidebar__item admin-sidebar__item--group w-full text-white/60",
+                            isGroupActive && "admin-sidebar__item--group-active text-white"
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              "admin-sidebar__item-indicator",
+                              isGroupActive && "is-group-active"
+                            )}
+                          />
+                          <item.icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
+                          <span className="flex-1 text-left">{item.label}</span>
+                          {isOpen ? (
+                            <ChevronDown className="h-4 w-4 text-white/60" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 text-white/60" />
+                          )}
+                        </button>
                         {isOpen ? (
-                          <ChevronDown className="h-4 w-4 text-white/60" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4 text-white/60" />
-                        )}
-                      </button>
-                      {isOpen ? (
-                        <div className="ml-6 space-y-1">
-                          {item.children.map((child) => {
-                            const ChildIcon = child.icon;
-                            const isActive = isLeafActive(child.path, child.search);
-                            return (
-                              <Link
-                                key={child.label}
-                                to={`${child.path}${child.search || ""}`}
-                                className={cn(
-                                  "admin-sidebar__item text-[13px]",
-                                  isActive && "admin-sidebar__item--active"
-                                )}
-                              >
-                                <span
+                          <div className="ml-6 space-y-1">
+                            {item.children.map((child) => {
+                              const ChildIcon = child.icon;
+                              const isActive = isLeafActive(child.path, child.search);
+                              return (
+                                <Link
+                                  key={child.label}
+                                  to={`${child.path}${child.search || ""}`}
                                   className={cn(
-                                    "admin-sidebar__item-indicator",
-                                    isActive && "is-active"
+                                    "admin-sidebar__item text-[13px]",
+                                    isActive && "admin-sidebar__item--active"
                                   )}
-                                />
-                                <ChildIcon className="admin-sidebar__item-icon" />
-                                <span>{child.label}</span>
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
+                                >
+                                  <span
+                                    className={cn(
+                                      "admin-sidebar__item-indicator",
+                                      isActive && "is-active"
+                                    )}
+                                  />
+                                  <ChildIcon className="admin-sidebar__item-icon" />
+                                  <span>{child.label}</span>
+                                </Link>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
               </div>
             </div>
           ))}
@@ -656,7 +656,11 @@ export function AdminLayout() {
             className="admin-sidebar__collapse"
             onClick={() => setCollapsed((prev) => !prev)}
           >
-            {collapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
+            {collapsed ? (
+              <ChevronsRight className="h-4 w-4" />
+            ) : (
+              <ChevronsLeft className="h-4 w-4" />
+            )}
             {!collapsed && <span>收起侧边栏</span>}
           </button>
         </div>
@@ -804,7 +808,10 @@ export function AdminLayout() {
                     <KeyRound className="mr-2 h-4 w-4" />
                     修改密码
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleLogout} className="text-rose-600 focus:text-rose-600">
+                  <DropdownMenuItem
+                    onClick={handleLogout}
+                    className="text-rose-600 focus:text-rose-600"
+                  >
                     <LogOut className="mr-2 h-4 w-4" />
                     退出登录
                   </DropdownMenuItem>
@@ -856,7 +863,9 @@ export function AdminLayout() {
               <Input
                 type="password"
                 value={passwordForm.currentPassword}
-                onChange={(event) => setPasswordForm((prev) => ({ ...prev, currentPassword: event.target.value }))}
+                onChange={(event) =>
+                  setPasswordForm((prev) => ({ ...prev, currentPassword: event.target.value }))
+                }
                 placeholder="请输入当前密码"
                 name="current-password"
                 autoComplete="current-password"
@@ -867,7 +876,9 @@ export function AdminLayout() {
               <Input
                 type="password"
                 value={passwordForm.newPassword}
-                onChange={(event) => setPasswordForm((prev) => ({ ...prev, newPassword: event.target.value }))}
+                onChange={(event) =>
+                  setPasswordForm((prev) => ({ ...prev, newPassword: event.target.value }))
+                }
                 placeholder="请输入新密码"
                 name="new-password"
                 autoComplete="new-password"
@@ -878,7 +889,9 @@ export function AdminLayout() {
               <Input
                 type="password"
                 value={passwordForm.confirmPassword}
-                onChange={(event) => setPasswordForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
+                onChange={(event) =>
+                  setPasswordForm((prev) => ({ ...prev, confirmPassword: event.target.value }))
+                }
                 placeholder="再次输入新密码"
                 name="confirm-new-password"
                 autoComplete="new-password"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -18,6 +18,7 @@ import {
   UserRoundCheck
 } from "lucide-react";
 import { toast } from "sonner";
+import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import {
   getSupportCases,
   getSupportMetrics,
   getSupportWorkspace,
+  raiseSupportEscalation,
   sendManualReply,
   transitionSupportCase,
   type CaseStatus,
@@ -147,6 +149,7 @@ export function SupportWorkbenchPage() {
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [edited, setEdited] = useState("");
+  const copilotRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const selectCase = useCallback(async (id: number) => {
@@ -179,15 +182,18 @@ export function SupportWorkbenchPage() {
     const timer = window.setTimeout(() => void load(), search ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [search, status]); // eslint-disable-line react-hooks/exhaustive-deps
-  const action = async (fn: () => Promise<SupportCaseDetail>, message: string) => {
+  const action = async <T,>(fn: () => Promise<T>, message: string, refresh = true) => {
     setBusy(true);
     try {
-      const value = await fn();
-      setDetail(value);
-      setWorkspace(await getSupportWorkspace(value.id));
-      setCases((list) => list.map((x) => (x.id === value.id ? value : x)));
-      setMetrics(await getSupportMetrics());
-      setEdited(value.suggestions.find((x) => !x.decision)?.content || "");
+      await fn();
+      if (refresh && detail) {
+        const next = await getSupportCase(detail.id);
+        setDetail(next);
+        setWorkspace(await getSupportWorkspace(next.id));
+        setCases((list) => list.map((x) => (x.id === next.id ? next : x)));
+        setMetrics(await getSupportMetrics());
+        setEdited(next.suggestions.find((x) => !x.decision)?.content || "");
+      }
       toast.success(message);
     } catch (e) {
       toast.error((e as Error).message || "操作失败");
@@ -320,11 +326,11 @@ export function SupportWorkbenchPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={busy || !user?.id}
+                      disabled={busy || !user?.userId}
                       onClick={() =>
-                        user?.id &&
+                        user?.userId &&
                         void action(
-                          () => assignSupportCase(detail.id, user.id, detail.version),
+                          () => assignSupportCase(detail.id, Number(user.userId), detail.version),
                           "已接单"
                         )
                       }
@@ -357,7 +363,18 @@ export function SupportWorkbenchPage() {
                 </div>
               </header>
               <div className="flex-1 space-y-5 overflow-auto p-5">
-                <CaseProvenanceView value={detail.provenance ? { ...detail.provenance, caseId: detail.id, caseKey: detail.caseKey, isDemo: detail.isDemo } : null} />
+                <CaseProvenanceView
+                  value={
+                    detail.provenance
+                      ? {
+                          ...detail.provenance,
+                          caseId: detail.id,
+                          caseKey: detail.caseKey,
+                          isDemo: detail.isDemo
+                        }
+                      : null
+                  }
+                />
                 {detail.messages.map((message) => (
                   <div
                     key={message.id}
@@ -385,11 +402,15 @@ export function SupportWorkbenchPage() {
                         className={cn(
                           "rounded-2xl px-4 py-3 text-left text-sm leading-6 shadow-sm",
                           message.role === "agent"
-                            ? "rounded-tr-sm bg-blue-600 text-white"
+                            ? "rounded-tr-sm border border-blue-100 bg-white text-slate-800"
                             : "rounded-tl-sm border border-slate-200 bg-white text-slate-700"
                         )}
                       >
-                        {message.content}
+                        {message.role === "agent" ? (
+                          <MarkdownRenderer content={message.content || ""} />
+                        ) : (
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -448,7 +469,9 @@ export function SupportWorkbenchPage() {
                       {workspace.order.orderNo}
                     </p>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      {workspace.order.items.map((item) => `${item.productName} ×${item.quantity}`).join("、")}
+                      {workspace.order.items
+                        .map((item) => `${item.productName} ×${item.quantity}`)
+                        .join("、")}
                     </p>
                   </div>
                   <strong className="text-sm text-slate-900">
@@ -483,11 +506,15 @@ export function SupportWorkbenchPage() {
             )}
             {workspace?.outboundMessages[0] && (
               <p className="mt-3 text-[11px] text-slate-500">
-                最近发送：{workspace.outboundMessages[0].isDemo ? "模拟发送" : "外部渠道"} · {workspace.outboundMessages[0].status}
+                最近发送：{workspace.outboundMessages[0].isDemo ? "模拟发送" : "外部渠道"} ·{" "}
+                {workspace.outboundMessages[0].status}
               </p>
             )}
           </section>
-          <header className="flex items-center justify-between border-b border-slate-200 p-4">
+          <header
+            ref={copilotRef}
+            className="flex items-center justify-between border-b border-slate-200 p-4"
+          >
             <div className="flex items-center gap-3">
               <span className="rounded-xl bg-violet-100 p-2 text-violet-600">
                 <Sparkles className="h-4 w-4" />
@@ -508,6 +535,9 @@ export function SupportWorkbenchPage() {
                   await generateSupportSuggestion(detail.id);
                   await selectCase(detail.id);
                   toast.success("建议生成完成");
+                  requestAnimationFrame(() => {
+                    copilotRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                  });
                 } catch (e) {
                   toast.error((e as Error).message);
                 } finally {
@@ -574,7 +604,7 @@ export function SupportWorkbenchPage() {
                       </span>
                       <p className="line-clamp-3 text-xs leading-5 text-slate-600">
                         {citation.content ||
-                          citation.title ||
+                          citation.docName ||
                           `发布版本 ${citation.releaseVersion}`}
                       </p>
                     </div>
@@ -606,13 +636,26 @@ export function SupportWorkbenchPage() {
                   onClick={() =>
                     void action(
                       () =>
-                        decideSupportSuggestion(
-                          detail!.id,
-                          suggestion.id,
-                          "escalated",
-                          undefined,
-                          "需要主管确认高风险处置"
-                        ),
+                        raiseSupportEscalation(detail!.id, {
+                          category: suggestion.riskFlags?.includes("food_safety")
+                            ? "food_safety"
+                            : suggestion.riskFlags?.includes("refund_review")
+                              ? "refund_exception"
+                              : suggestion.status === "insufficient_evidence"
+                                ? "agent_insufficient_evidence"
+                                : "customer_complaint",
+                          reason:
+                            "需要主管确认高风险处置：" + (suggestion.content || "").slice(0, 120),
+                          riskLevel: suggestion.resolution?.risk === "high" ? "high" : "medium",
+                          aiDiagnosis: suggestion.resolution
+                            ? {
+                                intent: suggestion.resolution.intent,
+                                risk: suggestion.resolution.risk,
+                                terminalState: suggestion.terminalState,
+                                missingFacts: suggestion.resolution.missingFacts
+                              }
+                            : undefined
+                        }),
                       "已升级主管"
                     )
                   }

@@ -181,7 +181,15 @@ body {
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  overflow: hidden;
+}
+
+/* 聊天工作区为固定视口布局（内部滚动），禁止页面级滚动条；其他页面保留正常滚动 */
+.merchant-chat-shell {
+  overscroll-behavior: contain;
+}
+
+.admin-layout .admin-main {
+  overflow: auto;
 }
 
 :where(button, a, input, textarea, select):focus-visible {
@@ -762,12 +770,16 @@ html.dark *::-webkit-scrollbar-thumb:hover {
   .admin-layout .trace-list-table-card {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    flex: 1;
   }
 
   .admin-layout .trace-list-table-card .ui-card-content,
   .admin-layout .trace-list-table-content {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    flex: 1;
   }
 
   .admin-layout .trace-list-header-card {
@@ -1375,15 +1387,16 @@ html.dark *::-webkit-scrollbar-thumb:hover {
   }
 
   .admin-layout .trace-list-table-wrap {
-    overflow-x: hidden;
-    overflow-y: visible;
+    overflow-x: auto;
+    overflow-y: auto;
+    min-height: 0;
   }
 
   .admin-layout .trace-list-table-wrap .ui-table-wrap {
     margin-left: 0;
     margin-right: 0;
     width: 100%;
-    overflow-x: hidden;
+    overflow-x: auto;
     overflow-y: visible;
   }
 

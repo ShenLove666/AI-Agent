@@ -43,6 +43,18 @@ export type RetailDataSourceQuality = {
   manifestSha256: string;
   provenance: "observed";
 };
+export type RetailDataSourcePreview = {
+  datasetId: number;
+  datasetKey: string;
+  title?: string;
+  products: Array<{ name: string; category: string; provenance: string }>;
+  baskets: Array<{
+    basketKey: string;
+    country: string | null;
+    status: string | null;
+    items: Array<{ product: string; quantity: number; unitPrice: number | null }>;
+  }>;
+};
 export type RetailRule = {
   id: number;
   from: string;
@@ -76,7 +88,21 @@ export type RetailOverview = {
     origin: "observed+derived";
   };
   rules: RetailRule[];
-  campaigns: Array<{ id: number; name: string; status: string; version: number }>;
+  campaigns: Array<{
+    id: number;
+    name: string;
+    status: string;
+    version: number;
+    rule?: null | {
+      from: string;
+      to: string;
+      count: number;
+      support: number;
+      confidence: number;
+      lift: number;
+      evidence: string[];
+    };
+  }>;
   metrics: RetailMetric[];
   tasks: Array<{ id: number; title: string; status: string; targetMetric?: string }>;
   evaluations: Array<{ id: number; status: string; startedAt: string; isDemo: boolean }>;
@@ -87,6 +113,8 @@ export const getRetailDataSources = () =>
   api.get<RetailDataSource[], RetailDataSource[]>("/retail/data-sources");
 export const getRetailDataSourceQuality = (id: number) =>
   api.get<never, RetailDataSourceQuality>(`/data-sources/${id}/quality`);
+export const getRetailDataSourcePreview = (id: number) =>
+  api.get<never, RetailDataSourcePreview>(`/data-sources/${id}/preview`);
 export const createRetailCampaign = (ruleId: number) => api.post("/retail/campaigns", { ruleId });
 export const transitionRetailTask = (taskId: number, status: string) =>
   api.post(`/retail/optimization-tasks/${taskId}/transition`, { status });

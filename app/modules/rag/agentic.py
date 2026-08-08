@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, Required, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -52,15 +52,23 @@ class AgentDecision:
     mode: Literal["direct", "research", "escalate", "refuse"]
     calls: tuple[ToolCallPlan, ...]
     rationale: str
-    runtime_mode: Literal["deterministic_fallback", "model_backed"]
+    runtime_mode: Literal["deterministic_fallback", "model_backed", "risk_guard"]
 
     @property
     def tools(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(_LEGACY_NAMES.get(call.name, call.name) for call in self.calls))
+        return tuple(
+            dict.fromkeys(
+                _LEGACY_NAMES.get(call.name, call.name) for call in self.calls
+            )
+        )
 
     @property
     def queries(self) -> tuple[str, ...]:
-        return tuple(str(call.arguments.get("query", "")).strip() for call in self.calls if str(call.arguments.get("query", "")).strip())
+        return tuple(
+            str(call.arguments.get("query", "")).strip()
+            for call in self.calls
+            if str(call.arguments.get("query", "")).strip()
+        )
 
 
 class EvidenceReview(BaseModel):
@@ -85,7 +93,7 @@ class AgenticRun:
     review_details: EvidenceReview
     steps: tuple[dict[str, Any], ...]
     terminal_state: Literal["direct", "grounded", "refused", "escalated"]
-    runtime_mode: Literal["deterministic_fallback", "model_backed"]
+    runtime_mode: Literal["deterministic_fallback", "model_backed", "risk_guard"]
 
     @property
     def answer(self) -> str:
@@ -98,22 +106,25 @@ class AgenticRun:
 
 
 class _State(TypedDict, total=False):
-    question: str
-    user_id: int
-    knowledge_base_ids: tuple[int, ...]
-    db: Session
+    # run() 初始状态保证以下 key 恒存在，允许安全下标访问
+    question: Required[str]
+    user_id: Required[int]
+    knowledge_base_ids: Required[tuple[int, ...]]
+    db: Required[Session]
+    results: Required[list[SearchResult]]
+    plan_count: Required[int]
+    tool_calls: Required[int]
+    plan_history: Required[list[dict[str, Any]]]
+    tool_errors: Required[list[dict[str, Any]]]
+    steps: Required[list[dict[str, Any]]]
+    review_feedback: Required[str]
+    # planner 节点首轮写入，访问点需 .get() + 断言收窄
     decision: AgentDecision
+    # 图节点中途写入的 key
     initial_decision: AgentDecision
-    results: list[SearchResult]
     review: str
     review_details: EvidenceReview
-    review_feedback: str
-    plan_count: int
-    tool_calls: int
-    plan_history: list[dict[str, Any]]
-    tool_errors: list[dict[str, Any]]
-    steps: list[dict[str, Any]]
-    terminal_state: str
+    terminal_state: Literal["direct", "grounded", "refused", "escalated"]
 
 
 class AgenticRagCoordinator:
@@ -138,19 +149,45 @@ class AgenticRagCoordinator:
         graph.add_node("tool_agents", self._tools_node)
         graph.add_node("evidence_agent", self._review_node)
         graph.add_edge(START, "planner_agent")
-        graph.add_conditional_edges("planner_agent", self._after_plan, {"act": "tool_agents", "finish": END})
+        graph.add_conditional_edges(
+            "planner_agent", self._after_plan, {"act": "tool_agents", "finish": END}
+        )
         graph.add_edge("tool_agents", "evidence_agent")
-        graph.add_conditional_edges("evidence_agent", self._after_review, {"replan": "planner_agent", "finish": END})
+        graph.add_conditional_edges(
+            "evidence_agent",
+            self._after_review,
+            {"replan": "planner_agent", "finish": END},
+        )
         self.graph = graph.compile()
 
-    async def run(self, db: Session, *, user_id: int, question: str, knowledge_base_ids: tuple[int, ...] = ()) -> AgenticRun:
-        state = await self.graph.ainvoke({
-            "question": question, "user_id": user_id, "knowledge_base_ids": knowledge_base_ids,
-            "db": db, "results": [], "plan_count": 0, "tool_calls": 0,
-            "plan_history": [], "tool_errors": [], "steps": [], "review_feedback": "",
-        })
-        decision = state.get("initial_decision") or state["decision"]
-        terminal = state.get("terminal_state") or self._terminal_for(state["decision"].mode, bool(state.get("results")))
+    async def run(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        question: str,
+        knowledge_base_ids: tuple[int, ...] = (),
+    ) -> AgenticRun:
+        state = await self.graph.ainvoke(
+            {
+                "question": question,
+                "user_id": user_id,
+                "knowledge_base_ids": knowledge_base_ids,
+                "db": db,
+                "results": [],
+                "plan_count": 0,
+                "tool_calls": 0,
+                "plan_history": [],
+                "tool_errors": [],
+                "steps": [],
+                "review_feedback": "",
+            }
+        )
+        decision = state.get("initial_decision") or state.get("decision")
+        assert decision is not None, "planner must produce a decision"
+        terminal: Literal["direct", "grounded", "refused", "escalated"] = state.get(
+            "terminal_state"
+        ) or self._terminal_for(decision.mode, bool(state.get("results")))
         review_details = state.get("review_details") or EvidenceReview(
             intent="general",
             relevance=1,
@@ -170,12 +207,20 @@ class AgenticRagCoordinator:
             decision.runtime_mode,
         )
 
-    def _fallback_decision(self, question: str, history: list[dict[str, Any]], feedback: str) -> AgentDecision:
+    def _fallback_decision(
+        self, question: str, history: list[dict[str, Any]], feedback: str
+    ) -> AgentDecision:
         lowered = question.lower()
-        if not history and any(term in lowered for term in ("你好", "谢谢", "你是谁", "hello")):
-            return AgentDecision("direct", (), "普通对话无需调用业务工具", "deterministic_fallback")
+        if not history and any(
+            term in lowered for term in ("你好", "谢谢", "你是谁", "hello")
+        ):
+            return AgentDecision(
+                "direct", (), "普通对话无需调用业务工具", "deterministic_fallback"
+            )
         if any(term in lowered for term in ("伪造", "欺骗", "假截图")):
-            return AgentDecision("refuse", (), "请求涉及欺骗或伪造", "deterministic_fallback")
+            return AgentDecision(
+                "refuse", (), "请求涉及欺骗或伪造", "deterministic_fallback"
+            )
         used = {call["name"] for plan in history for call in plan.get("calls", [])}
         order_match = re.search(
             r"订单\s*(?:号|[:：#])?\s*([A-Za-z0-9][A-Za-z0-9_-]{4,79})",
@@ -185,7 +230,10 @@ class AgenticRagCoordinator:
         if order_match and not history:
             order_no = order_match.group(1)
             order_tools = ["commerce.get_order"]
-            if any(term in lowered for term in ("配送", "送达", "物流", "骑手", "到达", "迟到", "延误")):
+            if any(
+                term in lowered
+                for term in ("配送", "送达", "物流", "骑手", "到达", "迟到", "延误")
+            ):
                 order_tools.append("commerce.get_delivery_status")
             if any(term in lowered for term in ("退款", "退货", "售后", "赔付")):
                 order_tools.append("commerce.get_refund_status")
@@ -202,19 +250,88 @@ class AgenticRagCoordinator:
                 "deterministic_fallback",
             )
         candidates: list[str] = []
-        if any(term in lowered for term in ("购物篮", "订单", "商品", "销量", "关联", "搭配", "取消", "价格", "交易")):
-            candidates.extend(("commerce.search_association_rules", "commerce.get_product_metrics"))
-        if any(term in lowered for term in ("客服", "工单", "案例", "转人工", "质量", "客诉", "咨询", "缺口")):
-            candidates.extend(("support.search_cases", "support.get_quality_metrics", "support.get_knowledge_gaps"))
-        if any(term in lowered for term in ("规则", "政策", "退货", "退款", "售后", "流程", "依据", "法规", "活动", "安全")) or not candidates:
+        if any(
+            term in lowered
+            for term in (
+                "购物篮",
+                "订单",
+                "商品",
+                "销量",
+                "关联",
+                "搭配",
+                "取消",
+                "价格",
+                "交易",
+            )
+        ):
+            candidates.extend(
+                ("commerce.search_association_rules", "commerce.get_product_metrics")
+            )
+        if any(
+            term in lowered
+            for term in (
+                "客服",
+                "工单",
+                "案例",
+                "转人工",
+                "质量",
+                "客诉",
+                "咨询",
+                "缺口",
+            )
+        ):
+            candidates.extend(
+                (
+                    "support.search_cases",
+                    "support.get_quality_metrics",
+                    "support.get_knowledge_gaps",
+                )
+            )
+        if (
+            any(
+                term in lowered
+                for term in (
+                    "规则",
+                    "政策",
+                    "退货",
+                    "退款",
+                    "售后",
+                    "流程",
+                    "依据",
+                    "法规",
+                    "活动",
+                    "安全",
+                )
+            )
+            or not candidates
+        ):
             candidates.append("knowledge.search")
         if history:
-            alternatives = [name for name in (*candidates, "knowledge.search", "support.search_cases") if name not in used]
+            alternatives = [
+                name
+                for name in (*candidates, "knowledge.search", "support.search_cases")
+                if name not in used
+            ]
             if not alternatives:
-                return AgentDecision("escalate", (), "重新规划后仍无可用的新证据路径", "deterministic_fallback")
+                return AgentDecision(
+                    "escalate",
+                    (),
+                    "重新规划后仍无可用的新证据路径",
+                    "deterministic_fallback",
+                )
             candidates = alternatives[:2]
-        calls = tuple(ToolCallPlan(name=name, arguments={"query": question, "limit": 6}) for name in dict.fromkeys(candidates) if self.registry.canonical_name(name))
-        return AgentDecision("research", calls, "离线规划器根据问题与上一轮反馈选择业务工具" + (f"：{feedback[:60]}" if feedback else ""), "deterministic_fallback")
+        calls = tuple(
+            ToolCallPlan(name=name, arguments={"query": question, "limit": 6})
+            for name in dict.fromkeys(candidates)
+            if self.registry.canonical_name(name)
+        )
+        return AgentDecision(
+            "research",
+            calls,
+            "离线规划器根据问题与上一轮反馈选择业务工具"
+            + (f"：{feedback[:60]}" if feedback else ""),
+            "deterministic_fallback",
+        )
 
     async def _decide(self, state: _State) -> AgentDecision:
         question = state["question"]
@@ -223,11 +340,27 @@ class AgenticRagCoordinator:
         if self.model_router is None:
             return self._fallback_decision(question, history, feedback)
         tool_text = json.dumps(self.registry.describe(), ensure_ascii=False)
-        prior = json.dumps({"plans": history[-2:], "feedback": feedback, "errors": state.get("tool_errors", [])[-4:]}, ensure_ascii=False)
-        prompt = ChatRequest(messages=[
-            ChatMessage("system", "你是零售运营规划 Agent。只返回 JSON：{\"mode\":\"research|direct|refuse|escalate\",\"calls\":[{\"name\":\"工具名\",\"arguments\":{}}],\"rationale\":\"摘要\"}。证据不足重规划时必须改变工具或参数，否则结束。可用工具：" + tool_text),
-            ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
-        ], temperature=0, max_tokens=500, metadata={"agent_role": "planner"})
+        prior = json.dumps(
+            {
+                "plans": history[-2:],
+                "feedback": feedback,
+                "errors": state.get("tool_errors", [])[-4:],
+            },
+            ensure_ascii=False,
+        )
+        prompt = ChatRequest(
+            messages=[
+                ChatMessage(
+                    "system",
+                    '你是零售运营规划 Agent。只返回 JSON：{"mode":"research|direct|refuse|escalate","calls":[{"name":"工具名","arguments":{}}],"rationale":"摘要"}。证据不足重规划时必须改变工具或参数，否则结束。可用工具：'
+                    + tool_text,
+                ),
+                ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
+            ],
+            temperature=0,
+            max_tokens=500,
+            metadata={"agent_role": "planner"},
+        )
         try:
             raw = (await self.model_router.complete(prompt)).strip().strip("`")
             if raw.startswith("json"):
@@ -235,22 +368,83 @@ class AgenticRagCoordinator:
             value = json.loads(raw)
             if "tools" in value and "calls" not in value:
                 queries = value.pop("queries", [question]) or [question]
-                value["calls"] = [{"name": name, "arguments": {"query": queries[min(index, len(queries) - 1)], "limit": 6}} for index, name in enumerate(value.pop("tools", []))]
+                value["calls"] = [
+                    {
+                        "name": name,
+                        "arguments": {
+                            "query": queries[min(index, len(queries) - 1)],
+                            "limit": 6,
+                        },
+                    }
+                    for index, name in enumerate(value.pop("tools", []))
+                ]
             payload = PlanPayload.model_validate(value)
-            calls = tuple(ToolCallPlan(name=self.registry.canonical_name(call.name) or "", arguments=call.arguments) for call in payload.calls)
+            calls = tuple(
+                ToolCallPlan(
+                    name=self.registry.canonical_name(call.name) or "",
+                    arguments=call.arguments,
+                )
+                for call in payload.calls
+            )
             if any(not call.name for call in calls):
                 raise ValueError("unknown tool")
-            return AgentDecision(payload.mode, calls, payload.rationale or "模型规划", "model_backed")
+            return AgentDecision(
+                payload.mode, calls, payload.rationale or "模型规划", "model_backed"
+            )
         except Exception:
             return self._fallback_decision(question, history, feedback)
 
     async def _planner_node(self, state: _State) -> dict[str, Any]:
         decision = await self._decide(state)
+        # Risk Guard：高风险/中风险问题不允许 direct 直答，防止绕过证据审查门禁
+        if decision.mode == "direct":
+            question = state.get("question", "")
+            _, _, risk = self._intent_requirements(question)
+            if risk in {"medium", "high"}:
+                fallback = self._fallback_decision(
+                    question,
+                    state.get("plan_history", []),
+                    "风险门禁：高风险问题禁止直答，强制查证",
+                )
+                if fallback.mode == "research":
+                    decision = AgentDecision(
+                        "research",
+                        fallback.calls,
+                        f"风险门禁拦截 direct：{fallback.rationale}",
+                        "risk_guard",
+                    )
+                else:
+                    decision = AgentDecision(
+                        "escalate",
+                        (),
+                        "风险门禁：高风险问题且无可用的查证路径，转人工",
+                        "risk_guard",
+                    )
         count = state.get("plan_count", 0) + 1
-        history = [*state.get("plan_history", []), {"mode": decision.mode, "calls": [call.model_dump() for call in decision.calls], "rationale": decision.rationale}]
+        history = [
+            *state.get("plan_history", []),
+            {
+                "mode": decision.mode,
+                "calls": [call.model_dump() for call in decision.calls],
+                "rationale": decision.rationale,
+            },
+        ]
         update: dict[str, Any] = {
-            "decision": decision, "plan_count": count, "plan_history": history,
-            "steps": [*state.get("steps", []), {"agent": "planner", "plan": count, "mode": decision.mode, "tools": list(decision.tools), "calls": [call.model_dump() for call in decision.calls], "rationale": decision.rationale, "runtimeMode": decision.runtime_mode}],
+            "decision": decision,
+            "plan_count": count,
+            "plan_history": history,
+            "steps": [
+                *state.get("steps", []),
+                {
+                    "agent": "planner",
+                    "plan": count,
+                    "mode": decision.mode,
+                    "tools": list(decision.tools),
+                    "calls": [call.model_dump() for call in decision.calls],
+                    "rationale": decision.rationale,
+                    "runtimeMode": decision.runtime_mode,
+                },
+            ],
         }
         if "initial_decision" not in state:
             update["initial_decision"] = decision
@@ -260,27 +454,46 @@ class AgenticRagCoordinator:
 
     @staticmethod
     def _after_plan(state: _State) -> str:
-        return "act" if state["decision"].mode == "research" else "finish"
+        decision = state.get("decision")
+        return (
+            "act" if decision is not None and decision.mode == "research" else "finish"
+        )
 
     async def _tools_node(self, state: _State) -> dict[str, Any]:
         results = list(state.get("results", []))
         errors = list(state.get("tool_errors", []))
         executions: list[dict[str, Any]] = []
         used = state.get("tool_calls", 0)
-        context = ToolContext(state["db"], state["user_id"], state.get("knowledge_base_ids", ()))
-        for call in state["decision"].calls:
+        decision = state.get("decision")
+        context = ToolContext(
+            state["db"], state["user_id"], state.get("knowledge_base_ids", ())
+        )
+        for call in decision.calls if decision is not None else ():
             if used >= self.max_tool_calls:
                 errors.append({"tool": call.name, "code": "TOOL_BUDGET_EXCEEDED"})
                 break
             outcome = await self.registry.execute(call.name, call.arguments, context)
             used += 1
             executions.append(outcome.model_dump(exclude={"evidence"}))
-            results.extend(item.as_search_result(outcome.tool) for item in outcome.evidence)
+            results.extend(
+                item.as_search_result(outcome.tool) for item in outcome.evidence
+            )
             if outcome.error_code:
                 errors.append({"tool": outcome.tool, "code": outcome.error_code})
         return {
-            "results": results, "tool_calls": used, "tool_errors": errors,
-            "steps": [*state.get("steps", []), {"agent": "tools", "plan": state.get("plan_count", 1), "executions": executions, "observations": len(results), "toolCalls": used}],
+            "results": results,
+            "tool_calls": used,
+            "tool_errors": errors,
+            "steps": [
+                *state.get("steps", []),
+                {
+                    "agent": "tools",
+                    "plan": state.get("plan_count", 1),
+                    "executions": executions,
+                    "observations": len(results),
+                    "toolCalls": used,
+                },
+            ],
         }
 
     async def _review_node(self, state: _State) -> dict[str, Any]:
@@ -327,7 +540,9 @@ class AgenticRagCoordinator:
         present.discard(None)
         missing = tuple(sorted(required - present))
         coverage = (
-            len(required & present) / len(required) if required else (1.0 if results else 0.0)
+            len(required & present) / len(required)
+            if required
+            else (1.0 if results else 0.0)
         )
         relevance = coverage if required else (1.0 if results else 0.0)
         conflicts = cls._find_conflicts(results)
@@ -378,14 +593,18 @@ class AgenticRagCoordinator:
                 re.IGNORECASE,
             )
         )
-        if any(term in lowered for term in ("送达", "配送", "物流", "骑手", "延误", "迟到")):
+        if any(
+            term in lowered for term in ("送达", "配送", "物流", "骑手", "延误", "迟到")
+        ):
             return "delivery_status", {"order", "delivery"}, "medium"
         if any(term in lowered for term in ("退款", "退货", "七日无理由", "赔付")):
             required = {"policy"}
             if has_order:
                 required.update(("order", "refund"))
             return "refund_policy", required, "high"
-        if any(term in lowered for term in ("食品安全", "变质", "还能吃", "还能喝", "不冰")):
+        if any(
+            term in lowered for term in ("食品安全", "变质", "还能吃", "还能喝", "不冰")
+        ):
             required = {"policy"}
             if has_order:
                 required.add("order")
@@ -433,7 +652,9 @@ class AgenticRagCoordinator:
         return "replan" if state.get("review", "").startswith("retry") else "finish"
 
     @staticmethod
-    def _terminal_for(mode: str, has_results: bool) -> str:
+    def _terminal_for(
+        mode: str, has_results: bool
+    ) -> Literal["direct", "grounded", "refused", "escalated"]:
         if mode == "direct":
             return "direct"
         if mode == "refuse":

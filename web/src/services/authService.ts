@@ -21,6 +21,20 @@ export async function login(username: string, password: string): Promise<LoginRe
   };
 }
 
+export interface RegisterResult {
+  id: number;
+  username: string;
+  role: string;
+}
+
+export async function register(
+  username: string,
+  password: string,
+  email?: string
+): Promise<RegisterResult> {
+  return api.post<unknown, RegisterResult>("/auth/register", { username, password, email });
+}
+
 export async function logout() {
   return Promise.resolve();
 }

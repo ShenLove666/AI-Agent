@@ -63,6 +63,23 @@ class ReleaseDecisionRequest(BaseModel):
     decision: str
 
 
+class EscalationRequest(BaseModel):
+    category: str
+    reason: str
+    risk_level: str = Field(default="medium", alias="riskLevel")
+    ai_diagnosis: dict | None = Field(default=None, alias="aiDiagnosis")
+
+
+class EscalationActionRequest(BaseModel):
+    resolution: str | None = None
+    note: str | None = None
+
+
+class EscalationResolveRequest(BaseModel):
+    resolution: str
+    resolution_note: str | None = Field(default=None, alias="resolutionNote")
+
+
 class QualityLabelRequest(BaseModel):
     verdict: str
     failure_category: str | None = Field(default=None, alias="failureCategory")
@@ -110,7 +127,9 @@ def list_cases(
 
 @router.get("/cases/{case_id}")
 def case_detail(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.detail(db, _owner(db, user), case_id), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.detail(db, _owner(db, user), case_id), traceId=current_trace_id()
+    )
 
 
 @router.get("/cases/{case_id}/workspace")
@@ -123,16 +142,23 @@ def case_workspace(case_id: int, db: DbSession, user: CurrentUser) -> ApiRespons
 
 @router.get("/cases/{case_id}/provenance")
 def case_provenance(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.case_provenance(db, _owner(db, user), case_id), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.case_provenance(db, _owner(db, user), case_id),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/coverage")
 def support_coverage(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.coverage(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.coverage(db, _owner(db, user)), traceId=current_trace_id()
+    )
 
 
 @router.post("/cases/{case_id}/transition")
-def transition(case_id: int, payload: TransitionRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
+def transition(
+    case_id: int, payload: TransitionRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
     return ApiResponse(
         data=service.transition(
             db,
@@ -150,18 +176,49 @@ def transition(case_id: int, payload: TransitionRequest, db: DbSession, user: Cu
 
 
 @router.post("/cases/{case_id}/assign")
-def assign(case_id: int, payload: AssignRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.assign(db, _owner(db, user), case_id, int(user.id), payload.assignee_id, payload.expected_version), traceId=current_trace_id())
+def assign(
+    case_id: int, payload: AssignRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.assign(
+            db,
+            _owner(db, user),
+            case_id,
+            int(user.id),
+            payload.assignee_id,
+            payload.expected_version,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.put("/cases/{case_id}/labels")
-def labels(case_id: int, payload: LabelsRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.set_labels(db, _owner(db, user), case_id, int(user.id), payload.labels, payload.expected_version), traceId=current_trace_id())
+def labels(
+    case_id: int, payload: LabelsRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.set_labels(
+            db,
+            _owner(db, user),
+            case_id,
+            int(user.id),
+            payload.labels,
+            payload.expected_version,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/cases/{case_id}/replies")
-def manual_reply(case_id: int, payload: ReplyRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.manual_reply(db, _owner(db, user), case_id, int(user.id), payload.content), traceId=current_trace_id())
+def manual_reply(
+    case_id: int, payload: ReplyRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.manual_reply(
+            db, _owner(db, user), case_id, int(user.id), payload.content
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/cases/{case_id}/outbound")
@@ -187,75 +244,267 @@ def confirm_outbound(
 
 
 @router.post("/cases/{case_id}/suggestions")
-async def generate_suggestion(case_id: int, request: Request, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=await service.generate_suggestion(db, _owner(db, user), case_id, int(user.id), request.app.state.container.model_router), traceId=current_trace_id())
+async def generate_suggestion(
+    case_id: int, request: Request, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=await service.generate_suggestion(
+            db,
+            _owner(db, user),
+            case_id,
+            int(user.id),
+            request.app.state.container.model_router,
+            coordinator=request.app.state.container.agentic,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/cases/{case_id}/suggestions/{suggestion_id}/decision")
-def decide(case_id: int, suggestion_id: int, payload: DecisionRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.decide(db, _owner(db, user), case_id, suggestion_id, int(user.id), payload.decision, payload.final_content, payload.reason), traceId=current_trace_id())
+def decide(
+    case_id: int,
+    suggestion_id: int,
+    payload: DecisionRequest,
+    db: DbSession,
+    user: CurrentUser,
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.decide(
+            db,
+            _owner(db, user),
+            case_id,
+            suggestion_id,
+            int(user.id),
+            payload.decision,
+            payload.final_content,
+            payload.reason,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/metrics")
 def metrics(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.metrics(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.metrics(db, _owner(db, user)), traceId=current_trace_id()
+    )
+
+
+@router.get("/escalations")
+def escalation_queue(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(
+        data=service.escalation_queue(db, _owner(db, user)), traceId=current_trace_id()
+    )
+
+
+@router.get("/escalations/overview")
+def escalation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(
+        data=service.escalation_overview(db, _owner(db, user)),
+        traceId=current_trace_id(),
+    )
+
+
+@router.post("/cases/{case_id}/escalations")
+def raise_escalation(
+    case_id: int, payload: EscalationRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.raise_escalation(
+            db,
+            _owner(db, user),
+            case_id,
+            int(user.id),
+            payload.category,
+            payload.reason,
+            payload.risk_level,
+            payload.ai_diagnosis,
+        ),
+        traceId=current_trace_id(),
+    )
+
+
+@router.post("/escalations/{escalation_id}/accept")
+def accept_escalation(
+    escalation_id: int, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.accept_escalation(
+            db, _owner(db, user), escalation_id, int(user.id)
+        ),
+        traceId=current_trace_id(),
+    )
+
+
+@router.post("/escalations/{escalation_id}/resolve")
+def resolve_escalation(
+    escalation_id: int,
+    payload: EscalationResolveRequest,
+    db: DbSession,
+    user: CurrentUser,
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.resolve_escalation(
+            db,
+            _owner(db, user),
+            escalation_id,
+            int(user.id),
+            payload.resolution,
+            payload.resolution_note,
+        ),
+        traceId=current_trace_id(),
+    )
+
+
+@router.post("/escalations/{escalation_id}/return")
+def return_escalation(
+    escalation_id: int,
+    payload: EscalationActionRequest,
+    db: DbSession,
+    user: CurrentUser,
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.return_escalation(
+            db, _owner(db, user), escalation_id, int(user.id), payload.note
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/knowledge/releases")
 def knowledge_releases(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.list_releases(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.list_releases(db, _owner(db, user)), traceId=current_trace_id()
+    )
 
 
 @router.get("/knowledge/sources")
 def knowledge_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.knowledge_sources(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.knowledge_sources(db, _owner(db, user)), traceId=current_trace_id()
+    )
 
 
 @router.post("/knowledge/releases")
-def create_knowledge_release(payload: KnowledgeReleaseRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.create_release(db, _owner(db, user), int(user.id), payload.version, payload.title, payload.document_ids), traceId=current_trace_id())
+def create_knowledge_release(
+    payload: KnowledgeReleaseRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.create_release(
+            db,
+            _owner(db, user),
+            int(user.id),
+            payload.version,
+            payload.title,
+            payload.document_ids,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/knowledge/releases/{release_id}/publish")
-def publish_knowledge_release(release_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.publish_release(db, _owner(db, user), release_id, int(user.id)), traceId=current_trace_id())
+def publish_knowledge_release(
+    release_id: int, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.publish_release(db, _owner(db, user), release_id, int(user.id)),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/knowledge/releases/{release_id}/activate")
-def activate_knowledge_release(release_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.activate_release(db, _owner(db, user), release_id), traceId=current_trace_id())
+def activate_knowledge_release(
+    release_id: int, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.activate_release(db, _owner(db, user), release_id),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/quality")
 def quality_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.quality_overview(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.quality_overview(db, _owner(db, user)), traceId=current_trace_id()
+    )
 
 
 @router.post("/quality/cases/{case_id}/labels")
-def add_quality_label(case_id: int, payload: QualityLabelRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.add_quality_label(db, _owner(db, user), case_id, int(user.id), payload.verdict, payload.failure_category, payload.severity, payload.note, payload.suggestion_id), traceId=current_trace_id())
+def add_quality_label(
+    case_id: int, payload: QualityLabelRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.add_quality_label(
+            db,
+            _owner(db, user),
+            case_id,
+            int(user.id),
+            payload.verdict,
+            payload.failure_category,
+            payload.severity,
+            payload.note,
+            payload.suggestion_id,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/quality/gaps/{gap_id}/resolve")
-def resolve_gap(gap_id: int, payload: GapResolutionRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.resolve_gap(db, _owner(db, user), gap_id, int(user.id), payload.release_id), traceId=current_trace_id())
+def resolve_gap(
+    gap_id: int, payload: GapResolutionRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.resolve_gap(
+            db, _owner(db, user), gap_id, int(user.id), payload.release_id
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/evaluations")
 def evaluation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.evaluation_overview(db, _owner(db, user)), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.evaluation_overview(db, _owner(db, user)),
+        traceId=current_trace_id(),
+    )
 
 
 @router.get("/evaluations/{run_id}")
 def evaluation_detail(run_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.evaluation_detail(db, _owner(db, user), run_id), traceId=current_trace_id())
+    return ApiResponse(
+        data=service.evaluation_detail(db, _owner(db, user), run_id),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/evaluations")
-async def run_evaluation(payload: EvaluationRunRequest, request: Request, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=await service.run_evaluation_async(db, _owner(db, user), int(user.id), payload.release_id, request.app.state.container.agentic), traceId=current_trace_id())
+async def run_evaluation(
+    payload: EvaluationRunRequest, request: Request, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=await service.run_evaluation_async(
+            db,
+            _owner(db, user),
+            int(user.id),
+            payload.release_id,
+            request.app.state.container.agentic,
+        ),
+        traceId=current_trace_id(),
+    )
 
 
 @router.post("/release-decisions")
-def decide_release(payload: ReleaseDecisionRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.decide_release(db, _owner(db, user), int(user.id), payload.run_id, payload.release_id, payload.decision), traceId=current_trace_id())
+def decide_release(
+    payload: ReleaseDecisionRequest, db: DbSession, user: CurrentUser
+) -> ApiResponse:
+    return ApiResponse(
+        data=service.decide_release(
+            db,
+            _owner(db, user),
+            int(user.id),
+            payload.run_id,
+            payload.release_id,
+            payload.decision,
+        ),
+        traceId=current_trace_id(),
+    )

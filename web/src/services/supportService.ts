@@ -41,6 +41,20 @@ export interface SupportSuggestion {
   knowledgeReleaseId: number | null;
   latencyMs: number | null;
   errorCode: string | null;
+  runtimeMode: string | null;
+  terminalState: string | null;
+  resolution: null | {
+    intent: string;
+    risk: "low" | "medium" | "high";
+    facts: Array<{ type: string; content: string; orderNo?: string }>;
+    missingFacts: string[];
+    recommendedActions: string[];
+    draftReply: string;
+    citations: string[];
+    canSend: boolean;
+    escalationReason: string | null;
+    terminalState: string;
+  };
   decision: string | null;
   finalContent: string | null;
   createdAt: string;
@@ -304,3 +318,70 @@ export const decideKnowledgeRelease = (
   releaseId: number,
   decision: "approved" | "rejected"
 ) => api.post("/support/release-decisions", { runId, releaseId, decision });
+
+// ---------------------------------------------------------------------------
+// 客服升级（主管队列）
+// ---------------------------------------------------------------------------
+
+export interface SupportEscalation {
+  id: number;
+  caseId: number;
+  raisedBy: number;
+  assignedTo: number | null;
+  category: string;
+  reason: string;
+  riskLevel: "low" | "medium" | "high";
+  status: "pending" | "accepted" | "returned" | "transferred" | "resolved";
+  resolution: string | null;
+  resolutionNote: string | null;
+  aiDiagnosis: Record<string, unknown>;
+  createdAt: string;
+  raisedAt: string;
+  acceptedAt: string | null;
+  resolvedAt: string | null;
+  isDemo: boolean;
+  case?: {
+    id: number;
+    caseKey: string;
+    customerName: string;
+    subject: string;
+    status: string;
+    priority: string;
+    assigneeId: number | null;
+    lastMessage: string | null;
+    updatedAt: string;
+  } | null;
+}
+
+export interface EscalationOverview {
+  total: number;
+  pending: number;
+  accepted: number;
+  resolved: number;
+  returned: number;
+  highRisk: number;
+  byCategory: Record<string, number>;
+}
+
+export const raiseSupportEscalation = (
+  caseId: number,
+  payload: {
+    category: string;
+    reason: string;
+    riskLevel?: "low" | "medium" | "high";
+    aiDiagnosis?: Record<string, unknown>;
+  }
+) => api.post<never, SupportEscalation>(`/support/cases/${caseId}/escalations`, payload);
+
+export const getEscalationQueue = () => api.get<never, SupportEscalation[]>("/support/escalations");
+export const getEscalationOverview = () =>
+  api.get<never, EscalationOverview>("/support/escalations/overview");
+export const acceptEscalation = (id: number) =>
+  api.post<never, SupportEscalation>(`/support/escalations/${id}/accept`);
+export const resolveEscalation = (id: number, resolution: string, resolutionNote?: string) =>
+  api.post<never, SupportEscalation>(`/support/escalations/${id}/resolve`, {
+    resolution,
+    resolutionNote
+  });
+export const returnEscalation = (id: number, note?: string) =>
+  api.post<never, SupportEscalation>(`/support/escalations/${id}/return`, { note });

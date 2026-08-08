@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -10,8 +11,11 @@ from app.api.dependencies import CurrentUser, DbSession
 from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
-from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
-
+from app.modules.knowledge.models import (
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
 
@@ -53,16 +57,19 @@ def _page(records: list, total: int, current: int, size: int) -> dict:
 
 
 def _base_vo(db, item: KnowledgeBase) -> dict:
-    count = db.scalar(
-        select(func.count(KnowledgeDocument.id)).where(
-            KnowledgeDocument.knowledge_base_id == item.id
+    count = (
+        db.scalar(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.knowledge_base_id == item.id
+            )
         )
-    ) or 0
+        or 0
+    )
     return {
         "id": str(item.id),
         "name": item.name,
-        "embeddingModel": "",
-        "collectionName": "",
+        "embeddingModel": os.getenv("EMBED_MODEL_PATH") or "bge-small-zh-v1.5",
+        "collectionName": os.getenv("MILVUS_COLLECTION", "ragent_chunks_v2"),
         "createdBy": str(item.owner_id),
         "documentCount": count,
         "createTime": item.created_at.isoformat(),
@@ -71,9 +78,14 @@ def _base_vo(db, item: KnowledgeBase) -> dict:
 
 
 def _document_vo(db, item: KnowledgeDocument) -> dict:
-    count = db.scalar(
-        select(func.count(KnowledgeChunk.id)).where(KnowledgeChunk.document_id == item.id)
-    ) or 0
+    count = (
+        db.scalar(
+            select(func.count(KnowledgeChunk.id)).where(
+                KnowledgeChunk.document_id == item.id
+            )
+        )
+        or 0
+    )
     return {
         "id": str(item.id),
         "kbId": str(item.knowledge_base_id),
@@ -202,7 +214,11 @@ def ingestion_schema(user: CurrentUser) -> ApiResponse:
         data={
             "parseProfileLabel": "解析方式",
             "parseProfiles": [
-                {"value": "balanced", "label": "通用解析", "hint": "适合普通文本、PDF 与 Word"},
+                {
+                    "value": "balanced",
+                    "label": "通用解析",
+                    "hint": "适合普通文本、PDF 与 Word",
+                },
                 {"value": "table", "label": "表格优先", "hint": "适合 CSV 与电子表格"},
             ],
             "parseProfileExtensions": ["csv", "xls", "xlsx"],
@@ -306,7 +322,12 @@ async def batch_set_chunks_enabled(
     value: bool = True,
 ) -> ApiResponse:
     document = _document(db, document_id, user)
-    ids = {int(item) for item in payload.chunkIds}
+    ids: set[int] = set()
+    for item in payload.chunkIds:
+        try:
+            ids.add(int(item))
+        except (TypeError, ValueError):
+            continue
     chunks = list(
         db.scalars(
             select(KnowledgeChunk).where(
@@ -351,7 +372,9 @@ async def delete_base(
     base = _base(db, base_id, user)
     documents = list(
         db.scalars(
-            select(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id)
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.knowledge_base_id == base_id
+            )
         )
     )
     indexer = request.app.state.container.knowledge.vector_indexer
@@ -359,8 +382,12 @@ async def delete_base(
         for document in documents:
             await indexer.store.delete_document(document.id)
     paths = [Path(document.storage_path) for document in documents]
-    db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_base_id == base_id))
-    db.execute(delete(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id))
+    db.execute(
+        delete(KnowledgeChunk).where(KnowledgeChunk.knowledge_base_id == base_id)
+    )
+    db.execute(
+        delete(KnowledgeDocument).where(KnowledgeDocument.knowledge_base_id == base_id)
+    )
     db.delete(base)
     db.commit()
     for path in paths:

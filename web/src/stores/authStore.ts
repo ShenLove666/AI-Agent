@@ -2,7 +2,12 @@ import { create } from "zustand";
 import { toast } from "sonner";
 
 import type { User } from "@/types";
-import { getCurrentUser, login as loginRequest, logout as logoutRequest } from "@/services/authService";
+import {
+  getCurrentUser,
+  login as loginRequest,
+  logout as logoutRequest,
+  register as registerRequest
+} from "@/services/authService";
 import { setAuthToken } from "@/services/api";
 import { useChatStore } from "@/stores/chatStore";
 import { storage } from "@/utils/storage";
@@ -16,6 +21,7 @@ interface AuthState {
   isLoading: boolean;
   isInitialized: boolean;
   login: (username: string, password: string, remember?: boolean) => Promise<void>;
+  register: (username: string, password: string, email?: string) => Promise<void>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
   fetchCurrentUser: () => Promise<void>;
@@ -42,7 +48,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       storage.setUser(user, remember);
       setAuthToken(user.token);
       set({ user, token: user.token, isAuthenticated: true });
-      get().fetchCurrentUser().catch(() => null);
+      get()
+        .fetchCurrentUser()
+        .catch(() => null);
       useChatStore.getState().cancelGeneration();
       useChatStore.setState({
         sessions: [],
@@ -61,6 +69,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       toast.success("登录成功");
     } catch (error) {
       toast.error((error as Error).message || "登录失败");
+      throw error;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  register: async (username, password, email) => {
+    set({ isLoading: true });
+    try {
+      const data = await registerRequest(username, password, email);
+      toast.success(`账号 ${data.username} 注册成功，正在登录...`);
+      await get().login(username, password, true);
+    } catch (error) {
+      toast.error((error as Error).message || "注册失败");
       throw error;
     } finally {
       set({ isLoading: false });
