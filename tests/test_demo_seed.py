@@ -451,7 +451,7 @@ def test_bundled_evaluation_cases_cover_merchant_support_topics():
     catalog = load_demo_catalog(PROJECT_ROOT / "resources" / "demo")
     case_keys = {case.key for case in catalog.evaluation_cases}
 
-    assert len(catalog.evaluation_cases) >= 12
+    assert len(catalog.evaluation_cases) >= 50
     assert {
         "return-window-calculation",
         "excluded-customized-goods",
@@ -604,13 +604,13 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
     assert first.created_documents == len(service.catalog.documents)
     assert second.created_documents == 0
     assert second.reused_documents == len(service.catalog.documents)
-    assert second.reused_evaluation_cases == 14
+    assert second.reused_evaluation_cases == len(service.catalog.evaluation_cases)
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
     assert db.scalar(select(func.count(KnowledgeDocument.id))) == 1 + len(
         service.catalog.documents
     )
     assert db.scalar(select(func.count(EvaluationDataset.id))) == 2
-    assert db.scalar(select(func.count(EvaluationCase.id))) == 15
+    assert db.scalar(select(func.count(EvaluationCase.id))) == 1 + len(service.catalog.evaluation_cases)
 
     demo_user = db.scalar(select(User).where(User.is_demo.is_(True)))
     demo_conversation = db.scalar(
@@ -1542,6 +1542,7 @@ def test_pre0004_indexed_demo_upgrades_and_clears_without_vector_store(
 def test_seed_migrates_pre0004_legacy_managed_document_to_db_root(
     tmp_path: Path, monkeypatch
 ):
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
     monkeypatch.chdir(tmp_path)
     database_url = f"sqlite:///{tmp_path / 'pre0004-seed.db'}"
     legacy_path = tmp_path / "data" / "demo-seed-files" / "seven-day-return.md"

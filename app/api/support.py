@@ -197,9 +197,14 @@ def evaluation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(data=service.evaluation_overview(db, _owner(db, user)), traceId=current_trace_id())
 
 
+@router.get("/evaluations/{run_id}")
+def evaluation_detail(run_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=service.evaluation_detail(db, _owner(db, user), run_id), traceId=current_trace_id())
+
+
 @router.post("/evaluations")
-def run_evaluation(payload: EvaluationRunRequest, db: DbSession, user: CurrentUser) -> ApiResponse:
-    return ApiResponse(data=service.run_evaluation(db, _owner(db, user), int(user.id), payload.release_id), traceId=current_trace_id())
+async def run_evaluation(payload: EvaluationRunRequest, request: Request, db: DbSession, user: CurrentUser) -> ApiResponse:
+    return ApiResponse(data=await service.run_evaluation_async(db, _owner(db, user), int(user.id), payload.release_id, request.app.state.container.agentic), traceId=current_trace_id())
 
 
 @router.post("/release-decisions")

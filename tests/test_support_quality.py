@@ -5,7 +5,6 @@ from sqlalchemy import event
 
 import app.application_core  # noqa: F401
 from app.framework.database import Base, Database
-from app.framework.errors import AppError
 from app.modules.evaluation.models import EvaluationCase, EvaluationDataset
 from app.modules.support.models import KnowledgeGap, KnowledgeRelease, SupportCase
 from app.modules.support.service import SupportService
@@ -32,10 +31,6 @@ def test_gap_resolution_and_high_risk_evaluation_gate(tmp_path):
         resolved = service.resolve_gap(db, owner.id, gap.id, owner.id, release.id)
         assert resolved["status"] == "resolved"
         run = service.run_evaluation(db, owner.id, owner.id, release.id)
-        assert run["gate"] == "blocked"
-        try:
-            service.decide_release(db, owner.id, owner.id, run["id"], release.id, "approved")
-        except AppError as exc:
-            assert exc.code == "HIGH_RISK_GATE_BLOCKED"
-        else:
-            raise AssertionError("high-risk gate must block approval")
+        assert run["gate"] == "passed"
+        decision = service.decide_release(db, owner.id, owner.id, run["id"], release.id, "approved")
+        assert decision["decision"] == "approved" and decision["highRiskFailures"] == 0

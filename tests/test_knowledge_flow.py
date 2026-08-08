@@ -15,6 +15,7 @@ def test_document_ingestion_and_user_isolated_retrieval():
         with tempfile.TemporaryDirectory() as directory:
             os.environ["DB_URL"] = f"sqlite:///{directory}/test.db"
             os.environ["UPLOAD_DIR"] = f"{directory}/uploads"
+            os.environ["VECTOR_BACKEND"] = "disabled"
             from app.application import create_app
 
             app = create_app()

@@ -5,26 +5,61 @@ from dataclasses import dataclass
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy.orm import Session
 
 from app.infra_ai.contracts import ChatMessage, ChatRequest
 from app.infra_ai.router import ChatModelRouter
-from app.modules.commerce.models import Basket, BasketItem, CommerceImport, Product
+from app.modules.rag.agent_tools import ToolContext, ToolRegistry, build_tool_registry
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
-from app.modules.retrieval.models import RetrievalRequest, SearchResult
-from app.modules.support.models import SupportCase
+from app.modules.retrieval.models import SearchResult
 
 
-TOOLS = frozenset({"knowledge_search", "commerce_data", "support_cases"})
+_LEGACY_NAMES = {
+    "knowledge.search": "knowledge_search",
+    "commerce.search_association_rules": "commerce_data",
+    "commerce.get_product_metrics": "commerce_data",
+    "support.search_cases": "support_cases",
+    "support.get_quality_metrics": "support_cases",
+    "support.get_knowledge_gaps": "support_cases",
+}
+
+
+class ToolCallPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=100)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["direct", "research", "escalate", "refuse"]
+    calls: tuple[ToolCallPlan, ...] = ()
+    rationale: str = Field(default="", max_length=240)
+
+    @model_validator(mode="after")
+    def validate_calls(self):
+        if self.mode == "research" and not self.calls:
+            raise ValueError("research plan requires tool calls")
+        if self.mode != "research" and self.calls:
+            raise ValueError("terminal plan cannot call tools")
+        return self
 
 
 @dataclass(frozen=True, slots=True)
 class AgentDecision:
-    mode: Literal["direct", "research", "escalate"]
-    tools: tuple[str, ...]
-    queries: tuple[str, ...]
+    mode: Literal["direct", "research", "escalate", "refuse"]
+    calls: tuple[ToolCallPlan, ...]
     rationale: str
+    runtime_mode: Literal["deterministic_fallback", "model_backed"]
+
+    @property
+    def tools(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(_LEGACY_NAMES.get(call.name, call.name) for call in self.calls))
+
+    @property
+    def queries(self) -> tuple[str, ...]:
+        return tuple(str(call.arguments.get("query", "")).strip() for call in self.calls if str(call.arguments.get("query", "")).strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +68,17 @@ class AgenticRun:
     results: tuple[SearchResult, ...]
     review: str
     steps: tuple[dict[str, Any], ...]
+    terminal_state: Literal["direct", "grounded", "refused", "escalated"]
+    runtime_mode: Literal["deterministic_fallback", "model_backed"]
+
+    @property
+    def answer(self) -> str:
+        if self.terminal_state == "direct":
+            return "您好，我可以协助查询商家政策、零售数据和客服运营问题。"
+        if self.terminal_state in {"refused", "escalated"} or not self.results:
+            return "当前证据不足，无法给出可靠结论，建议转人工复核。"
+        excerpts = [" ".join(item.content.split())[:240] for item in self.results[:3]]
+        return "根据已检索到的来源证据：" + "；".join(excerpts)
 
 
 class _State(TypedDict, total=False):
@@ -41,19 +87,35 @@ class _State(TypedDict, total=False):
     knowledge_base_ids: tuple[int, ...]
     db: Session
     decision: AgentDecision
+    initial_decision: AgentDecision
     results: list[SearchResult]
     review: str
-    attempts: int
+    review_feedback: str
+    plan_count: int
+    tool_calls: int
+    plan_history: list[dict[str, Any]]
+    tool_errors: list[dict[str, Any]]
     steps: list[dict[str, Any]]
+    terminal_state: str
 
 
 class AgenticRagCoordinator:
-    """Bounded ReAct graph: decide -> act -> observe/review -> retry/final."""
+    """Bounded planner -> typed tools -> evidence review -> re-planner graph."""
 
-    def __init__(self, model_router: ChatModelRouter | None, retrieval: MultiChannelRetrievalEngine | None, *, max_steps: int = 2):
+    def __init__(
+        self,
+        model_router: ChatModelRouter | None,
+        retrieval: MultiChannelRetrievalEngine | None,
+        *,
+        max_steps: int = 2,
+        max_tool_calls: int = 8,
+        registry: ToolRegistry | None = None,
+    ):
         self.model_router = model_router
         self.retrieval = retrieval
-        self.max_steps = max_steps
+        self.max_steps = max(1, max_steps)
+        self.max_tool_calls = max(1, max_tool_calls)
+        self.registry = registry or build_tool_registry(retrieval)
         graph = StateGraph(_State)
         graph.add_node("planner_agent", self._planner_node)
         graph.add_node("tool_agents", self._tools_node)
@@ -61,106 +123,134 @@ class AgenticRagCoordinator:
         graph.add_edge(START, "planner_agent")
         graph.add_conditional_edges("planner_agent", self._after_plan, {"act": "tool_agents", "finish": END})
         graph.add_edge("tool_agents", "evidence_agent")
-        graph.add_conditional_edges("evidence_agent", self._after_review, {"retry": "tool_agents", "finish": END})
+        graph.add_conditional_edges("evidence_agent", self._after_review, {"replan": "planner_agent", "finish": END})
         self.graph = graph.compile()
 
     async def run(self, db: Session, *, user_id: int, question: str, knowledge_base_ids: tuple[int, ...] = ()) -> AgenticRun:
         state = await self.graph.ainvoke({
             "question": question, "user_id": user_id, "knowledge_base_ids": knowledge_base_ids,
-            "db": db, "results": [], "attempts": 0, "steps": [],
+            "db": db, "results": [], "plan_count": 0, "tool_calls": 0,
+            "plan_history": [], "tool_errors": [], "steps": [], "review_feedback": "",
         })
-        return AgenticRun(state["decision"], tuple(state.get("results", [])), state.get("review", "not_required"), tuple(state.get("steps", [])))
+        decision = state.get("initial_decision") or state["decision"]
+        terminal = state.get("terminal_state") or self._terminal_for(state["decision"].mode, bool(state.get("results")))
+        return AgenticRun(decision, tuple(state.get("results", [])), state.get("review", "not_required"), tuple(state.get("steps", [])), terminal, decision.runtime_mode)
 
-    @staticmethod
-    def _fallback_decision(question: str) -> AgentDecision:
+    def _fallback_decision(self, question: str, history: list[dict[str, Any]], feedback: str) -> AgentDecision:
         lowered = question.lower()
-        if any(term in lowered for term in ("你好", "谢谢", "你是谁", "hello")):
-            return AgentDecision("direct", (), (), "普通对话无需调用业务工具")
-        tools: list[str] = []
+        if not history and any(term in lowered for term in ("你好", "谢谢", "你是谁", "hello")):
+            return AgentDecision("direct", (), "普通对话无需调用业务工具", "deterministic_fallback")
+        if any(term in lowered for term in ("伪造", "欺骗", "假截图")):
+            return AgentDecision("refuse", (), "请求涉及欺骗或伪造", "deterministic_fallback")
+        used = {call["name"] for plan in history for call in plan.get("calls", [])}
+        candidates: list[str] = []
         if any(term in lowered for term in ("购物篮", "订单", "商品", "销量", "关联", "搭配", "取消", "价格", "交易")):
-            tools.append("commerce_data")
-        if any(term in lowered for term in ("客服", "工单", "案例", "转人工", "质量", "客诉", "咨询")):
-            tools.append("support_cases")
-        if any(term in lowered for term in ("规则", "政策", "退货", "退款", "售后", "流程", "依据", "法规", "活动")) or not tools:
-            tools.append("knowledge_search")
-        return AgentDecision("research", tuple(dict.fromkeys(tools)), (question,), "离线规则路由选择了与问题相关的工具")
+            candidates.extend(("commerce.search_association_rules", "commerce.get_product_metrics"))
+        if any(term in lowered for term in ("客服", "工单", "案例", "转人工", "质量", "客诉", "咨询", "缺口")):
+            candidates.extend(("support.search_cases", "support.get_quality_metrics", "support.get_knowledge_gaps"))
+        if any(term in lowered for term in ("规则", "政策", "退货", "退款", "售后", "流程", "依据", "法规", "活动", "安全")) or not candidates:
+            candidates.append("knowledge.search")
+        if history:
+            alternatives = [name for name in (*candidates, "knowledge.search", "support.search_cases") if name not in used]
+            if not alternatives:
+                return AgentDecision("escalate", (), "重新规划后仍无可用的新证据路径", "deterministic_fallback")
+            candidates = alternatives[:2]
+        calls = tuple(ToolCallPlan(name=name, arguments={"query": question, "limit": 6}) for name in dict.fromkeys(candidates) if self.registry.canonical_name(name))
+        return AgentDecision("research", calls, "离线规划器根据问题与上一轮反馈选择业务工具" + (f"：{feedback[:60]}" if feedback else ""), "deterministic_fallback")
 
-    async def _decide(self, question: str) -> AgentDecision:
+    async def _decide(self, state: _State) -> AgentDecision:
+        question = state["question"]
+        history = state.get("plan_history", [])
+        feedback = state.get("review_feedback", "")
         if self.model_router is None:
-            return self._fallback_decision(question)
+            return self._fallback_decision(question, history, feedback)
+        tool_text = json.dumps(self.registry.describe(), ensure_ascii=False)
+        prior = json.dumps({"plans": history[-2:], "feedback": feedback, "errors": state.get("tool_errors", [])[-4:]}, ensure_ascii=False)
         prompt = ChatRequest(messages=[
-            ChatMessage("system", """你是零售运营 ReAct 规划 Agent。只返回 JSON，不回答问题。可用工具：
-knowledge_search：政策、SOP、活动口径；commerce_data：真实购物篮/交易统计；support_cases：客服案例和质量运营。
-自主判断 direct/research/escalate，可同时选择多个工具。禁止虚构工具。格式：
-{"mode":"research","tools":["knowledge_search"],"queries":["精确检索词"],"rationale":"不超过40字的决策摘要"}"""),
-            ChatMessage("user", question),
-        ], temperature=0, max_tokens=240, metadata={"agent_role": "planner"})
+            ChatMessage("system", "你是零售运营规划 Agent。只返回 JSON：{\"mode\":\"research|direct|refuse|escalate\",\"calls\":[{\"name\":\"工具名\",\"arguments\":{}}],\"rationale\":\"摘要\"}。证据不足重规划时必须改变工具或参数，否则结束。可用工具：" + tool_text),
+            ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
+        ], temperature=0, max_tokens=500, metadata={"agent_role": "planner"})
         try:
             raw = (await self.model_router.complete(prompt)).strip().strip("`")
-            if raw.startswith("json"): raw = raw[4:].lstrip()
+            if raw.startswith("json"):
+                raw = raw[4:].lstrip()
             value = json.loads(raw)
-            mode = value.get("mode")
-            tools = tuple(item for item in value.get("tools", []) if item in TOOLS)
-            queries = tuple(str(item).strip() for item in value.get("queries", []) if str(item).strip())[:3]
-            if mode not in {"direct", "research", "escalate"} or (mode == "research" and not tools):
-                raise ValueError("invalid plan")
-            return AgentDecision(mode, tools, queries or (question,), str(value.get("rationale", "模型自主路由"))[:120])
+            if "tools" in value and "calls" not in value:
+                queries = value.pop("queries", [question]) or [question]
+                value["calls"] = [{"name": name, "arguments": {"query": queries[min(index, len(queries) - 1)], "limit": 6}} for index, name in enumerate(value.pop("tools", []))]
+            payload = PlanPayload.model_validate(value)
+            calls = tuple(ToolCallPlan(name=self.registry.canonical_name(call.name) or "", arguments=call.arguments) for call in payload.calls)
+            if any(not call.name for call in calls):
+                raise ValueError("unknown tool")
+            return AgentDecision(payload.mode, calls, payload.rationale or "模型规划", "model_backed")
         except Exception:
-            return self._fallback_decision(question)
+            return self._fallback_decision(question, history, feedback)
 
-    async def _planner_node(self, state: _State) -> dict:
-        decision = await self._decide(state["question"])
-        return {"decision": decision, "steps": [*state.get("steps", []), {"agent": "planner", "mode": decision.mode, "tools": list(decision.tools), "rationale": decision.rationale}]}
+    async def _planner_node(self, state: _State) -> dict[str, Any]:
+        decision = await self._decide(state)
+        count = state.get("plan_count", 0) + 1
+        history = [*state.get("plan_history", []), {"mode": decision.mode, "calls": [call.model_dump() for call in decision.calls], "rationale": decision.rationale}]
+        update: dict[str, Any] = {
+            "decision": decision, "plan_count": count, "plan_history": history,
+            "steps": [*state.get("steps", []), {"agent": "planner", "plan": count, "mode": decision.mode, "tools": list(decision.tools), "calls": [call.model_dump() for call in decision.calls], "rationale": decision.rationale, "runtimeMode": decision.runtime_mode}],
+        }
+        if "initial_decision" not in state:
+            update["initial_decision"] = decision
+        if decision.mode != "research":
+            update["terminal_state"] = self._terminal_for(decision.mode, False)
+        return update
 
     @staticmethod
     def _after_plan(state: _State) -> str:
         return "act" if state["decision"].mode == "research" else "finish"
 
-    async def _tools_node(self, state: _State) -> dict:
-        results: list[SearchResult] = []
-        decision = state["decision"]
-        query = decision.queries[min(state.get("attempts", 0), len(decision.queries) - 1)]
-        for tool in decision.tools:
-            if tool == "knowledge_search" and self.retrieval is not None:
-                response = await self.retrieval.retrieve(RetrievalRequest(
-                    query=query, knowledge_base_ids=tuple(str(item) for item in state.get("knowledge_base_ids", ())),
-                    candidate_limit=20, context_limit=6, metadata={"user_id": state["user_id"]},
-                ))
-                results.extend(response.results)
-            elif tool == "commerce_data":
-                results.extend(self._commerce_tool(state["db"], state["user_id"]))
-            elif tool == "support_cases":
-                results.extend(self._support_tool(state["db"], state["user_id"]))
-        attempts = state.get("attempts", 0) + 1
-        return {"results": results, "attempts": attempts, "steps": [*state.get("steps", []), {"agent": "tools", "attempt": attempts, "tools": list(decision.tools), "observations": len(results)}]}
+    async def _tools_node(self, state: _State) -> dict[str, Any]:
+        results = list(state.get("results", []))
+        errors = list(state.get("tool_errors", []))
+        executions: list[dict[str, Any]] = []
+        used = state.get("tool_calls", 0)
+        context = ToolContext(state["db"], state["user_id"], state.get("knowledge_base_ids", ()))
+        for call in state["decision"].calls:
+            if used >= self.max_tool_calls:
+                errors.append({"tool": call.name, "code": "TOOL_BUDGET_EXCEEDED"})
+                break
+            outcome = await self.registry.execute(call.name, call.arguments, context)
+            used += 1
+            executions.append(outcome.model_dump(exclude={"evidence"}))
+            results.extend(item.as_search_result(outcome.tool) for item in outcome.evidence)
+            if outcome.error_code:
+                errors.append({"tool": outcome.tool, "code": outcome.error_code})
+        return {
+            "results": results, "tool_calls": used, "tool_errors": errors,
+            "steps": [*state.get("steps", []), {"agent": "tools", "plan": state.get("plan_count", 1), "executions": executions, "observations": len(results), "toolCalls": used}],
+        }
 
-    @staticmethod
-    def _commerce_tool(db: Session, owner_id: int) -> list[SearchResult]:
-        latest = db.scalar(select(CommerceImport).where(CommerceImport.owner_id == owner_id).order_by(CommerceImport.id.desc()))
-        if latest is None: return []
-        baskets = int(db.scalar(select(func.count()).select_from(Basket).where(Basket.import_id == latest.id)) or 0)
-        lines = int(db.scalar(select(func.count()).select_from(BasketItem).join(Basket).where(Basket.import_id == latest.id)) or 0)
-        products = int(db.scalar(select(func.count()).select_from(Product).where(Product.owner_id == owner_id)) or 0)
-        quality = json.loads(latest.quality_report_json or "{}")
-        content = f"交易数据源 {latest.source_key}：{baskets} 个订单/购物篮，{lines} 条商品明细，当前商家共 {products} 个来源商品。限制：{'；'.join(quality.get('limitations', []))}"
-        return [SearchResult(f"commerce:{latest.id}", content, 1.0, "commerce_data", latest.source_key, {"provenance": "observed+derived", "import_id": latest.id, "source_version": latest.fingerprint[:12]})]
-
-    @staticmethod
-    def _support_tool(db: Session, owner_id: int) -> list[SearchResult]:
-        groups = db.execute(select(SupportCase.status, SupportCase.priority, func.count()).where(SupportCase.owner_id == owner_id).group_by(SupportCase.status, SupportCase.priority)).all()
-        if not groups: return []
-        summary = "，".join(f"{status}/{priority}={count}" for status, priority, count in groups)
-        return [SearchResult("support:coverage", f"客服案例覆盖：{summary}。这些案例为演示生成案例，不能当作真实顾客对话。", 1.0, "support_cases", "support_cases", {"provenance": "synthetic", "groups": len(groups)})]
-
-    async def _review_node(self, state: _State) -> dict:
+    async def _review_node(self, state: _State) -> dict[str, Any]:
         results = state.get("results", [])
         if results:
             review = "ready: 已获得带来源标记的工具证据"
-        elif state.get("attempts", 0) < self.max_steps:
-            review = "retry: 首轮无证据，执行一次受限重试"
+            terminal = "grounded"
+        elif state.get("plan_count", 0) < self.max_steps and state.get("tool_calls", 0) < self.max_tool_calls:
+            review = "retry: 当前计划没有获得可用证据，请改变工具或检索参数"
+            terminal = ""
         else:
-            review = "escalate: 达到步数上限仍无可靠证据"
-        return {"review": review, "steps": [*state.get("steps", []), {"agent": "evidence_reviewer", "review": review, "evidence": len(results)}]}
+            review = "escalate: 达到规划或工具预算上限仍无可靠证据"
+            terminal = "escalated"
+        return {
+            "review": review, "review_feedback": review, "terminal_state": terminal,
+            "steps": [*state.get("steps", []), {"agent": "evidence_reviewer", "review": review, "evidence": len(results), "plan": state.get("plan_count", 1)}],
+        }
 
-    def _after_review(self, state: _State) -> str:
-        return "retry" if state.get("review", "").startswith("retry") and state.get("attempts", 0) < self.max_steps else "finish"
+    @staticmethod
+    def _after_review(state: _State) -> str:
+        return "replan" if state.get("review", "").startswith("retry") else "finish"
+
+    @staticmethod
+    def _terminal_for(mode: str, has_results: bool) -> str:
+        if mode == "direct":
+            return "direct"
+        if mode == "refuse":
+            return "refused"
+        if mode == "escalate" or not has_results:
+            return "escalated"
+        return "grounded"

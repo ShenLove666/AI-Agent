@@ -249,7 +249,7 @@ $env:DEMO_SEED_PASSWORD = "请在本机设置至少10位密码"
 .\.venv\Scripts\python.exe -m app.cli seed-demo
 ```
 
-`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、12 份文档、两份交易快照、360 条客服案例、评测集、14 个评测用例和演示会话。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
+`seed-demo --reset` 先清理带有 demo 所有权标记的数据再重建；普通用户数据不在清理边界内。再次执行 `seed-demo` 会复用同一用户、知识库、12 份文档、两份交易快照、360 条客服案例、评测集、50 个评测用例和演示会话。密码仅用于本次 seed 的哈希输入，命令输出不会显示密码。
 
 如需只清理演示数据，非交互环境必须显式确认：
 
@@ -281,15 +281,26 @@ $env:DEMO_SEED_PASSWORD = "AdminDemo@2026"
 .\.venv\Scripts\python.exe server.py
 ```
 
-访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、14 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
+访问 `http://127.0.0.1:8081/login`，使用 `merchant-demo / AdminDemo@2026`。建议按“数据来源 → 即时零售运营 → 客服工作台 → 质量与缺口 → 知识发布 → 上线前评测”的顺序演示。数据包含 360 个来源关联案例、50 个固定评测用例、人工回复决策和 3 个知识缺口；报告明确标注 demo provenance。
 
 仓库默认发现 `models/bge-small-zh-v1.5` 后启用本地 Embedding，并把向量写入 `data/milvus-ragent.db`；`VECTOR_BACKEND=memory` 可显式切换为测试内存模式。模型不可用时关键词检索和人工工作台仍可运行。Milvus Lite 用于本地演示；生产环境应在有足够磁盘的 Linux 主机上部署 Milvus Standalone。
 
 ## 当前阶段的能力边界
 
-当前评测能力只提供输入基础：租户所有的 `evaluation_datasets`、结构化 `evaluation_cases` 及其问题、知识范围、预期答案要点、预期文档、拒答期望和可选参考答案。它不会执行用例、调用 LLM judge、生成分数、运行状态或仪表盘结果。
+当前 Agent 运行时采用 LangGraph 的有界 Planner → Tools → Evidence Reviewer 状态图。知识、交易、客服工具均通过 Pydantic 注册表校验；证据不足会携带上轮计划、观察和错误重新调用 Planner，而不是原样重复检索。所有工具均为只读并强制商家所有权范围；联网搜索只在配置真实 `YDC_API_KEY` 后才应注册，当前不展示不可用的假功能。
 
-当前 Agent 运行时采用 LangGraph ReAct 状态图，支持知识、交易与客服案例工具；联网搜索只在配置真实 `YDC_API_KEY` 后才应注册，当前不展示不可用的假功能。知识图谱和自动执行高风险运营动作仍不在本阶段范围内。
+### Agent Eval 质量门禁
+
+“上线前评测”会逐条运行与聊天主链相同的 Agent Runtime，并保存运行模式、终止状态、工具调用、证据 ID、轨迹和耗时。参考答案不会传给 Agent，也不会被复制为生成答案，只参与人工比对；确定性评分包括预期要点覆盖、预期证据召回、引用正确性、回答 groundedness、拒答/升级正确性和延迟。食品安全、伪造凭证等强制拒答用例失败时，上线审批直接被门禁阻断。
+
+接口演示顺序：
+
+1. 在“知识发布”选择已发布候选版本。
+2. 调用 `POST /api/v1/support/evaluations`，请求体为 `{"releaseId": <版本ID>}`。
+3. 用 `GET /api/v1/support/evaluations/{runId}` 查看每条用例的 `runtimeMode`、`tools`、`evidenceIds`、`metrics` 与 `trace`。
+4. 只有 `highRiskFailures=0` 时，才可通过 `POST /api/v1/support/release-decisions` 批准同一个知识版本。
+
+`deterministic_fallback` 表示没有调用模型服务的离线可复现运行，只能证明工具、轨迹、规则评分和门禁链路正确，不能当作模型质量成绩；`model_backed` 才表示配置模型后的真实生成运行。两种结果在报告中分开显示。当前评分版本为 `agent-eval-v1`，属于保守、可复现的规则评分；尚未加入 LLM-as-judge。知识图谱、写操作工具和自动执行高风险运营动作仍不在本阶段范围内。
 
 ## 测试
 

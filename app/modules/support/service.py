@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.framework.errors import AppError, ProviderUnavailableError
 from app.infra_ai.contracts import ChatMessage, ChatRequest
 from app.modules.evaluation.models import EvaluationCase, EvaluationDataset, EvaluationResult, EvaluationRun
+from app.modules.evaluation.runtime import AgentEvaluationRunner, SCORING_VERSION, execution_payload
+from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.knowledge.models import KnowledgeChunk, KnowledgeDocument
 from app.modules.support.models import (
     KnowledgeGap,
@@ -542,27 +545,81 @@ class SupportService:
         run_items = []
         for run in runs:
             results = list(db.scalars(select(EvaluationResult).where(EvaluationResult.run_id == run.id)))
-            score = round(sum(item.expected_point_score for item in results) / len(results), 1) if results else None
-            risky = sum(1 for item in results if not item.citation_correct or not item.refusal_correct)
-            run_items.append({"id": run.id, "status": run.status, "score": score, "caseCount": len(results), "highRiskFailures": risky, "gate": "blocked" if risky else "passed", "startedAt": run.started_at.isoformat(), "isDemo": run.is_demo})
+            payloads = [_json(item.evidence_json, {}) for item in results]
+            totals = [item.get("metrics", {}).get("total_score") for item in payloads]
+            totals = [int(item) for item in totals if isinstance(item, (int, float))]
+            score = round(sum(totals) / len(totals), 1) if totals else (round(sum(item.expected_point_score for item in results) / len(results), 1) if results else None)
+            risky = sum(1 for item in payloads if item.get("gateBlocked"))
+            modes = sorted({str(item.get("runtimeMode")) for item in payloads if item.get("runtimeMode")})
+            run_items.append({
+                "id": run.id, "status": run.status, "score": score, "caseCount": len(results),
+                "highRiskFailures": risky, "gate": "blocked" if risky else "passed",
+                "runtimeModes": modes, "startedAt": run.started_at.isoformat(), "isDemo": run.is_demo,
+            })
         return {"datasetCount": len(datasets), "evaluationCaseCount": sum(len(item.cases) for item in datasets), "runs": run_items, "provenance": "demo" if datasets and all(item.is_demo for item in datasets) else "production"}
 
-    def run_evaluation(self, db: Session, owner_id: int, actor_id: int, release_id: int) -> dict:
+    def evaluation_detail(self, db: Session, owner_id: int, run_id: int) -> dict:
+        run = db.scalar(select(EvaluationRun).where(EvaluationRun.id == run_id, EvaluationRun.owner_id == owner_id))
+        if run is None:
+            raise AppError("EVALUATION_RUN_NOT_FOUND", "评测运行不存在", 404)
+        dataset = db.scalar(select(EvaluationDataset).where(EvaluationDataset.id == run.dataset_id, EvaluationDataset.owner_id == owner_id))
+        if dataset is None:
+            raise AppError("EVALUATION_DATASET_NOT_FOUND", "评测集不存在", 404)
+        cases = {item.id: item for item in dataset.cases}
+        results = list(db.scalars(select(EvaluationResult).where(EvaluationResult.run_id == run.id).order_by(EvaluationResult.id)))
+        return {
+            "id": run.id, "status": run.status, "datasetId": dataset.id, "datasetName": dataset.name,
+            "config": _json(run.config_snapshot_json, {}), "error": run.error_summary,
+            "startedAt": run.started_at.isoformat(), "completedAt": run.completed_at.isoformat() if run.completed_at else None,
+            "results": [{
+                "id": item.id, "caseId": item.case_id, "caseKey": cases[item.case_id].case_key if item.case_id in cases else None,
+                "answer": item.answer, "expectedPointScore": item.expected_point_score,
+                "citationCorrect": item.citation_correct, "refusalCorrect": item.refusal_correct,
+                "latencyMs": item.latency_ms, **_json(item.evidence_json, {}),
+            } for item in results],
+        }
+
+    async def run_evaluation_async(self, db: Session, owner_id: int, actor_id: int, release_id: int, coordinator: AgenticRagCoordinator) -> dict:
         release = self._require_release(db, owner_id, release_id)
         if release.status != "published":
             raise AppError("KNOWLEDGE_RELEASE_NOT_PUBLISHED", "评测候选必须是已发布版本", 409)
         dataset = db.scalar(select(EvaluationDataset).where(EvaluationDataset.owner_id == owner_id).order_by(EvaluationDataset.id).limit(1))
         if dataset is None:
             raise AppError("EVALUATION_DATASET_NOT_FOUND", "尚未配置评测集", 409)
-        run = EvaluationRun(owner_id=owner_id, dataset_id=dataset.id, status="completed", config_snapshot_json=json.dumps({"knowledgeReleaseId": release.id, "knowledgeVersion": release.version, "scoring": "deterministic-rule-v1"}), started_at=datetime.utcnow(), completed_at=datetime.utcnow(), is_demo=dataset.is_demo)
+        run = EvaluationRun(owner_id=owner_id, dataset_id=dataset.id, status="running", config_snapshot_json=json.dumps({"knowledgeReleaseId": release.id, "knowledgeVersion": release.version, "scoring": SCORING_VERSION}), started_at=datetime.utcnow(), is_demo=dataset.is_demo)
         db.add(run)
         db.flush()
-        for case in dataset.cases:
-            answer = case.reference_answer or "按已发布政策处理；证据不足时转人工复核。"
-            score = 100 if case.expected_points else 80
-            db.add(EvaluationResult(run_id=run.id, case_id=case.id, answer=answer, expected_point_score=score, citation_correct=bool(case.expected_document_keys), refusal_correct=True, latency_ms=0, evidence_json=json.dumps({"releaseId": release.id, "rule": "fixture-reference"})))
+        run_id = run.id
         db.commit()
+        runner = AgentEvaluationRunner(coordinator)
+        try:
+            for case in dataset.cases:
+                execution = await runner.execute_case(db, owner_id=owner_id, case=case)
+                db.add(EvaluationResult(
+                    run_id=run.id, case_id=case.id, answer=execution.answer,
+                    expected_point_score=execution.metrics.expected_point_score,
+                    citation_correct=execution.metrics.citation_correct,
+                    refusal_correct=execution.metrics.refusal_correct,
+                    latency_ms=execution.latency_ms,
+                    evidence_json=json.dumps(execution_payload(execution, release_id=release.id), ensure_ascii=False),
+                ))
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            persisted = db.get(EvaluationRun, run_id)
+            if persisted is not None:
+                persisted.status = "failed"
+                persisted.error_summary = type(exc).__name__
+                persisted.completed_at = datetime.utcnow()
+                db.commit()
+            raise
         return self.evaluation_overview(db, owner_id)["runs"][0]
+
+    def run_evaluation(self, db: Session, owner_id: int, actor_id: int, release_id: int, coordinator: AgenticRagCoordinator | None = None) -> dict:
+        """Compatibility wrapper for CLI/tests outside an async request."""
+        return asyncio.run(self.run_evaluation_async(db, owner_id, actor_id, release_id, coordinator or AgenticRagCoordinator(None, None)))
 
     def decide_release(self, db: Session, owner_id: int, actor_id: int, run_id: int, release_id: int, decision: str) -> dict:
         if decision not in {"approved", "rejected"}:
@@ -572,10 +629,13 @@ class SupportService:
         if run is None:
             raise AppError("EVALUATION_RUN_NOT_FOUND", "评测运行不存在", 404)
         results = list(db.scalars(select(EvaluationResult).where(EvaluationResult.run_id == run.id)))
-        risky = sum(1 for item in results if not item.citation_correct or not item.refusal_correct)
+        config = _json(run.config_snapshot_json, {})
+        if config.get("knowledgeReleaseId") != release.id:
+            raise AppError("EVALUATION_RELEASE_MISMATCH", "评测运行与候选知识版本不匹配", 409)
+        risky = sum(1 for item in results if _json(item.evidence_json, {}).get("gateBlocked"))
         if decision == "approved" and risky:
             raise AppError("HIGH_RISK_GATE_BLOCKED", "高风险用例未通过，禁止上线", 409)
-        item = SupportReleaseDecision(owner_id=owner_id, evaluation_run_id=run.id, knowledge_release_id=release.id, actor_id=actor_id, decision=decision, gate_snapshot_json=json.dumps({"highRiskFailures": risky, "caseCount": len(results)}))
+        item = SupportReleaseDecision(owner_id=owner_id, evaluation_run_id=run.id, knowledge_release_id=release.id, actor_id=actor_id, decision=decision, gate_snapshot_json=json.dumps({"highRiskFailures": risky, "caseCount": len(results), "scoringVersion": SCORING_VERSION}))
         db.add(item)
         if decision == "approved":
             for active in db.scalars(select(KnowledgeRelease).where(KnowledgeRelease.owner_id == owner_id, KnowledgeRelease.is_active.is_(True))):

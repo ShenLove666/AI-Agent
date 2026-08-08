@@ -77,6 +77,7 @@ class ApplicationContainer:
     knowledge: KnowledgeService
     model_router: ChatModelRouter | None
     retrieval: MultiChannelRetrievalEngine
+    agentic: AgenticRagCoordinator
     chat: RagChatService
 
 
@@ -147,6 +148,7 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
         knowledge=knowledge,
         model_router=ai.chat_router,
         retrieval=retrieval,
+        agentic=agentic,
         chat=RagChatService(
             ai.chat_router,
             conversations,
