@@ -17,6 +17,14 @@ function makeStep(overrides: Partial<AgentExecutionStep> = {}): AgentExecutionSt
   };
 }
 
+function rerenderSteps(container: HTMLElement, steps: AgentExecutionStep[]) {
+  // 重新渲染同 props 的新数组，触发跟随 effect（steps 引用变化）
+  render(
+    <AgentExecutionTimeline status="running" steps={steps} summary={null} />,
+    { container }
+  );
+}
+
 const completedSummary: AgentExecutionSummary = {
   planCount: 1,
   toolCallCount: 1,
@@ -219,6 +227,46 @@ describe("AgentExecutionTimeline", () => {
 
     expect(screen.getByText("已完成 Agent 分析 · 1 次查询 · 6 条证据")).toBeInTheDocument();
     expect(screen.queryByText("查询商品关联数据")).not.toBeInTheDocument();
+  });
+
+  it("执行中自动跟随最新步骤，用户滚离后暂停跟随", () => {
+    const { container } = render(
+      <AgentExecutionTimeline
+        status="running"
+        steps={[makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "running", title: "正在制定查询计划" })]}
+        summary={null}
+      />
+    );
+
+    const scrollBox = container.querySelector(
+      '[data-testid="agent-timeline-scroll"]'
+    ) as HTMLElement;
+    expect(scrollBox).not.toBeNull();
+
+    // 用户在容器底部附近：新步骤到达 → 跟随到底（scrollTop 被设为 scrollHeight）
+    Object.defineProperty(scrollBox, "scrollHeight", { value: 400, configurable: true, writable: true });
+    Object.defineProperty(scrollBox, "clientHeight", { value: 200, configurable: true, writable: true });
+    Object.defineProperty(scrollBox, "scrollTop", { value: 0, configurable: true, writable: true });
+    rerenderSteps(container, [
+      makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "completed", title: "查询计划已制定" }),
+      makeStep({ stepId: "s2", seq: 2, phase: "tool", status: "running", title: "正在查询商品关联数据" })
+    ]);
+    // effect 异步触发，等待微任务
+    return Promise.resolve().then(() => {
+      expect(scrollBox.scrollTop).toBe(400);
+
+      // 用户滚离底部（距底 > 80）：新步骤到达 → 不跟随
+      Object.defineProperty(scrollBox, "scrollTop", { value: 100, configurable: true, writable: true });
+      fireEvent.scroll(scrollBox);
+      rerenderSteps(container, [
+        makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "completed", title: "查询计划已制定" }),
+        makeStep({ stepId: "s2", seq: 2, phase: "tool", status: "completed", title: "商品关联分析完成" }),
+        makeStep({ stepId: "s3", seq: 3, phase: "review", status: "running", title: "正在核验证据" })
+      ]);
+      return Promise.resolve().then(() => {
+        expect(scrollBox.scrollTop).toBe(100);
+      });
+    });
   });
 
   it("空 steps 不渲染任何内容（旧消息/旧后端向后兼容）", () => {

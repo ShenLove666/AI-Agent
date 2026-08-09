@@ -19,6 +19,9 @@ import type {
   AgentToolProgress
 } from "@/types";
 
+/** Timeline 内部滚动：距底小于该值视为接近底部，自动跟随最新步骤 */
+const TIMELINE_NEAR_BOTTOM_THRESHOLD = 80;
+
 interface AgentExecutionTimelineProps {
   steps?: AgentExecutionStep[];
   status?: AgentExecutionStatus;
@@ -107,6 +110,25 @@ export function AgentExecutionTimeline({
   const [expanded, setExpanded] = React.useState(() => initialExpanded ?? isRunning);
   const prevStatusRef = React.useRef(status);
   const bodyId = React.useId();
+  // Timeline 内部滚动跟随：执行中新步骤出现时自动滚到最新；用户滚离底部时暂停
+  const timelineScrollRef = React.useRef<HTMLDivElement | null>(null);
+  const timelineNearBottomRef = React.useRef(true);
+
+  const handleTimelineScroll = React.useCallback(() => {
+    const el = timelineScrollRef.current;
+    if (!el) return;
+    timelineNearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < TIMELINE_NEAR_BOTTOM_THRESHOLD;
+  }, []);
+
+  // 新步骤到达或刚展开（执行中）→ 用户接近底部时跟随到最新步骤
+  React.useEffect(() => {
+    if (status !== "running" || !expanded) return;
+    const el = timelineScrollRef.current;
+    if (!el) return;
+    if (!timelineNearBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [steps, status, expanded]);
 
   // 执行中 → 完成/失败/取消时自动折叠为摘要行
   React.useEffect(() => {
@@ -225,8 +247,13 @@ export function AgentExecutionTimeline({
               </div>
             </div>
           ) : null}
-          {/* 纵向时间线：节点 + 连接线，展开区域可滚动 */}
-          <div className="mt-2.5 max-h-80 overflow-y-auto pr-1">
+          {/* 纵向时间线：节点 + 连接线，展开区域可滚动、执行中自动跟随最新步骤 */}
+          <div
+            ref={timelineScrollRef}
+            onScroll={handleTimelineScroll}
+            data-testid="agent-timeline-scroll"
+            className="mt-2.5 max-h-80 overflow-y-auto pr-1"
+          >
             {planGroups.map(({ plan, steps: planSteps }, groupIndex) => (
               <div key={plan}>
                 {showPlanTitles ? (
