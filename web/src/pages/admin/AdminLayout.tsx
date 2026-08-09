@@ -150,7 +150,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/knowledge",
         label: "知识库管理",
-        icon: Database
+        icon: Database,
+        permission: "knowledge.manage"
       },
       {
         path: "/admin/knowledge-graph",
@@ -207,7 +208,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/traces",
         label: "链路追踪",
-        icon: Workflow
+        icon: Workflow,
+        permission: "user.manage"
       },
       {
         path: "/admin/change-logs",
