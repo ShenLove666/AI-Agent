@@ -217,12 +217,15 @@ Vector  ─┘
 | 页面 | 主要用途 |
 |:---|:---|
 | AI 对话 | Agent 自主选工具、流式回答、证据侧栏、反馈与追问 |
-| 即时零售运营 | 今日待办、异常、经营 KPI、关联规则、搭配购动作 |
-| 客服工作台 | 工单、会话、订单/顾客上下文、AI 建议与人工确认 |
+| 客服工作台 | 工单、会话、订单/顾客上下文、AI 建议与人工确认（三栏工作区） |
+| 主管队列 | 升级单接管、风险决策（批准/要求证据/转专员/退回） |
+| 商品组合洞察 | 关联规则、运营方案（草稿→确认→发布）、优化任务闭环 |
 | 知识发布 | 来源管理、候选版本、发布记录和回滚依据 |
 | 质量与缺口 | 负反馈、未命中、高风险问题与优化任务 |
 | 上线前评测 | Agent Trace、指标、用例明细和高风险门禁 |
-| 运行追踪 | Planner、工具、Reviewer、生成节点及耗时瀑布图 |
+| 运行追踪 | Planner、工具、Reviewer、生成节点及耗时瀑布图（技术细节深色面板） |
+
+> 界面遵循 **light-first 设计系统**：业务事实为浅色区域，AI 判断模块用极浅靛蓝背景 + AI 徽标建立辨识度；深色面板仅用于 Trace / Tool Call / JSON 等技术执行细节。
 
 <a id="quick-start"></a>
 
@@ -238,17 +241,21 @@ Vector  ─┘
 ### 已完成初始化：一条命令启动
 
 ```powershell
+$env:VECTOR_BACKEND = "disabled"   # 未配置向量模型时必须关闭（见"配置与部署"）
 .\.venv\Scripts\python.exe server.py
 ```
 
 打开 `http://127.0.0.1:8081/login`。
 
-| 账号 | 默认密码 | 数据范围 |
-|:---|:---|:---|
-| `merchant-demo` | `AdminDemo@2026` | 拥有演示知识、交易、订单和客服数据；用于完整产品演示 |
-| `support-admin` | `AdminDemo@2026` | 独立平台管理员；新建时没有商家经营数据 |
+| 账号 | 角色 | 默认密码 | 数据范围 |
+|:---|:---|:---|:---|
+| `admin` / `support-admin` | 管理员 | `AdminDemo@2026` | 全部页面（知识库、设置、用户、评测、Dashboard） |
+| `merchant-demo` | 管理员（商家 owner） | `AdminDemo@2026` | 演示商家全部数据 |
+| `demo-supervisor` | 客服主管 | `AdminDemo@2026` | 主管队列、质量与缺口、客服运营报告 |
+| `demo-operator` | 商家运营 | `AdminDemo@2026` | 商品组合洞察、运营方案、用户管理 |
+| `demo-agent` | 客服 | `AdminDemo@2026` | 客服工作台 |
 
-> 两个账号的数据严格隔离。使用空管理员账号提问经营问题时返回 0 条来源是正确行为，不应绕过租户权限读取 `merchant-demo` 的数据。
+> 权限模型为 **4 角色 RBAC**（user / supervisor / operator / admin）：角色 → 权限 → API 三层校验。前端菜单只是展示层，后端每个端点按权限依赖硬性拦截；数据范围由组织成员关系限定，跨组织资源统一返回 404（不暴露存在性）。
 
 ### 首次完整初始化
 
@@ -285,6 +292,7 @@ $env:DEEPSEEK_REASONING_MODEL = "deepseek-v4-flash"
 
 ```powershell
 # 终端 1：后端
+$env:VECTOR_BACKEND = "disabled"
 .\.venv\Scripts\python.exe server.py
 
 # 终端 2：前端热更新
@@ -292,7 +300,7 @@ Set-Location web
 npm run dev
 ```
 
-访问 `http://127.0.0.1:3000`；Vite 会把 `/api` 代理到 8081。生产构建由 FastAPI 直接托管 `web/dist`。
+访问 `http://127.0.0.1:5173`；Vite 会把 `/api` 代理到 8081。生产构建由 FastAPI 直接托管 `web/dist`。
 
 <a id="deployment"></a>
 
@@ -328,13 +336,13 @@ $env:MILVUS_COLLECTION = "ragent_chunks_v2"
 
 Milvus Lite 适合单机演示；生产环境建议使用有持久化磁盘、备份和监控的 Milvus Standalone。
 
-#### 仅关键词模式
+#### 仅关键词模式（无向量依赖）
 
 ```powershell
-$env:VECTOR_BACKEND = "none"
+$env:VECTOR_BACKEND = "disabled"   # 或 none / off
 ```
 
-该模式适合接口联调。知识库仍可走关键词检索，经营 SQL 工具不受影响，但它不能证明向量检索已经部署。
+该模式适合接口联调与无模型环境。知识库仍可走关键词检索，经营 SQL 工具不受影响。**注意**：`VECTOR_BACKEND` 默认 `milvus`，环境未配置 Embedding 模型或 Milvus 时首次向量检索可能触发底层崩溃（libarrow segfault），服务器部署务必显式设为 `disabled`。
 
 ### 常用环境变量
 
@@ -342,8 +350,8 @@ $env:VECTOR_BACKEND = "none"
 |:---|:---|:---|
 | `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | SQLAlchemy 数据库地址 |
 | `API_PREFIX` | `/api/v1` | API 前缀 |
-| `CORS_ORIGINS` | `http://localhost:3000` | 允许的跨域来源 |
-| `VECTOR_BACKEND` | 自动发现/配置 | `milvus`、`memory` 或 `none` |
+| `CORS_ORIGINS` | `http://localhost:5173` | 允许的跨域来源 |
+| `VECTOR_BACKEND` | `milvus` | `milvus`（Milvus Lite/Standalone）、`memory`（内存索引）或 `disabled`（仅关键词） |
 | `EMBED_MODEL_PATH` | 项目内 BGE 路径 | 本地 Embedding 模型目录 |
 | `EMBED_DIMENSION` | `512` | 必须与模型输出维度一致 |
 | `RETRIEVAL_CANDIDATE_LIMIT` | `20` | 融合前候选数 |
@@ -352,6 +360,8 @@ $env:VECTOR_BACKEND = "none"
 | `CHAT_IDLE_TIMEOUT_SECONDS` | `30` | Token 间空闲超时 |
 | `CHAT_TIMEOUT_SECONDS` | `120` | 总生成超时 |
 | `MAX_UPLOAD_FILE_SIZE` | `52428800` | 单文件最大字节数 |
+| `DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` | 未设置 | 模型端点密钥（按优先级 failover：DashScope → DeepSeek → 备用） |
+| `VISION_MODEL` | `qwen3.7-plus` | 识图 / 对话默认模型 |
 | `CUSTOMER_CHANNEL` | `demo` | `demo` 模拟发送；`webhook` 调外部渠道 |
 | `CUSTOMER_WEBHOOK_URL` | 未设置 | 生产 Webhook HTTPS 地址 |
 | `CUSTOMER_WEBHOOK_SECRET` | 未设置 | HMAC-SHA256 密钥 |
@@ -365,11 +375,21 @@ $env:DB_URL = "sqlite:///./data/ragent-v4-flash.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-当前迁移 head 为 `0007_v3_order_outbound`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
+当前迁移 head 为 `0009_runtime_settings_and_orgs`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
 
 ### 服务器部署
 
 服务监听 `0.0.0.0:8081`。公网部署建议由 Nginx/Caddy 提供 HTTPS，并反向代理到 `127.0.0.1:8081`。前后端应使用同一入口，避免登录、SSE 或来源预览跳到错误端口。
+
+一键部署（本地执行，tar 同步 + 按端口重启 + 健康检查）：
+
+```bash
+bash scripts/deploy.sh [目标目录]   # 默认 rag-project-<version>
+```
+
+- 同步时**排除 `.env` / `data/` / `*.db` / `node_modules` 等**，服务器私密配置与数据库不受覆盖
+- 新版本目录软链接旧 `.venv` 复用依赖；`VECTOR_BACKEND=disabled` 必须写入服务器 `.env`
+- 详细流程与踩坑记录见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 部署时至少持久化：
 
@@ -413,6 +433,15 @@ npm run build
 
 测试覆盖鉴权、租户隔离、会话状态、文档入库、检索融合、向量检索、Agent 工具、证据审查、SSE、取消与超时、模型路由、迁移、演示数据幂等、客服闭环、评测门禁和前端关键交互。
 
+重点测试：
+
+| 文件 | 覆盖 |
+|:---|:---|
+| `tests/test_rbac_matrix.py` | 完整越权矩阵：11 个代表性 API × 4 角色（200/403）+ 跨组织资源 404 |
+| `tests/test_support_escalation.py` | 升级生命周期状态机（接管/决议/退回/转交） |
+| `tests/test_reply_review.py` | AI 回复审核闭环（采纳/修订/升级） |
+| `tests/test_migrations.py` | 迁移链一致性（0001 → 0009） |
+
 ## ⚠️ 当前能力边界
 
 - 当前是可实际运行的单机/作品集系统，不等同于完成容量规划与合规认证的企业 SaaS。
@@ -429,6 +458,8 @@ npm run build
 
 | 文档 | 内容 |
 |:---|:---|
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | **用户操作手册**：4 角色操作流程、权限矩阵、客服/主管/运营/管理全流程 |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | **搭建部署与实现原理手册**：环境、配置、数据导入、服务器部署、全链路实现 |
 | [`docs/python-ragent-architecture.md`](docs/python-ragent-architecture.md) | Python 重构架构与模块边界 |
 | [`docs/production-rag-reliability.md`](docs/production-rag-reliability.md) | 流式输出、超时、取消和模型容错 |
 | [`docs/chat-product-completeness.md`](docs/chat-product-completeness.md) | 对话产品完整性审计 |
