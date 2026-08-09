@@ -514,7 +514,7 @@ export function AdminLayout() {
         <div className="admin-sidebar__brand">
           <div className={cn("flex items-center gap-3", collapsed && "justify-center")}>
             <div className="admin-sidebar__logo">
-              <Bot className="h-[22px] w-[22px]" />
+              <Bot className="h-4 w-4" />
             </div>
             {!collapsed && (
               <div className="min-w-0">
@@ -623,8 +623,8 @@ export function AdminLayout() {
                             setOpenGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))
                           }
                           className={cn(
-                            "admin-sidebar__item admin-sidebar__item--group w-full text-white/60",
-                            isGroupActive && "admin-sidebar__item--group-active text-white"
+                            "admin-sidebar__item admin-sidebar__item--group w-full",
+                            isGroupActive && "admin-sidebar__item--group-active"
                           )}
                         >
                           <span
@@ -636,9 +636,9 @@ export function AdminLayout() {
                           <item.icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
                           <span className="flex-1 text-left">{item.label}</span>
                           {isOpen ? (
-                            <ChevronDown className="h-4 w-4 text-white/60" />
+                            <ChevronDown className="h-4 w-4 text-slate-400" />
                           ) : (
-                            <ChevronRight className="h-4 w-4 text-white/60" />
+                            <ChevronRight className="h-4 w-4 text-slate-400" />
                           )}
                         </button>
                         {isOpen ? (
@@ -801,7 +801,7 @@ export function AdminLayout() {
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-600 shadow-sm"
+                    className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-600"
                     aria-label="用户菜单"
                   >
                     <Avatar

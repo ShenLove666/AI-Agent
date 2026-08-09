@@ -25,7 +25,33 @@ module.exports = {
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
         "chat-user": "hsl(var(--chat-user))",
-        "chat-assistant": "hsl(var(--chat-assistant))"
+        "chat-assistant": "hsl(var(--chat-assistant))",
+        // AI 石墨黑空间（AI 判断 / Agent 执行区域专用）
+        ai: {
+          canvas: "var(--ai-canvas)",
+          surface: "var(--ai-surface)",
+          "surface-hover": "var(--ai-surface-hover)",
+          border: "var(--ai-border)",
+          primary: "var(--ai-primary)",
+          "primary-hover": "var(--ai-primary-hover)",
+          info: "var(--ai-info)",
+          text: "var(--ai-text)",
+          "text-secondary": "var(--ai-text-secondary)",
+          "text-muted": "var(--ai-text-muted)"
+        }
+      },
+      borderRadius: {
+        sm: "6px",
+        md: "8px",
+        lg: "12px",
+        xl: "12px"
+      },
+      boxShadow: {
+        // 层级优先依赖 surface + border，阴影保持非常轻
+        soft: "0 1px 2px rgba(0, 0, 0, 0.04)",
+        card: "0 1px 2px rgba(0, 0, 0, 0.04)",
+        glow: "0 1px 2px rgba(0, 0, 0, 0.04)",
+        neon: "0 0 0 1px rgba(59, 130, 246, 0.2)"
       },
       fontFamily: {
         display: ["'Space Grotesk'", "ui-sans-serif", "system-ui"],

@@ -1365,18 +1365,18 @@ export function KnowledgeDocumentsPage() {
       </Dialog>
       {selectedIds.size > 0 && (
         <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center">
-          <div className="animate-fade-up rounded-2xl bg-slate-900 px-5 py-3 text-sm text-white shadow-[0_10px_40px_rgba(0,0,0,0.15)]">
+          <div className="animate-fade-up rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm text-slate-800 shadow-soft">
             <div className="flex items-center gap-3">
-              <Check className="h-4 w-4 text-emerald-400" />
+              <Check className="h-4 w-4 text-emerald-600" />
               <span className="tabular-nums font-medium">
                 已选 {selectedIds.size} 项
               </span>
-              <div className="mx-1 h-5 w-px bg-white/20" />
+              <div className="mx-1 h-5 w-px bg-slate-200" />
               <button
                 type="button"
                 onClick={handleBatchChunk}
                 disabled={batchOperating}
-                className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-white/80 transition-colors hover:bg-white/10 hover:text-white disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-50"
               >
                 <PlayCircle className="h-4 w-4" />
                 批量分块
@@ -1390,7 +1390,7 @@ export function KnowledgeDocumentsPage() {
                 <Trash2 className="h-4 w-4" />
                 删除
               </button>
-              <div className="mx-1 h-5 w-px bg-white/20" />
+              <div className="mx-1 h-5 w-px bg-slate-200" />
               <button
                 type="button"
                 onClick={() => setSelectedIds(new Set())}

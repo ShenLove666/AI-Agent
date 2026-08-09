@@ -330,7 +330,7 @@ const useHealthStatus = (
 const DashCard = ({ children, className }: { children: ReactNode; className?: string }) => (
   <div
     className={cn(
-      "rounded-2xl bg-white p-5 shadow-[0_2px_8px_rgba(0,0,0,0.06)] ring-1 ring-slate-900/5",
+      "rounded-lg border border-slate-200 bg-white p-5 shadow-soft",
       className
     )}
   >
@@ -371,7 +371,7 @@ const DashboardHeader = ({
   onTimeWindowChange: (window: DashboardTimeWindow) => void;
 }) => (
   <header className="mb-3 flex items-center justify-between">
-    <h1 className="text-4xl font-bold tracking-tight text-slate-900">Dashboard</h1>
+    <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Dashboard</h1>
 
     <div className="flex items-center gap-3">
       <div className="inline-flex rounded-lg bg-white p-1 shadow-sm">
@@ -383,7 +383,7 @@ const DashboardHeader = ({
             className={cn(
               "rounded-md px-3 py-1.5 text-sm font-medium transition-all",
               timeWindow === opt.value
-                ? "bg-slate-900 text-white"
+                ? "bg-indigo-50 text-indigo-700"
                 : "text-slate-500 hover:text-slate-700"
             )}
           >

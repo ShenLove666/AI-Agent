@@ -306,7 +306,7 @@ function NodeDetailCard({
           {node.extraData && (
               <div>
                 <p className="text-xs font-medium text-slate-500 mb-1">额外数据</p>
-                <pre className="text-xs bg-slate-50 border border-slate-200 rounded p-2 overflow-x-auto whitespace-pre-wrap break-all text-slate-700">
+                <pre className="text-xs font-mono bg-slate-900 text-slate-200 border border-slate-800 rounded-md p-3 overflow-x-auto whitespace-pre-wrap break-all">
                   {tryPrettyJson(node.extraData)}
                 </pre>
               </div>

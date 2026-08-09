@@ -293,10 +293,10 @@ export function RetailOperationsPage() {
   if (loading && !data)
     return (
       <div className="space-y-4">
-        <div className="h-48 animate-pulse rounded-3xl bg-slate-100" />
+        <div className="h-48 animate-pulse rounded-lg bg-slate-100" />
         <div className="grid gap-4 md:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="h-32 animate-pulse rounded-2xl bg-slate-100" />
+            <div key={i} className="h-32 animate-pulse rounded-lg bg-slate-100" />
           ))}
         </div>
       </div>
@@ -304,7 +304,7 @@ export function RetailOperationsPage() {
 
   if (!data || data.dataState === "empty")
     return (
-      <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center">
+      <div className="rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">
         <ShoppingBasket className="mx-auto h-10 w-10 text-slate-300" />
         <h1 className="mt-4 text-xl font-semibold">还没有即时零售数据</h1>
         <p className="mt-2 text-sm text-slate-500">
@@ -315,48 +315,44 @@ export function RetailOperationsPage() {
 
   return (
     <div className="space-y-6 pb-10">
-      <section className="relative overflow-hidden rounded-3xl bg-[radial-gradient(circle_at_top_right,_#14b8a6_0,_#0f766e_24%,_#0f172a_70%)] p-7 text-white shadow-xl shadow-slate-200">
-        <div className="relative z-10 flex flex-col justify-between gap-6 xl:flex-row xl:items-end">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-teal-200">
+      <section className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+        <div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="rounded-md border border-indigo-100 bg-indigo-50 p-1 text-indigo-600">
               <Sparkles className="h-4 w-4" />
+            </span>
+            <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
               Instant Retail AI Operations
-            </div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight">{data.profile?.name}</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-200">
-              从真实购物篮发现搭配机会，把运营方案发布到 AI 客服，再用评测、标注和优化任务验证效果。
-            </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs">
-                {data.profile?.businessType}
-              </span>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs">
-                {data.profile?.storeCount
-                  ? `${data.profile.storeCount} 家门店`
-                  : "源数据未提供门店维度"}
-              </span>
-              <OriginBadge origin="observed" />
-              <OriginBadge origin="synthetic" />
-            </div>
+            </span>
           </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
-              刷新
-            </Button>
-            <Button
-              className="bg-white text-slate-900 hover:bg-teal-50"
-              onClick={() => void downloadReport()}
-            >
-              <Download className="mr-2 h-4 w-4" />
-              生成运营周报
-            </Button>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+            {data.profile?.name}
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+            从真实购物篮发现搭配机会，把运营方案发布到 AI 客服，再用评测、标注和优化任务验证效果。
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-600">
+              {data.profile?.businessType}
+            </span>
+            <span className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-600">
+              {data.profile?.storeCount
+                ? `${data.profile.storeCount} 家门店`
+                : "源数据未提供门店维度"}
+            </span>
+            <OriginBadge origin="observed" />
+            <OriginBadge origin="synthetic" />
           </div>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button variant="outline" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
+            刷新
+          </Button>
+          <Button onClick={() => void downloadReport()}>
+            <Download className="mr-2 h-4 w-4" />
+            生成运营周报
+          </Button>
         </div>
       </section>
 
@@ -397,7 +393,7 @@ export function RetailOperationsPage() {
         ].map(({ label, value, note, icon: Icon }) => (
           <article
             key={label}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+            className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
           >
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-slate-500">{label}</span>
@@ -414,7 +410,7 @@ export function RetailOperationsPage() {
       <DataSourcesView />
 
       <section className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-semibold text-slate-900">商家接入清单</h2>
@@ -453,7 +449,7 @@ export function RetailOperationsPage() {
             ))}
           </div>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div>
             <h2 className="font-semibold text-slate-900">运营效果指标</h2>
             <p className="mt-1 text-xs text-slate-500">
@@ -482,7 +478,7 @@ export function RetailOperationsPage() {
         </div>
       </section>
 
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <div>
             <h2 className="font-semibold text-slate-900">高价值购物篮关联</h2>
@@ -544,7 +540,7 @@ export function RetailOperationsPage() {
       </section>
 
       <section className="grid gap-5 xl:grid-cols-3">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-2">
             <BadgeCheck className="h-5 w-5 text-teal-600" />
             <h2 className="font-semibold">AI 运营方案</h2>
@@ -589,7 +585,7 @@ export function RetailOperationsPage() {
             ))}
           </div>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-2">
             <ClipboardCheck className="h-5 w-5 text-violet-600" />
             <h2 className="font-semibold">Agent 评测与标注</h2>
@@ -614,7 +610,7 @@ export function RetailOperationsPage() {
             ))}
           </div>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-2">
             <Activity className="h-5 w-5 text-amber-600" />
             <h2 className="font-semibold">优化任务闭环</h2>
@@ -930,7 +926,7 @@ export function RetailOperationsPage() {
         </DialogContent>
       </Dialog>
 
-      <aside className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-xs leading-6 text-amber-900">
+      <aside className="rounded-lg border border-amber-200 bg-amber-50 px-5 py-4 text-xs leading-6 text-amber-900">
         <strong>数据可信度说明：</strong>本地授权数据提供 9,835 个匿名购物篮和 43,367
         条商品出现记录，不含价格、时间、顾客、门店或履约；UCI CC BY 4.0 固定快照补充 5,000
         条带时间、数量、英镑单价、国家与取消标记的公开交易。两份来源分别统计，不混合声称销售增长；客服问句、处理状态和
