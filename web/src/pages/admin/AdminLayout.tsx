@@ -518,8 +518,8 @@ export function AdminLayout() {
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <h1 className="admin-sidebar__title">邻里鲜选 AI 客服台</h1>
-                <p className="admin-sidebar__subtitle">Support Quality Ops</p>
+                <h1 className="admin-sidebar__title truncate">邻里鲜选 AI 客服台</h1>
+                <p className="admin-sidebar__subtitle truncate">Support Quality Ops</p>
               </div>
             )}
           </div>
@@ -575,7 +575,7 @@ export function AdminLayout() {
                           {collapsed ? (
                             <span className="sr-only">{item.label}</span>
                           ) : (
-                            <span>{item.label}</span>
+                            <span className="whitespace-nowrap">{item.label}</span>
                           )}
                         </Link>
                       );
@@ -662,7 +662,7 @@ export function AdminLayout() {
                                     )}
                                   />
                                   <ChildIcon className="admin-sidebar__item-icon" />
-                                  <span>{child.label}</span>
+                                  <span className="whitespace-nowrap">{child.label}</span>
                                 </Link>
                               );
                             })}
