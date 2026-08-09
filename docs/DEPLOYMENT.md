@@ -430,7 +430,7 @@ PATCH /rag/settings
 
 ### 11.6 识图能力（无多模态模型的兜底）
 
-`~/.agents/skills/mimo-vision/mimo_vision.py`：当前模型不支持图片时，用 **Qwen3.7-Plus**（DashScope OpenAI 兼容端点）读图。配置：`.env` 的 `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` / `VISION_MODEL=qwen3.7-plus`；脚本默认值与之一致。
+`~/.agents/skills/vision-bridge/vision_bridge.py`：当前模型不支持图片时，用多模态视觉模型（默认 **Qwen3.7-Plus**，DashScope OpenAI 兼容端点）读图。配置：`.env` 的 `DASHSCOPE_API_KEY` / `DASHSCOPE_BASE_URL` / `VISION_MODEL=qwen3.7-plus`；脚本默认值与之一致，模型/端点/密钥均可用环境变量切换，不绑定厂商。
 
 ## 12. 故障排查
 
