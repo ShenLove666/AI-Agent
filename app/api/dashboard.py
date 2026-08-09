@@ -9,13 +9,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
-from app.api.dependencies import DbSession, make_permission_requirement
+from app.api.dependencies import DbSession, get_current_admin
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.conversations.models import Conversation, Message
 from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
 from app.modules.users.models import User
-from app.modules.users.permissions import PERM_RETAIL_VIEW
 
 
 router = APIRouter(prefix="/admin/dashboard", tags=["dashboard"])
@@ -69,7 +68,7 @@ def _window_bounds(window: DashboardWindow) -> tuple[datetime, datetime, datetim
     return start - _WINDOWS[window], start, end
 
 
-@router.get("/overview", dependencies=[Depends(make_permission_requirement("retail.view"))])
+@router.get("/overview", dependencies=[Depends(get_current_admin)])
 def overview(
     db: DbSession,
     window: DashboardWindow = "24h",
@@ -156,7 +155,7 @@ def _no_document_run_ids(db, start: datetime, end: datetime) -> set[str]:
     return result
 
 
-@router.get("/performance", dependencies=[Depends(make_permission_requirement("retail.view"))])
+@router.get("/performance", dependencies=[Depends(get_current_admin)])
 def performance(
     db: DbSession,
     window: DashboardWindow = "24h",
@@ -185,7 +184,7 @@ def performance(
     )
 
 
-@router.get("/operations", dependencies=[Depends(make_permission_requirement("retail.view"))])
+@router.get("/operations", dependencies=[Depends(get_current_admin)])
 def operations(
     db: DbSession,
     window: DashboardWindow = "7d",
@@ -302,7 +301,7 @@ def _series(name: str, buckets: list[datetime], values: dict[datetime, float]) -
     }
 
 
-@router.get("/trends", dependencies=[Depends(make_permission_requirement("retail.view"))])
+@router.get("/trends", dependencies=[Depends(get_current_admin)])
 def trends(
     db: DbSession,
     metric: Literal["sessions", "messages", "activeUsers", "avgLatency", "quality"],

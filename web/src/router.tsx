@@ -205,7 +205,10 @@ export const router = createBrowserRouter([
       },
       {
         path: "support-supervisor",
-        element: withRoles(SUPPORT_ROLES, withPageSuspense(<SupervisorQueuePage />))
+        element: withRoles(
+          SUPPORT_SUPERVISOR_ROLES,
+          withPageSuspense(<SupervisorQueuePage />)
+        )
       },
       {
         path: "support-knowledge",
@@ -245,7 +248,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "operations",
-        element: withRoles(RETAIL_ROLES, withPageSuspense(<OperationsPage />))
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<OperationsPage />))
       },
       {
         path: "knowledge",

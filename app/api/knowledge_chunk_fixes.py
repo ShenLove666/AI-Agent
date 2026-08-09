@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    make_permission_requirement,
+)
 from app.api.knowledge_fixes import _chunk, _chunk_vo, _document, _reindex
 from app.framework.errors import AppError
 from app.framework.response import ApiResponse
@@ -25,7 +29,7 @@ class ChunkUpdateRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
-@router.post("/docs/{document_id}/chunks")
+@router.post("/docs/{document_id}/chunks", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def create_chunk(
     document_id: int,
     payload: ChunkCreateRequest,
@@ -59,7 +63,7 @@ async def create_chunk(
     return ApiResponse(data=_chunk_vo(item), traceId=current_trace_id())
 
 
-@router.put("/docs/{document_id}/chunks/{chunk_id}")
+@router.put("/docs/{document_id}/chunks/{chunk_id}", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def update_chunk(
     document_id: int,
     chunk_id: int,
@@ -80,7 +84,7 @@ async def update_chunk(
     return ApiResponse(data=_chunk_vo(item), traceId=current_trace_id())
 
 
-@router.delete("/docs/{document_id}/chunks/{chunk_id}")
+@router.delete("/docs/{document_id}/chunks/{chunk_id}", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def delete_chunk(
     document_id: int,
     chunk_id: int,

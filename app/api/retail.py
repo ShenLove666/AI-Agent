@@ -21,6 +21,7 @@ from app.modules.users.permissions import (
     PERM_RETAIL_VIEW,
     PERM_TASK_READ,
     PERM_TASK_UPDATE,
+    PERM_USER_MANAGE,
 )
 
 
@@ -37,6 +38,18 @@ def _safe(call):
     try:
         return call()
     except (RetailDataError, OSError, ValueError) as exc:
+        raise AppError("RETAIL_OPERATION_FAILED", str(exc), 400) from exc
+
+
+def _safe404(call):
+    """详情/操作类接口：资源不存在或不属于当前商家时返回 404（不暴露存在性）。"""
+    try:
+        return call()
+    except RetailDataError as exc:
+        if "不存在" in str(exc):
+            raise AppError("RETAIL_NOT_FOUND", str(exc), 404) from exc
+        raise AppError("RETAIL_OPERATION_FAILED", str(exc), 400) from exc
+    except (OSError, ValueError) as exc:
         raise AppError("RETAIL_OPERATION_FAILED", str(exc), 400) from exc
 
 
@@ -115,7 +128,7 @@ def data_source_preview(
 def import_retail_data(
     payload: ImportRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
-    if user.role != "admin":
+    if not has_permission(db, user, PERM_USER_MANAGE):
         raise AppError("FORBIDDEN", "仅平台管理员可以导入本地数据", 403)
     result = _safe(
         lambda: service.import_baskets(
@@ -156,7 +169,7 @@ def campaign_detail(
 ) -> ApiResponse:
     if not has_permission(db, user, PERM_RETAIL_VIEW):
         raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
-    data = _safe(
+    data = _safe404(
         lambda: service.campaign_detail(db, _owner(db, user), campaign_id)
     )
     return ApiResponse(data=data, traceId=current_trace_id())
@@ -177,7 +190,7 @@ def transition_campaign(
         db, user, PERM_CAMPAIGN_PUBLISH
     ):
         raise AppError("FORBIDDEN", "需要 campaign.publish 权限", 403)
-    campaign = _safe(
+    campaign = _safe404(
         lambda: service.transition_campaign(
             db,
             _owner(db, user),
@@ -203,7 +216,7 @@ def transition_task(
 ) -> ApiResponse:
     if not has_permission(db, user, PERM_TASK_UPDATE):
         raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
-    task = _safe(
+    task = _safe404(
         lambda: service.transition_task(
             db,
             _owner(db, user),
@@ -221,7 +234,7 @@ def transition_task(
 def task_detail(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     if not has_permission(db, user, PERM_TASK_READ):
         raise AppError("FORBIDDEN", "需要 task.read 权限", 403)
-    data = _safe(lambda: service.task_detail(db, _owner(db, user), task_id))
+    data = _safe404(lambda: service.task_detail(db, _owner(db, user), task_id))
     return ApiResponse(data=data, traceId=current_trace_id())
 
 
@@ -231,7 +244,7 @@ def assign_task(
 ) -> ApiResponse:
     if not has_permission(db, user, PERM_TASK_UPDATE):
         raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
-    task = _safe(
+    task = _safe404(
         lambda: service.assign_task(
             db, _owner(db, user), task_id, payload.assignee_id
         )
@@ -246,7 +259,7 @@ def assign_task(
 def verify_task(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     if not has_permission(db, user, PERM_TASK_UPDATE):
         raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
-    run = _safe(lambda: service.verify_task(db, _owner(db, user), task_id))
+    run = _safe404(lambda: service.verify_task(db, _owner(db, user), task_id))
     return ApiResponse(
         data={
             "runId": run.id,

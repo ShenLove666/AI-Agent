@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import delete
 
-from app.api.dependencies import CurrentUserId, DbSession
+from app.api.dependencies import (
+    CurrentUserId,
+    DbSession,
+    make_permission_requirement,
+)
 from app.framework.errors import AppError
 from app.modules.knowledge.models import KnowledgeChunk, KnowledgeDocument
 
@@ -15,7 +19,7 @@ router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
 
 @router.delete(
     "/{base_id}/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT
-)
+, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def delete_document(
     base_id: int,
     document_id: int,

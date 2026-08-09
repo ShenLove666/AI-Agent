@@ -138,7 +138,7 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/operations",
         label: "商家运营洞察",
         icon: BarChart3,
-        permission: "retail.view"
+        permission: "user.manage"
       },
       {
         path: "/admin/agents",

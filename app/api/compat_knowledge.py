@@ -12,11 +12,15 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, BackgroundTasks, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    make_permission_requirement,
+)
 from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
@@ -163,7 +167,7 @@ class BaseUpdateRequest(BaseModel):
     description: str | None = None
 
 
-@router.get("", response_model=ApiResponse)
+@router.get("", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_bases(
     db: DbSession,
     user: CurrentUser,
@@ -191,7 +195,7 @@ def list_bases(
     )
 
 
-@router.post("", response_model=ApiResponse, status_code=200)
+@router.post("", response_model=ApiResponse, status_code=200, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def create_base(
     payload: BaseCreateRequest,
     db: DbSession,
@@ -204,7 +208,7 @@ def create_base(
     return ApiResponse(data=str(item.id), traceId=current_trace_id())
 
 
-@router.get("/{base_id}", response_model=ApiResponse)
+@router.get("/{base_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def base_detail(
     base_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -212,7 +216,7 @@ def base_detail(
     return ApiResponse(data=base_vo(db, item), traceId=current_trace_id())
 
 
-@router.put("/{base_id}", response_model=ApiResponse)
+@router.put("/{base_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def update_base(
     base_id: int,
     payload: BaseUpdateRequest,
@@ -230,7 +234,7 @@ def update_base(
     return ApiResponse(data=base_vo(db, item), traceId=current_trace_id())
 
 
-@router.delete("/{base_id}", response_model=ApiResponse)
+@router.delete("/{base_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def delete_base(
     base_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -257,7 +261,7 @@ class DocumentUpdateRequest(BaseModel):
     processMode: str | None = None
 
 
-@router.get("/{kb_id}/docs", response_model=ApiResponse)
+@router.get("/{kb_id}/docs", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_documents(
     kb_id: int,
     db: DbSession,
@@ -292,7 +296,7 @@ def list_documents(
     )
 
 
-@router.post("/{kb_id}/docs/upload", response_model=ApiResponse, status_code=200)
+@router.post("/{kb_id}/docs/upload", response_model=ApiResponse, status_code=200, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def upload_document(
     kb_id: int,
     background_tasks: BackgroundTasks,
@@ -332,7 +336,7 @@ async def upload_document(
     return ApiResponse(data=document_vo(db, document), traceId=current_trace_id())
 
 
-@router.get("/docs/search", response_model=ApiResponse)
+@router.get("/docs/search", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def search_documents(
     db: DbSession,
     user: CurrentUser,
@@ -362,7 +366,7 @@ def search_documents(
     )
 
 
-@router.get("/docs/ingestion-spec-schema", response_model=ApiResponse)
+@router.get("/docs/ingestion-spec-schema", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def ingestion_spec_schema(
     db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -376,7 +380,7 @@ def ingestion_spec_schema(
     )
 
 
-@router.get("/docs/{doc_id}", response_model=ApiResponse)
+@router.get("/docs/{doc_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def document_detail(
     doc_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -384,7 +388,7 @@ def document_detail(
     return ApiResponse(data=document_vo(db, item), traceId=current_trace_id())
 
 
-@router.put("/docs/{doc_id}", response_model=ApiResponse)
+@router.put("/docs/{doc_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def update_document(
     doc_id: int,
     payload: DocumentUpdateRequest,
@@ -400,7 +404,7 @@ def update_document(
     return ApiResponse(data=document_vo(db, item), traceId=current_trace_id())
 
 
-@router.delete("/docs/{doc_id}", response_model=ApiResponse)
+@router.delete("/docs/{doc_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def delete_document(
     doc_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -415,7 +419,7 @@ def delete_document(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-@router.post("/docs/{doc_id}/chunk", response_model=ApiResponse)
+@router.post("/docs/{doc_id}/chunk", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def rechunk_document(
     doc_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -425,7 +429,7 @@ def rechunk_document(
     return ApiResponse(data=document_vo(db, item), traceId=current_trace_id())
 
 
-@router.patch("/docs/{doc_id}/enable", response_model=ApiResponse)
+@router.patch("/docs/{doc_id}/enable", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def set_document_enabled(
     doc_id: int,
     db: DbSession,
@@ -439,7 +443,7 @@ def set_document_enabled(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-@router.get("/docs/{doc_id}/preview", response_model=ApiResponse)
+@router.get("/docs/{doc_id}/preview", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def preview_document(
     doc_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
@@ -454,7 +458,7 @@ def preview_document(
     return ApiResponse(data=text[:20000], traceId=current_trace_id())
 
 
-@router.get("/docs/{doc_id}/file")
+@router.get("/docs/{doc_id}/file", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def download_document(doc_id: int, db: DbSession, user: CurrentUser, request: Request):
     item = _resolve_document(db, doc_id, user)
     path = Path(item.storage_path)
@@ -485,7 +489,7 @@ class ChunkUpdateRequest(BaseModel):
     enabled: bool | None = None
 
 
-@router.get("/docs/{doc_id}/chunks", response_model=ApiResponse)
+@router.get("/docs/{doc_id}/chunks", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_chunks(
     doc_id: int,
     db: DbSession,
@@ -510,7 +514,7 @@ def list_chunks(
     )
 
 
-@router.post("/docs/{doc_id}/chunks", response_model=ApiResponse)
+@router.post("/docs/{doc_id}/chunks", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def create_chunk(
     doc_id: int,
     payload: ChunkCreateRequest,
@@ -539,7 +543,7 @@ def create_chunk(
     return ApiResponse(data=chunk_vo(chunk), traceId=current_trace_id())
 
 
-@router.put("/docs/{doc_id}/chunks/{chunk_id}", response_model=ApiResponse)
+@router.put("/docs/{doc_id}/chunks/{chunk_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def update_chunk(
     doc_id: int,
     chunk_id: int,
@@ -559,7 +563,7 @@ def update_chunk(
     return ApiResponse(data=chunk_vo(chunk), traceId=current_trace_id())
 
 
-@router.delete("/docs/{doc_id}/chunks/{chunk_id}", response_model=ApiResponse)
+@router.delete("/docs/{doc_id}/chunks/{chunk_id}", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def delete_chunk(
     doc_id: int,
     chunk_id: int,
@@ -576,7 +580,7 @@ def delete_chunk(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-@router.patch("/docs/{doc_id}/chunks/{chunk_id}/enable", response_model=ApiResponse)
+@router.patch("/docs/{doc_id}/chunks/{chunk_id}/enable", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def set_chunk_enabled(
     doc_id: int,
     chunk_id: int,
@@ -597,7 +601,7 @@ def set_chunk_enabled(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-@router.patch("/docs/{doc_id}/chunks/batch-enable", response_model=ApiResponse)
+@router.patch("/docs/{doc_id}/chunks/batch-enable", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def batch_set_chunks_enabled(
     doc_id: int,
     db: DbSession,
@@ -623,7 +627,7 @@ def batch_set_chunks_enabled(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-@router.get("/docs/{doc_id}/chunk-logs", response_model=ApiResponse)
+@router.get("/docs/{doc_id}/chunk-logs", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_chunk_logs(
     doc_id: int,
     db: DbSession,

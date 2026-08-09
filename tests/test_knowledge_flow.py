@@ -28,6 +28,12 @@ def test_document_ingestion_and_user_isolated_retrieval():
                         "/api/v1/auth/register",
                         json={"username": "owner", "password": "password123"},
                     )
+                    # 知识库管理需要平台权限，测试账号提升为 admin
+                    from app.modules.users.repository import UserRepository as _UserRepo
+
+                    with app.state.container.database.session_factory() as _db:
+                        _UserRepo().get_by_username(_db, "owner").role = "admin"
+                        _db.commit()
                     login = await client.post(
                         "/api/v1/auth/login",
                         json={"username": "owner", "password": "password123"},

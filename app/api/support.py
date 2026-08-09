@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import (
-    CurrentSupervisor,
     CurrentUser,
     DbSession,
     make_permission_requirement,
@@ -298,14 +297,14 @@ def metrics(db: DbSession, user: CurrentUser) -> ApiResponse:
 
 
 @router.get("/escalations", dependencies=[Depends(make_permission_requirement("support.escalation.read"))])
-def escalation_queue(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
+def escalation_queue(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_queue(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
 @router.get("/escalations/overview", dependencies=[Depends(make_permission_requirement("support.escalation.read"))])
-def escalation_overview(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
+def escalation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_overview(db, _owner(db, user)),
         traceId=current_trace_id(),
@@ -333,7 +332,7 @@ def raise_escalation(
 
 @router.post("/escalations/{escalation_id}/accept", dependencies=[Depends(make_permission_requirement("support.escalation.accept"))])
 def accept_escalation(
-    escalation_id: int, db: DbSession, user: CurrentSupervisor
+    escalation_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
     return ApiResponse(
         data=service.accept_escalation(
@@ -348,7 +347,7 @@ def resolve_escalation(
     escalation_id: int,
     payload: EscalationResolveRequest,
     db: DbSession,
-    user: CurrentSupervisor,
+    user: CurrentUser,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.resolve_escalation(
@@ -368,7 +367,7 @@ def return_escalation(
     escalation_id: int,
     payload: EscalationActionRequest,
     db: DbSession,
-    user: CurrentSupervisor,
+    user: CurrentUser,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.return_escalation(
@@ -436,7 +435,7 @@ def quality_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     )
 
 
-@router.post("/quality/cases/{case_id}/labels", dependencies=[Depends(make_permission_requirement("support.quality.read"))])
+@router.post("/quality/cases/{case_id}/labels", dependencies=[Depends(make_permission_requirement("support.quality.label"))])
 def add_quality_label(
     case_id: int, payload: QualityLabelRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:

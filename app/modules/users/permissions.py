@@ -22,6 +22,7 @@ PERM_ESCALATION_ACCEPT = "support.escalation.accept"
 PERM_ESCALATION_RESOLVE = "support.escalation.resolve"
 PERM_ESCALATION_RETURN = "support.escalation.return"
 PERM_QUALITY_READ = "support.quality.read"
+PERM_QUALITY_LABEL = "support.quality.label"
 
 # ---- 经营域 ----
 PERM_RETAIL_VIEW = "retail.view"
@@ -49,6 +50,7 @@ ALL_PERMISSIONS = frozenset(
         PERM_ESCALATION_RESOLVE,
         PERM_ESCALATION_RETURN,
         PERM_QUALITY_READ,
+        PERM_QUALITY_LABEL,
         PERM_RETAIL_VIEW,
         PERM_CAMPAIGN_CREATE,
         PERM_CAMPAIGN_CONFIRM,
@@ -81,6 +83,7 @@ SUPPORT_SUPERVISOR_PERMISSIONS = SUPPORT_AGENT_PERMISSIONS | frozenset(
         PERM_ESCALATION_RESOLVE,
         PERM_ESCALATION_RETURN,
         PERM_QUALITY_READ,
+        PERM_QUALITY_LABEL,
         PERM_EVALUATION_READ,
     }
 )

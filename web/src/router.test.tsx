@@ -114,6 +114,31 @@ describe("role-aware routing", () => {
   });
 
   it.each([
+    "/admin/support-supervisor",
+    "/admin/support-quality",
+    "/admin/support-reports",
+    "/admin/support-knowledge",
+    "/admin/support-evaluation",
+    "/admin/retail",
+    "/admin/dashboard",
+    "/admin/operations",
+    "/admin/knowledge",
+    "/admin/knowledge/kb-1",
+    "/admin/knowledge/kb-1/docs/doc-1",
+    "/admin/traces",
+    "/admin/traces/trace-1",
+    "/admin/settings",
+    "/admin/users"
+  ])("sends a regular support agent away from %s", async (path) => {
+    const router = await renderRoute(path, "user");
+
+    await waitFor(() => {
+      // 普通客服手输主管/管理 URL → 跳回客服工作台
+      expect(router.state.location.pathname).toBe("/admin/support");
+    });
+  });
+
+  it.each([
     "/admin/support-knowledge",
     "/admin/support-evaluation",
     "/admin/retail",

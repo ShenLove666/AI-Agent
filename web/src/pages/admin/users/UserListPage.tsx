@@ -53,9 +53,10 @@ import { RelativeTime } from "@/components/RelativeTime";
 const PAGE_SIZE = 10;
 
 const roleOptions = [
-  { value: "admin", label: "管理员" },
+  { value: "admin", label: "商家负责人 / 管理员" },
+  { value: "operator", label: "商家运营" },
   { value: "supervisor", label: "客服主管" },
-  { value: "user", label: "客服/成员" }
+  { value: "user", label: "客服" }
 ];
 
 const buildEmptyForm = () => ({

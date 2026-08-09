@@ -17,6 +17,7 @@ from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.users.models import User
+from app.modules.users.permissions import VALID_ROLES
 from app.modules.users.service import AuthService
 
 
@@ -43,12 +44,12 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=128)
     email: str | None = None
-    role: str = Field(default="user", pattern="^(user|admin)$")
+    role: str = Field(default="user", pattern="^(" + "|".join(sorted(VALID_ROLES)) + ")$")
 
 
 class UserUpdateRequest(BaseModel):
     email: str | None = None
-    role: str | None = Field(default=None, pattern="^(user|admin)$")
+    role: str | None = Field(default=None, pattern="^(" + "|".join(sorted(VALID_ROLES)) + ")$")
     enabled: bool | None = None
 
 
