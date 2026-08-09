@@ -94,7 +94,9 @@ function withPageSuspense(children: JSX.Element) {
 function getDefaultPath(role?: string) {
   if (role === "admin") return "/admin/support";
   if (role === "supervisor") return "/admin/support-supervisor";
-  return "/chat";
+  if (role === "operator") return "/admin/retail";
+  // 普通客服 → 客服工作台
+  return "/admin/support";
 }
 
 function RequireAuth({ children }: { children: JSX.Element }) {
@@ -153,7 +155,12 @@ function AdminIndexRedirect() {
 }
 
 const ADMIN_ROLES = ["admin"];
-const SUPPORT_ROLES = ["supervisor", "admin"];
+// 客服域：普通客服、客服主管、管理员（运营不可见）
+const SUPPORT_ROLES = ["user", "supervisor", "admin"];
+// 客服主管域：质量/报告（普通客服无 quality 权限）
+const SUPPORT_SUPERVISOR_ROLES = ["supervisor", "admin"];
+// 经营域：运营、管理员（客服不可见）
+const RETAIL_ROLES = ["admin", "operator"];
 
 export const router = createBrowserRouter([
   {
@@ -182,7 +189,11 @@ export const router = createBrowserRouter([
   },
   {
     path: "/admin",
-    element: <RequireRoles roles={SUPPORT_ROLES}>{withPageSuspense(<AdminLayout />)}</RequireRoles>,
+    element: (
+      <RequireRoles roles={[...SUPPORT_ROLES, ...RETAIL_ROLES]}>
+        {withPageSuspense(<AdminLayout />)}
+      </RequireRoles>
+    ),
     children: [
       {
         index: true,
@@ -206,7 +217,7 @@ export const router = createBrowserRouter([
       {
         path: "support-quality",
         element: withRoles(
-          SUPPORT_ROLES,
+          SUPPORT_SUPERVISOR_ROLES,
           withPageSuspense(<SupportOperationsPage view="quality" />)
         )
       },
@@ -220,13 +231,13 @@ export const router = createBrowserRouter([
       {
         path: "support-reports",
         element: withRoles(
-          SUPPORT_ROLES,
+          SUPPORT_SUPERVISOR_ROLES,
           withPageSuspense(<SupportOperationsPage view="reports" />)
         )
       },
       {
         path: "retail",
-        element: withRoles(ADMIN_ROLES, withPageSuspense(<RetailOperationsPage />))
+        element: withRoles(RETAIL_ROLES, withPageSuspense(<RetailOperationsPage />))
       },
       {
         path: "dashboard",
@@ -234,7 +245,7 @@ export const router = createBrowserRouter([
       },
       {
         path: "operations",
-        element: withRoles(ADMIN_ROLES, withPageSuspense(<OperationsPage />))
+        element: withRoles(RETAIL_ROLES, withPageSuspense(<OperationsPage />))
       },
       {
         path: "knowledge",

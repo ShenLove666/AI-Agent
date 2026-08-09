@@ -1,10 +1,10 @@
-"""组织成员关系解析：权限派生与商家数据范围。
+"""角色权限解析与商家数据范围。
 
-替代旧的"管理员自动代理最新商家"魔法（support/commerce 的 owner_for）。
-数据范围规则：
-- 用户必须是某组织成员，才能看到该组织 owner_user_id 名下的商家数据；
-- 无成员关系的用户（如未绑定的平台管理员）返回 None，读接口返回空数据、写接口拒绝；
-- 全局角色（admin/supervisor）只提供平台能力，不再隐式获得任何商家数据。
+权限完全由全局角色（users_v2.role）派生：user/supervisor/operator/admin。
+组织成员关系（organization_members）只决定数据范围：
+- 成员 → 组织 owner_user_id 的商家数据；
+- 无成员（含未绑定组织的平台管理员）→ 只能看到自己名下的数据，
+  不再隐式代理任何商家（替代旧的 owner_for 魔法）。
 """
 
 from __future__ import annotations
@@ -13,21 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.users.models import Organization, OrganizationMember, User
-from app.modules.users.permissions import (
-    GLOBAL_ROLE_PERMISSIONS,
-    ROLE_PERMISSIONS,
-)
+from app.modules.users.permissions import ROLE_PERMISSIONS
 
 
 def permissions_for(db: Session, user: User) -> frozenset[str]:
-    """计算用户的完整权限集合：全局角色兼容能力 + 组织成员角色能力。"""
-    perms = set(GLOBAL_ROLE_PERMISSIONS.get(user.role, frozenset()))
-    member_roles = db.scalars(
-        select(OrganizationMember.role).where(OrganizationMember.user_id == user.id)
-    ).all()
-    for role in member_roles:
-        perms |= ROLE_PERMISSIONS.get(role, frozenset())
-    return frozenset(perms)
+    """计算用户的权限集合：由全局角色决定。"""
+    return ROLE_PERMISSIONS.get(user.role, frozenset())
 
 
 def has_permission(db: Session, user: User, permission: str) -> bool:

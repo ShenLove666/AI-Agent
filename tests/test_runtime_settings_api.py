@@ -204,6 +204,6 @@ def test_settings_patch_flow_and_audit(tmp_path: Path):
                     await client.get("/api/v1/auth/me", headers=headers)
                 ).json()["data"]
                 assert "settings.write" in me_admin["permissions"]
-                assert "platform.manage" in me_admin["permissions"]
+                assert "user.manage" in me_admin["permissions"]
 
     asyncio.run(scenario())

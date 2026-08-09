@@ -16,10 +16,11 @@ from app.modules.users.access import (
 )
 from app.modules.users.permissions import (
     PERM_CAMPAIGN_CONFIRM,
+    PERM_CAMPAIGN_CREATE,
     PERM_CAMPAIGN_PUBLISH,
-    PERM_EVALUATION_RUN,
-    PERM_PLATFORM_MANAGE,
-    PERM_TASK_ASSIGN,
+    PERM_RETAIL_VIEW,
+    PERM_TASK_READ,
+    PERM_TASK_UPDATE,
 )
 
 
@@ -65,6 +66,8 @@ class TaskAssignRequest(BaseModel):
 
 @router.get("/overview")
 def retail_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     return ApiResponse(
         data=service.overview(db, _owner(db, user)), traceId=current_trace_id()
     )
@@ -72,6 +75,8 @@ def retail_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
 
 @router.get("/data-sources")
 def retail_data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     return ApiResponse(
         data=service.data_sources(db, _owner(db, user)), traceId=current_trace_id()
     )
@@ -79,6 +84,8 @@ def retail_data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
 
 @data_source_router.get("")
 def data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     return ApiResponse(
         data=service.data_sources(db, _owner(db, user)), traceId=current_trace_id()
     )
@@ -88,6 +95,8 @@ def data_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
 def data_source_quality(
     source_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     data = _safe(lambda: service.data_source_quality(db, _owner(db, user), source_id))
     return ApiResponse(data=data, traceId=current_trace_id())
 
@@ -96,6 +105,8 @@ def data_source_quality(
 def data_source_preview(
     source_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     data = _safe(lambda: service.data_source_preview(db, _owner(db, user), source_id))
     return ApiResponse(data=data, traceId=current_trace_id())
 
@@ -104,7 +115,7 @@ def data_source_preview(
 def import_retail_data(
     payload: ImportRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
-    if not has_permission(db, user, PERM_PLATFORM_MANAGE):
+    if user.role != "admin":
         raise AppError("FORBIDDEN", "仅平台管理员可以导入本地数据", 403)
     result = _safe(
         lambda: service.import_baskets(
@@ -128,8 +139,8 @@ def import_retail_data(
 def create_campaign(
     payload: CampaignRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
-    if not has_permission(db, user, PERM_CAMPAIGN_CONFIRM):
-        raise AppError("FORBIDDEN", "需要 campaign.confirm 权限", 403)
+    if not has_permission(db, user, PERM_CAMPAIGN_CREATE):
+        raise AppError("FORBIDDEN", "需要 campaign.create 权限", 403)
     campaign = _safe(
         lambda: service.create_campaign(db, _owner(db, user), payload.rule_id)
     )
@@ -143,6 +154,8 @@ def create_campaign(
 def campaign_detail(
     campaign_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     data = _safe(
         lambda: service.campaign_detail(db, _owner(db, user), campaign_id)
     )
@@ -188,8 +201,8 @@ def transition_campaign(
 def transition_task(
     task_id: int, payload: TaskTransitionRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
-    if not has_permission(db, user, PERM_TASK_ASSIGN):
-        raise AppError("FORBIDDEN", "需要 task.assign 权限", 403)
+    if not has_permission(db, user, PERM_TASK_UPDATE):
+        raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
     task = _safe(
         lambda: service.transition_task(
             db,
@@ -206,6 +219,8 @@ def transition_task(
 
 @router.get("/optimization-tasks/{task_id}")
 def task_detail(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+    if not has_permission(db, user, PERM_TASK_READ):
+        raise AppError("FORBIDDEN", "需要 task.read 权限", 403)
     data = _safe(lambda: service.task_detail(db, _owner(db, user), task_id))
     return ApiResponse(data=data, traceId=current_trace_id())
 
@@ -214,8 +229,8 @@ def task_detail(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
 def assign_task(
     task_id: int, payload: TaskAssignRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
-    if not has_permission(db, user, PERM_TASK_ASSIGN):
-        raise AppError("FORBIDDEN", "需要 task.assign 权限", 403)
+    if not has_permission(db, user, PERM_TASK_UPDATE):
+        raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
     task = _safe(
         lambda: service.assign_task(
             db, _owner(db, user), task_id, payload.assignee_id
@@ -229,8 +244,8 @@ def assign_task(
 
 @router.post("/optimization-tasks/{task_id}/verify")
 def verify_task(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
-    if not has_permission(db, user, PERM_EVALUATION_RUN):
-        raise AppError("FORBIDDEN", "需要 evaluation.run 权限", 403)
+    if not has_permission(db, user, PERM_TASK_UPDATE):
+        raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
     run = _safe(lambda: service.verify_task(db, _owner(db, user), task_id))
     return ApiResponse(
         data={
@@ -244,8 +259,8 @@ def verify_task(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
 
 @router.post("/optimization-tasks/sync-from-evaluations")
 def sync_failed_evaluations(db: DbSession, user: CurrentUser) -> ApiResponse:
-    if not has_permission(db, user, PERM_TASK_ASSIGN):
-        raise AppError("FORBIDDEN", "需要 task.assign 权限", 403)
+    if not has_permission(db, user, PERM_TASK_UPDATE):
+        raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
     created = _safe(
         lambda: service.sync_failed_evaluations(db, _owner(db, user))
     )
@@ -254,6 +269,8 @@ def sync_failed_evaluations(db: DbSession, user: CurrentUser) -> ApiResponse:
 
 @router.get("/reports/weekly")
 def weekly_report(db: DbSession, user: CurrentUser) -> ApiResponse:
+    if not has_permission(db, user, PERM_RETAIL_VIEW):
+        raise AppError("FORBIDDEN", "需要 retail.view 权限", 403)
     content = _safe(lambda: service.report(db, _owner(db, user)))
     return ApiResponse(
         data={"filename": "instant-retail-weekly-report.md", "content": content},

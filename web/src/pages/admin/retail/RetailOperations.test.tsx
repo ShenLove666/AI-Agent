@@ -176,7 +176,7 @@ describe("RetailOperations", () => {
   });
 
   it("opens campaign detail drawer and confirms with expectedVersion", async () => {
-    mockPermissions(["campaign.confirm", "campaign.publish", "retail.view"]);
+    mockPermissions(["campaign.create", "campaign.confirm", "campaign.publish", "retail.view"]);
     const user = userEvent.setup();
     render(<RetailOperationsPage />);
 
@@ -204,7 +204,7 @@ describe("RetailOperations", () => {
   });
 
   it("rejects with a required reason", async () => {
-    mockPermissions(["campaign.confirm", "retail.view"]);
+    mockPermissions(["campaign.create", "campaign.confirm", "retail.view"]);
     const user = userEvent.setup();
     render(<RetailOperationsPage />);
 
@@ -224,7 +224,7 @@ describe("RetailOperations", () => {
   });
 
   it("shows task empty state and sync action for task.assign holders", async () => {
-    mockPermissions(["task.assign", "retail.view"]);
+    mockPermissions(["task.update", "retail.view"]);
     mocks.syncFailedEvaluations.mockResolvedValue({ created: 2 });
     const user = userEvent.setup();
     render(<RetailOperationsPage />);

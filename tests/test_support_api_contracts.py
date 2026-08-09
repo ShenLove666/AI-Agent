@@ -31,6 +31,13 @@ def test_support_case_api_contract(tmp_path):
                 token = login.json()["data"]["access_token"]
                 headers = {"Authorization": f"Bearer {token}"}
                 with app.state.container.database.session_factory() as db:
+                    # 契约测试使用管理员账号，与域隔离权限测试分开
+                    from app.modules.users.models import User
+
+                    account = db.query(User).filter_by(username="agent").one()
+                    account.role = "admin"
+                    db.commit()
+                with app.state.container.database.session_factory() as db:
                     case = SupportCase(owner_id=1, case_key="api-1", customer_name="顾客", subject="配送超时", status="pending", priority="high")
                     db.add(case); db.flush()
                     source = DataSource(
@@ -82,6 +89,13 @@ def test_support_citations_expose_complete_source_metadata(tmp_path):
                 await client.post("/api/v1/auth/register", json={"username": "merchant", "password": "password123"})
                 login = await client.post("/api/v1/auth/login", json={"username": "merchant", "password": "password123"})
                 headers = {"Authorization": f"Bearer {login.json()['data']['access_token']}"}
+                with app.state.container.database.session_factory() as db:
+                    # 契约测试使用管理员账号（知识发布/来源属于 knowledge.manage）
+                    from app.modules.users.models import User
+
+                    account = db.query(User).filter_by(username="merchant").one()
+                    account.role = "admin"
+                    db.commit()
                 with app.state.container.database.session_factory() as db:
                     base = KnowledgeBase(owner_id=1, name="官方规则"); db.add(base); db.flush()
                     document = KnowledgeDocument(

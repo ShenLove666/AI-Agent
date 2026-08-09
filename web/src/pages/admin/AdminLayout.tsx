@@ -96,14 +96,13 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/support",
         label: "客服工作台",
         icon: Inbox,
-        permission: "support.case.work"
+        permission: "support.case.read"
       },
       {
         path: "/admin/support-supervisor",
         label: "主管队列",
         icon: ShieldAlert,
-        roles: ["supervisor", "admin"],
-        permission: "support.resolve"
+        permission: "support.escalation.read"
       },
       {
         path: "/admin/support-knowledge",
@@ -133,14 +132,12 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/retail",
         label: "商品组合洞察",
         icon: LayoutDashboard,
-        roles: ["admin"],
         permission: "retail.view"
       },
       {
         path: "/admin/operations",
         label: "商家运营洞察",
         icon: BarChart3,
-        roles: ["admin"],
         permission: "retail.view"
       },
       {

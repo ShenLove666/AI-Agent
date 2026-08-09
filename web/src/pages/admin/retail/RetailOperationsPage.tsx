@@ -97,10 +97,10 @@ function OriginBadge({ origin }: { origin: "observed" | "derived" | "synthetic" 
 
 export function RetailOperationsPage() {
   const permissions = useAuthStore((state) => state.user?.permissions ?? []);
+  const canCreate = permissions.includes("campaign.create");
   const canConfirm = permissions.includes("campaign.confirm");
   const canPublish = permissions.includes("campaign.publish");
-  const canAssign = permissions.includes("task.assign");
-  const canEval = permissions.includes("evaluation.run");
+  const canUpdateTask = permissions.includes("task.update");
 
   const [data, setData] = useState<RetailOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -525,7 +525,7 @@ export function RetailOperationsPage() {
                     订单 {rule.evidence.slice(0, 3).join("、")}
                   </td>
                   <td className="px-5 py-4">
-                    {canConfirm && (
+                    {canCreate && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -625,7 +625,7 @@ export function RetailOperationsPage() {
                 <p className="text-xs leading-5 text-slate-400">
                   暂无优化任务。任务会在方案确认、评测失败或客服知识缺口时自动创建。
                 </p>
-                {canAssign && (
+                {canUpdateTask && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -859,7 +859,7 @@ export function RetailOperationsPage() {
                 </div>
               </div>
 
-              {taskDetail.status === "optimizing" && canAssign && (
+              {taskDetail.status === "optimizing" && canUpdateTask && (
                 <div className="rounded-xl border border-slate-100 p-4">
                   <Label htmlFor="task-assignee">
                     分派给用户（输入用户 ID，留空取消分派）
@@ -894,7 +894,7 @@ export function RetailOperationsPage() {
               )}
 
               <DialogFooter className="gap-2">
-                {taskDetail.status === "optimizing" && canAssign && (
+                {taskDetail.status === "optimizing" && canUpdateTask && (
                   <Button
                     variant="outline"
                     disabled={busy === `task-assign-${taskDetail.id}`}
@@ -906,7 +906,7 @@ export function RetailOperationsPage() {
                 )}
                 {(taskDetail.status === "optimizing" ||
                   taskDetail.status === "pending_verification") &&
-                  canEval && (
+                  canUpdateTask && (
                     <Button
                       variant="outline"
                       disabled={busy === `task-verify-${taskDetail.id}`}
@@ -916,7 +916,7 @@ export function RetailOperationsPage() {
                       发起复测
                     </Button>
                   )}
-                {nextStatus[taskDetail.status] && canAssign && (
+                {nextStatus[taskDetail.status] && canUpdateTask && (
                   <Button
                     disabled={busy === `task-${taskDetail.id}`}
                     onClick={() => void advanceTask(taskDetail)}

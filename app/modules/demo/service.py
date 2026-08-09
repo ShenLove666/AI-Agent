@@ -1028,13 +1028,13 @@ class DemoSeedService:
             db.add(org)
             db.flush()
         accounts = {
-            "support-admin": ("support_supervisor", "admin", False),
-            "demo-supervisor": ("support_supervisor", "supervisor", True),
-            "demo-operator": ("operator", "user", True),
-            "demo-analyst": ("analyst", "user", True),
+            "support-admin": ("admin", "admin", False),
+            "demo-supervisor": ("supervisor", "supervisor", True),
+            "demo-operator": ("operator", "operator", True),
+            "demo-agent": ("user", "user", True),
         }
-        # 商家 owner 本人也以 merchant_owner 成员身份绑定组织
-        accounts = {"merchant-demo": ("merchant_owner", "user", True), **accounts}
+        # 商家 owner 本人也以成员身份绑定组织（角色 admin）
+        accounts = {"merchant-demo": ("admin", "admin", True), **accounts}
         for username, (member_role, global_role, demo) in accounts.items():
             account = self.container.user_repository.get_by_username(db, username)
             if account is None:
@@ -1050,6 +1050,8 @@ class DemoSeedService:
                 raise DemoOwnershipError(
                     f"ownership violation: {username} belongs to a non-demo user"
                 )
+            if demo and account.role != global_role:
+                account.role = global_role
             member = db.scalar(
                 select(OrganizationMember).where(
                     OrganizationMember.org_id == org.id,

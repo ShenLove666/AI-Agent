@@ -3,7 +3,7 @@
 覆盖：
 ② 方案：创建 → 同规则防重复 → 详情 → 确认（自动建任务+评测运行）→ 发布；
    draft 直接发布 / confirmed 重复确认被拒；乐观锁冲突 409；驳回分支。
-③ 权限矩阵：merchant-owner / operator / analyst / platform-admin 各角色
+③ 权限矩阵：user(客服) / supervisor / operator / admin 四角色，客服域与经营域互斥
    /auth/me 的权限集合，以及 campaign.confirm / campaign.publish / task.assign
    写接口的 200/403；无组织成员的用户访问零售数据被拒。
 ④ 任务闭环：确认方案自动建任务；进入 pending_verification 必须带 changeVersion；
@@ -69,7 +69,7 @@ def _seed_users(database: Database) -> dict[str, User]:
         owner = User(
             username="merchant-demo",
             password_hash=hash_value,
-            role="user",
+            role="admin",
             is_demo=True,
         )
         platform = User(
@@ -80,16 +80,16 @@ def _seed_users(database: Database) -> dict[str, User]:
         operator = User(
             username="demo-operator",
             password_hash=hash_value,
-            role="user",
+            role="operator",
             is_demo=True,
         )
-        analyst = User(
-            username="demo-analyst",
+        agent = User(
+            username="demo-agent",
             password_hash=hash_value,
             role="user",
             is_demo=True,
         )
-        db.add_all([owner, platform, operator, analyst])
+        db.add_all([owner, platform, operator, agent])
         db.flush()
         org = Organization(
             name="演示商家", owner_user_id=owner.id, is_demo=True
@@ -99,16 +99,16 @@ def _seed_users(database: Database) -> dict[str, User]:
         db.add_all(
             [
                 OrganizationMember(
-                    org_id=org.id, user_id=owner.id, role="merchant_owner"
+                    org_id=org.id, user_id=owner.id, role="admin"
                 ),
                 OrganizationMember(
                     org_id=org.id, user_id=operator.id, role="operator"
                 ),
                 OrganizationMember(
-                    org_id=org.id, user_id=analyst.id, role="analyst"
+                    org_id=org.id, user_id=agent.id, role="user"
                 ),
                 OrganizationMember(
-                    org_id=org.id, user_id=platform.id, role="support_supervisor"
+                    org_id=org.id, user_id=platform.id, role="admin"
                 ),
             ]
         )
@@ -117,7 +117,7 @@ def _seed_users(database: Database) -> dict[str, User]:
             "owner": owner,
             "platform": platform,
             "operator": operator,
-            "analyst": analyst,
+            "agent": agent,
         }
 
 
@@ -157,24 +157,50 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
             ) as client:
                 owner = await _login(client, "merchant-demo")
                 operator = await _login(client, "demo-operator")
-                analyst = await _login(client, "demo-analyst")
+                agent = await _login(client, "demo-agent")
                 platform = await _login(client, "support-admin")
 
-                # ① 权限矩阵：/auth/me 权限集合
+                # ① 权限矩阵：/auth/me 权限集合（4 角色，客服/经营域切开）
                 owner_perms = (
                     await client.get("/api/v1/auth/me", headers=owner)
                 ).json()["data"]["permissions"]
-                analyst_perms = (
-                    await client.get("/api/v1/auth/me", headers=analyst)
+                operator_perms = (
+                    await client.get("/api/v1/auth/me", headers=operator)
                 ).json()["data"]["permissions"]
-                assert "campaign.confirm" in owner_perms
+                agent_perms = (
+                    await client.get("/api/v1/auth/me", headers=agent)
+                ).json()["data"]["permissions"]
+                # 运营：经营域有权限，客服域无
+                assert "campaign.create" in operator_perms
+                assert "campaign.confirm" in operator_perms
+                assert "task.update" in operator_perms
+                assert "retail.view" in operator_perms
+                assert "campaign.publish" not in operator_perms
+                assert "support.case.read" not in operator_perms
+                assert "support.escalation.read" not in operator_perms
+                # 普通客服：客服域有权限，经营域无
+                assert "support.case.read" in agent_perms
+                assert "support.case.reply" in agent_perms
+                assert "support.case.escalate" in agent_perms
+                assert "retail.view" not in agent_perms
+                assert "campaign.create" not in agent_perms
+                assert "task.update" not in agent_perms
+                assert "settings.write" not in agent_perms
+                # 负责人：全部权限（含发布）
                 assert "campaign.publish" in owner_perms
-                assert "task.assign" in owner_perms
-                assert "campaign.confirm" not in analyst_perms
-                assert "retail.view" in analyst_perms
-                assert "campaign.publish" in (
-                    await client.get("/api/v1/auth/me", headers=platform)
-                ).json()["data"]["permissions"]
+                assert "settings.write" in owner_perms
+                assert "support.quality.read" in owner_perms
+                # 运营调客服 API → 403；客服调经营 API → 403
+                resp = await client.get(
+                    "/api/v1/support/cases", headers=operator
+                )
+                assert resp.status_code == 403
+                resp = await client.get(
+                    "/api/v1/support/escalations", headers=agent
+                )
+                assert resp.status_code == 403
+                resp = await client.get("/api/v1/retail/overview", headers=agent)
+                assert resp.status_code == 403
 
                 # ② 创建方案（operator 可确认 → 有权限）
                 resp = await client.post(
@@ -195,10 +221,10 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 assert resp.status_code == 400
                 assert "已有未完成" in resp.json()["error"]["message"]
 
-                # analyst 无确认权限 → 403
+                # 普通客服无创建方案权限 → 403
                 resp = await client.post(
                     "/api/v1/retail/campaigns",
-                    headers=analyst,
+                    headers=agent,
                     json={"ruleId": rule_id},
                 )
                 assert resp.status_code == 403
@@ -262,10 +288,10 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 )
                 assert resp.status_code == 400
 
-                # 发布（analyst 无权限 → 403；owner 有）
+                # 发布（operator 无 publish 权限 → 403；owner 有）
                 resp = await client.post(
                     f"/api/v1/retail/campaigns/{campaign_id}/transition",
-                    headers=analyst,
+                    headers=operator,
                     json={"action": "publish", "expectedVersion": 2},
                 )
                 assert resp.status_code == 403
@@ -384,15 +410,14 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 )
                 assert resp.status_code == 400
 
-                # ④ 无组织用户：只能看到自己的空数据，写接口按权限拒绝
+                # ④ 普通客服（user）调经营写接口 → 403（域隔离）
                 await client.post(
                     "/api/v1/auth/register",
                     json={"username": "outsider", "password": "password123"},
                 )
                 outsider = await _login(client, "outsider", "password123")
                 resp = await client.get("/api/v1/retail/overview", headers=outsider)
-                assert resp.status_code == 200
-                assert resp.json()["data"]["campaigns"] == []
+                assert resp.status_code == 403
                 resp = await client.post(
                     "/api/v1/retail/campaigns",
                     headers=outsider,

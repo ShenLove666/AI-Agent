@@ -90,12 +90,12 @@ describe("role-aware routing", () => {
   );
 
   it.each(["/", "/login", "/admin"])(
-    "sends a regular user entering through %s to chat",
+    "sends a regular user (客服) entering through %s to the support workbench",
     async (path) => {
       const router = await renderRoute(path, "user");
 
       await waitFor(() => {
-        expect(router.state.location.pathname).toBe("/chat");
+        expect(router.state.location.pathname).toBe("/admin/support");
       });
     }
   );
