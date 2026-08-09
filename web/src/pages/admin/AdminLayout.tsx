@@ -526,23 +526,26 @@ export function AdminLayout() {
         </div>
 
         <nav className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-4">
-          {menuGroups.map((group) => (
-            <div key={group.title} className="space-y-2">
-              {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
-              <div className="space-y-1">
-                {group.items
-                  .filter((item) => !item.hidden)
-                  .filter((item) => {
-                    // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
-                    const role = user?.role || "user";
-                    const roleOk =
-                      !item.roles || item.roles.length === 0 || item.roles.includes(role);
-                    // 权限能力：permission 缺省不限制；指定时按当前用户权限集合过滤
-                    const permissionOk =
-                      !item.permission ||
-                      (user?.permissions ?? []).includes(item.permission);
-                    return roleOk && permissionOk;
-                  })
+          {menuGroups.map((group) => {
+            const visibleItems = group.items
+              .filter((item) => !item.hidden)
+              .filter((item) => {
+                // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
+                const role = user?.role || "user";
+                const roleOk =
+                  !item.roles || item.roles.length === 0 || item.roles.includes(role);
+                // 权限能力：permission 缺省不限制；指定时按当前用户权限集合过滤
+                const permissionOk =
+                  !item.permission || (user?.permissions ?? []).includes(item.permission);
+                return roleOk && permissionOk;
+              });
+            // 分组内所有项都被过滤时整组隐藏（避免出现空的"设置"标题）
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={group.title} className="space-y-2">
+                {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
+                <div className="space-y-1">
+                  {visibleItems
                   .flatMap((item) => {
                     if (!item.children || item.children.length === 0) {
                       const Icon = item.icon;
@@ -554,8 +557,7 @@ export function AdminLayout() {
                           title={collapsed ? item.label : undefined}
                           className={cn(
                             "admin-sidebar__item",
-                            isActive && "admin-sidebar__item--active",
-                            collapsed && "justify-center"
+                            isActive && "admin-sidebar__item--active"
                           )}
                         >
                           <span
@@ -661,9 +663,10 @@ export function AdminLayout() {
                       </div>
                     );
                   })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="admin-sidebar__footer shrink-0 space-y-2">
