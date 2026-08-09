@@ -91,6 +91,12 @@ function withPageSuspense(children: JSX.Element) {
   return <Suspense fallback={<PageFallback />}>{children}</Suspense>;
 }
 
+function getDefaultPath(role?: string) {
+  if (role === "admin") return "/admin/support";
+  if (role === "supervisor") return "/admin/support-supervisor";
+  return "/chat";
+}
+
 function RequireAuth({ children }: { children: JSX.Element }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isInitialized = useAuthStore((state) => state.isInitialized);
@@ -101,7 +107,7 @@ function RequireAuth({ children }: { children: JSX.Element }) {
   return children;
 }
 
-function RequireAdmin({ children }: { children: JSX.Element }) {
+function RequireRoles({ children, roles }: { children: JSX.Element; roles: string[] }) {
   const user = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isInitialized = useAuthStore((state) => state.isInitialized);
@@ -111,11 +117,15 @@ function RequireAdmin({ children }: { children: JSX.Element }) {
     return <Navigate to="/login" replace />;
   }
 
-  if (user?.role !== "admin") {
-    return <Navigate to="/chat" replace />;
+  if (!user || !roles.includes(user.role)) {
+    return <Navigate to={getDefaultPath(user?.role)} replace />;
   }
 
   return children;
+}
+
+function withRoles(roles: string[], children: JSX.Element) {
+  return <RequireRoles roles={roles}>{children}</RequireRoles>;
 }
 
 function RedirectIfAuth({ children }: { children: JSX.Element }) {
@@ -124,7 +134,7 @@ function RedirectIfAuth({ children }: { children: JSX.Element }) {
   const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
   if (isAuthenticated) {
-    return <Navigate to={user?.role === "admin" ? "/admin/support" : "/chat"} replace />;
+    return <Navigate to={getDefaultPath(user?.role)} replace />;
   }
   return children;
 }
@@ -134,13 +144,16 @@ function HomeRedirect() {
   const isInitialized = useAuthStore((state) => state.isInitialized);
   const user = useAuthStore((state) => state.user);
   if (!isInitialized) return <PageFallback />;
-  return (
-    <Navigate
-      to={isAuthenticated ? (user?.role === "admin" ? "/admin/support" : "/chat") : "/login"}
-      replace
-    />
-  );
+  return <Navigate to={isAuthenticated ? getDefaultPath(user?.role) : "/login"} replace />;
 }
+
+function AdminIndexRedirect() {
+  const role = useAuthStore((state) => state.user?.role);
+  return <Navigate to={getDefaultPath(role)} replace />;
+}
+
+const ADMIN_ROLES = ["admin"];
+const SUPPORT_ROLES = ["supervisor", "admin"];
 
 export const router = createBrowserRouter([
   {
@@ -169,75 +182,87 @@ export const router = createBrowserRouter([
   },
   {
     path: "/admin",
-    element: <RequireAdmin>{withPageSuspense(<AdminLayout />)}</RequireAdmin>,
+    element: <RequireRoles roles={SUPPORT_ROLES}>{withPageSuspense(<AdminLayout />)}</RequireRoles>,
     children: [
       {
         index: true,
-        element: <Navigate to="/admin/support" replace />
+        element: <AdminIndexRedirect />
       },
       {
         path: "support",
-        element: withPageSuspense(<SupportWorkbenchPage />)
+        element: withRoles(SUPPORT_ROLES, withPageSuspense(<SupportWorkbenchPage />))
       },
       {
         path: "support-supervisor",
-        element: withPageSuspense(<SupervisorQueuePage />)
+        element: withRoles(SUPPORT_ROLES, withPageSuspense(<SupervisorQueuePage />))
       },
       {
         path: "support-knowledge",
-        element: withPageSuspense(<SupportOperationsPage view="knowledge" />)
+        element: withRoles(
+          ADMIN_ROLES,
+          withPageSuspense(<SupportOperationsPage view="knowledge" />)
+        )
       },
       {
         path: "support-quality",
-        element: withPageSuspense(<SupportOperationsPage view="quality" />)
+        element: withRoles(
+          SUPPORT_ROLES,
+          withPageSuspense(<SupportOperationsPage view="quality" />)
+        )
       },
       {
         path: "support-evaluation",
-        element: withPageSuspense(<SupportOperationsPage view="evaluation" />)
+        element: withRoles(
+          ADMIN_ROLES,
+          withPageSuspense(<SupportOperationsPage view="evaluation" />)
+        )
       },
       {
         path: "support-reports",
-        element: withPageSuspense(<SupportOperationsPage view="reports" />)
+        element: withRoles(
+          SUPPORT_ROLES,
+          withPageSuspense(<SupportOperationsPage view="reports" />)
+        )
       },
       {
         path: "retail",
-        element: withPageSuspense(<RetailOperationsPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<RetailOperationsPage />))
       },
       {
         path: "dashboard",
-        element: withPageSuspense(<DashboardPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<DashboardPage />))
       },
       {
         path: "operations",
-        element: withPageSuspense(<OperationsPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<OperationsPage />))
       },
       {
         path: "knowledge",
-        element: withPageSuspense(<KnowledgeListPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<KnowledgeListPage />))
       },
       {
         path: "knowledge/:kbId",
-        element: withPageSuspense(<KnowledgeDocumentsPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<KnowledgeDocumentsPage />))
       },
       {
         path: "knowledge/:kbId/docs/:docId",
-        element: withPageSuspense(<KnowledgeChunksPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<KnowledgeChunksPage />))
       },
       {
         path: "traces",
-        element: withPageSuspense(<RagTracePage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<RagTracePage />))
       },
       {
         path: "traces/:traceId",
-        element: withPageSuspense(<RagTraceDetailPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<RagTraceDetailPage />))
       },
       {
         path: "settings",
-        element: withPageSuspense(<SystemSettingsPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<SystemSettingsPage />))
       },
       {
         path: "users",
-        element: withPageSuspense(<UserListPage />)
+        element: withRoles(ADMIN_ROLES, withPageSuspense(<UserListPage />))
       },
       {
         path: "*",

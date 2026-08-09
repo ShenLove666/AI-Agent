@@ -5,6 +5,7 @@ import {
   Bot,
   Check,
   CheckCircle2,
+  ChevronDown,
   FileText,
   Inbox,
   Loader2,
@@ -52,6 +53,7 @@ const statuses: Record<CaseStatus, string> = {
   escalated: "已升级"
 };
 const priorities = { low: "低", normal: "普通", high: "高", urgent: "紧急" };
+const riskLabels = { low: "低", medium: "中", high: "高" } as const;
 const statusTone: Record<CaseStatus, string> = {
   pending: "bg-blue-50 text-blue-700",
   in_progress: "bg-amber-50 text-amber-700",
@@ -149,6 +151,7 @@ export function SupportWorkbenchPage() {
   const [search, setSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [edited, setEdited] = useState("");
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const copilotRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -158,6 +161,7 @@ export function SupportWorkbenchPage() {
     setWorkspace(context);
     const suggestion = value.suggestions.find((x) => !x.decision);
     setEdited(suggestion?.content || "");
+    setEvidenceOpen(false);
   }, []);
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,8 +261,15 @@ export function SupportWorkbenchPage() {
           <Metric key={a} label={a} value={b} caption={c} tone={d} />
         ))}
       </section>
-      <section className="grid h-[calc(100dvh-240px)] min-h-[560px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-xl shadow-slate-200/40 xl:grid-cols-[330px_minmax(420px,1fr)_390px]">
-        <aside className="min-h-0 overflow-y-auto border-r border-slate-200 bg-white">
+      <section
+        aria-label="客服处理工作区"
+        className="grid h-auto min-h-0 overflow-visible rounded-[24px] border border-slate-200 bg-white shadow-xl shadow-slate-200/40 xl:h-[calc(100dvh-240px)] xl:min-h-[560px] xl:grid-cols-[330px_minmax(420px,1fr)_390px] xl:overflow-hidden"
+      >
+        <aside
+          role="region"
+          aria-label="工单队列"
+          className="min-h-[420px] overflow-y-auto border-b border-slate-200 bg-white xl:min-h-0 xl:border-b-0 xl:border-r"
+        >
           <div className="border-b border-slate-200 p-4">
             <div className="flex items-center gap-2">
               <Inbox className="h-5 w-5 text-blue-600" />
@@ -308,7 +319,11 @@ export function SupportWorkbenchPage() {
             )}
           </div>
         </aside>
-        <main className="flex min-h-0 min-w-0 flex-col bg-slate-50/40">
+        <main
+          role="region"
+          aria-label="工单对话"
+          className="flex min-h-[640px] min-w-0 flex-col border-b border-slate-200 bg-slate-50/40 xl:min-h-0 xl:border-b-0"
+        >
           {detail ? (
             <>
               <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 bg-white p-5">
@@ -362,7 +377,7 @@ export function SupportWorkbenchPage() {
                   )}
                 </div>
               </header>
-              <div className="flex-1 space-y-5 overflow-auto p-5">
+              <div className="flex-1 space-y-5 overflow-visible p-5 xl:min-h-0 xl:overflow-auto">
                 <CaseProvenanceView
                   value={
                     detail.provenance
@@ -447,8 +462,12 @@ export function SupportWorkbenchPage() {
             </div>
           )}
         </main>
-        <aside className="min-h-0 overflow-y-auto border-l border-slate-200 bg-white">
-          <section className="border-b border-slate-200 p-4">
+        <aside
+          role="region"
+          aria-label="AI 回复助手"
+          className="flex min-h-[680px] flex-col bg-white xl:min-h-0 xl:border-l xl:border-slate-200"
+        >
+          <section className="max-h-[40%] shrink-0 overflow-y-auto border-b border-slate-200 p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="rounded-lg bg-cyan-50 p-2 text-cyan-700">
@@ -513,7 +532,7 @@ export function SupportWorkbenchPage() {
           </section>
           <header
             ref={copilotRef}
-            className="flex items-center justify-between border-b border-slate-200 p-4"
+            className="flex shrink-0 items-center justify-between border-b border-slate-200 p-4"
           >
             <div className="flex items-center gap-3">
               <span className="rounded-xl bg-violet-100 p-2 text-violet-600">
@@ -553,7 +572,10 @@ export function SupportWorkbenchPage() {
               生成
             </Button>
           </header>
-          <div className="p-5">
+          <section
+            aria-label="AI 回复建议正文"
+            className="min-h-0 flex-1 overflow-y-auto p-5"
+          >
             {!suggestion ? (
               <div className="py-20 text-center">
                 <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-50 text-violet-600">
@@ -584,32 +606,80 @@ export function SupportWorkbenchPage() {
                     检测到退款、支付或安全风险，发送前必须人工确认
                   </div>
                 )}
+                {suggestion.resolution && (
+                  <section
+                    aria-label="AI 审核摘要"
+                    className="space-y-2 rounded-xl border border-violet-100 bg-violet-50/60 p-3 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-slate-500">风险</span>
+                      <Badge variant="outline" className="bg-white text-slate-700">
+                        {riskLabels[suggestion.resolution.risk]}
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-[64px_1fr] gap-2 leading-5">
+                      <span className="font-semibold text-slate-500">缺失事实</span>
+                      <span className="line-clamp-2 text-slate-700">
+                        {suggestion.resolution.missingFacts?.slice(0, 2).join("；") || "暂无"}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-[64px_1fr] gap-2 leading-5">
+                      <span className="font-semibold text-slate-500">建议动作</span>
+                      <span className="line-clamp-2 text-slate-700">
+                        {suggestion.resolution.recommendedActions?.slice(0, 2).join("；") || "暂无"}
+                      </span>
+                    </div>
+                  </section>
+                )}
                 <Textarea
+                  aria-label="可编辑的对客回复"
                   value={edited}
                   onChange={(e) => setEdited(e.target.value)}
-                  className="min-h-[150px] resize-none leading-6"
+                  className="h-[180px] min-h-[120px] max-h-[240px] resize-y overflow-y-auto leading-6"
                 />
                 <div>
-                  <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-500">
+                  <button
+                    type="button"
+                    aria-expanded={evidenceOpen}
+                    aria-controls={`suggestion-evidence-${suggestion.id}`}
+                    className="flex w-full items-center gap-2 rounded-lg py-1 text-left text-xs font-semibold text-slate-500 hover:text-slate-700"
+                    onClick={() => setEvidenceOpen((open) => !open)}
+                  >
                     <FileText className="h-4 w-4" />
-                    引用证据 · {suggestion.citations.length}
-                  </p>
-                  {suggestion.citations.map((citation, index) => (
-                    <div
-                      key={index}
-                      className="mb-2 flex gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
-                    >
-                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-blue-100 text-[10px] text-blue-700">
-                        {index + 1}
-                      </span>
-                      <p className="line-clamp-3 text-xs leading-5 text-slate-600">
-                        {citation.content ||
-                          citation.docName ||
-                          `发布版本 ${citation.releaseVersion}`}
-                      </p>
+                    <span className="flex-1">引用证据 · {suggestion.citations.length}</span>
+                    <ChevronDown
+                      className={cn("h-4 w-4 transition-transform", evidenceOpen && "rotate-180")}
+                    />
+                  </button>
+                  {evidenceOpen && (
+                    <div id={`suggestion-evidence-${suggestion.id}`} className="mt-2">
+                      {suggestion.citations.map((citation, index) => (
+                        <div
+                          key={index}
+                          className="mb-2 flex gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3"
+                        >
+                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-blue-100 text-[10px] text-blue-700">
+                            {index + 1}
+                          </span>
+                          <p className="line-clamp-3 text-xs leading-5 text-slate-600">
+                            {citation.content ||
+                              citation.docName ||
+                              `发布版本 ${citation.releaseVersion}`}
+                          </p>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
+              </div>
+            )}
+          </section>
+          {suggestion && (
+            <section
+              aria-label="AI 回复建议操作"
+              className="shrink-0 space-y-2 border-t border-slate-200 bg-white p-4 shadow-[0_-8px_20px_-18px_rgba(15,23,42,0.45)]"
+            >
+              {suggestion.status === "completed" && (
                 <Button
                   className="w-full"
                   disabled={busy}
@@ -629,46 +699,46 @@ export function SupportWorkbenchPage() {
                   <Check className="mr-2 h-4 w-4" />
                   {edited === suggestion.content ? "采纳并发送" : "发送修订版"}
                 </Button>
-                <Button
-                  variant="outline"
-                  className="w-full border-amber-200 text-amber-700"
-                  disabled={busy}
-                  onClick={() =>
-                    void action(
-                      () =>
-                        raiseSupportEscalation(detail!.id, {
-                          category: suggestion.riskFlags?.includes("food_safety")
-                            ? "food_safety"
-                            : suggestion.riskFlags?.includes("refund_review")
-                              ? "refund_exception"
-                              : suggestion.status === "insufficient_evidence"
-                                ? "agent_insufficient_evidence"
-                                : "customer_complaint",
-                          reason:
-                            "需要主管确认高风险处置：" + (suggestion.content || "").slice(0, 120),
-                          riskLevel: suggestion.resolution?.risk === "high" ? "high" : "medium",
-                          aiDiagnosis: suggestion.resolution
-                            ? {
-                                intent: suggestion.resolution.intent,
-                                risk: suggestion.resolution.risk,
-                                terminalState: suggestion.terminalState,
-                                missingFacts: suggestion.resolution.missingFacts
-                              }
-                            : undefined
-                        }),
-                      "已升级主管"
-                    )
-                  }
-                >
-                  <ArrowUpRight className="mr-2 h-4 w-4" />
-                  升级主管
-                </Button>
-                <p className="text-center text-[10px] text-slate-400">
-                  {suggestion.modelId} · {suggestion.promptVersion} · {suggestion.latencyMs}ms
-                </p>
-              </div>
-            )}
-          </div>
+              )}
+              <Button
+                variant="outline"
+                className="w-full border-amber-200 text-amber-700"
+                disabled={busy}
+                onClick={() =>
+                  void action(
+                    () =>
+                      raiseSupportEscalation(detail!.id, {
+                        category: suggestion.riskFlags?.includes("food_safety")
+                          ? "food_safety"
+                          : suggestion.riskFlags?.includes("refund_review")
+                            ? "refund_exception"
+                            : suggestion.status === "insufficient_evidence"
+                              ? "agent_insufficient_evidence"
+                              : "customer_complaint",
+                        reason:
+                          "需要主管确认高风险处置：" + (suggestion.content || "").slice(0, 120),
+                        riskLevel: suggestion.resolution?.risk === "high" ? "high" : "medium",
+                        aiDiagnosis: suggestion.resolution
+                          ? {
+                              intent: suggestion.resolution.intent,
+                              risk: suggestion.resolution.risk,
+                              terminalState: suggestion.terminalState,
+                              missingFacts: suggestion.resolution.missingFacts
+                            }
+                          : undefined
+                      }),
+                    "已升级主管"
+                  )
+                }
+              >
+                <ArrowUpRight className="mr-2 h-4 w-4" />
+                升级主管
+              </Button>
+              <p className="text-center text-[10px] text-slate-400">
+                {suggestion.modelId} · {suggestion.promptVersion} · {suggestion.latencyMs}ms
+              </p>
+            </section>
+          )}
         </aside>
       </section>
     </div>

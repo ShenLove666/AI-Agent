@@ -11,7 +11,6 @@ import {
   ClipboardList,
   Database,
   GitBranch,
-  Github,
   Inbox,
   FlaskConical,
   FileBarChart,
@@ -289,9 +288,6 @@ export function AdminLayout() {
     navigate("/login");
   };
 
-  // Star 计数：GitHub API 未认证时被限流（403）产生控制台噪音，改为静态显示
-  const [starCount] = useState<number | null>(null);
-
   useEffect(() => {
     if (!searchFocused) return;
     const keyword = kbQuery.trim();
@@ -395,13 +391,6 @@ export function AdminLayout() {
   const avatarUrl = user?.avatar?.trim();
   const showAvatar = Boolean(avatarUrl);
   const roleLabel = user?.role === "admin" ? "管理员" : "成员";
-  const starLabel = useMemo(() => {
-    if (starCount === null) return "--";
-    if (starCount < 1000) return String(starCount);
-    const rounded = Math.round((starCount / 1000) * 10) / 10;
-    const text = String(rounded).replace(/\.0$/, "");
-    return `${text}k`;
-  }, [starCount]);
   const isIngestionActive = location.pathname.startsWith("/admin/ingestion");
   const isIntentActive =
     location.pathname.startsWith("/admin/intent-tree") ||
@@ -529,7 +518,7 @@ export function AdminLayout() {
           </div>
         </div>
 
-        <nav className="flex-1 space-y-4 px-2 pb-4">
+        <nav className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-4">
           {menuGroups.map((group) => (
             <div key={group.title} className="space-y-2">
               {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
@@ -665,7 +654,7 @@ export function AdminLayout() {
           ))}
         </nav>
 
-        <div className="admin-sidebar__footer space-y-2">
+        <div className="admin-sidebar__footer shrink-0 space-y-2">
           <button
             type="button"
             className="admin-sidebar__collapse"
@@ -683,13 +672,13 @@ export function AdminLayout() {
 
       <div
         className={cn(
-          "admin-main flex min-h-screen flex-1 flex-col overflow-auto",
+          "admin-main flex min-h-screen min-w-0 flex-1 flex-col overflow-auto",
           isDashboardRoute && "dashboard-scroll-shell"
         )}
       >
         <header className="admin-topbar">
-          <div className="admin-topbar-inner">
-            <div className="flex items-center gap-3">
+          <div className="admin-topbar-inner min-w-0">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               <Button
                 variant="ghost"
                 size="icon"
@@ -699,7 +688,7 @@ export function AdminLayout() {
               >
                 <Menu className="h-5 w-5" />
               </Button>
-              <div className="admin-topbar-search">
+              <div className="admin-topbar-search min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
                   ref={searchInputRef}
@@ -776,7 +765,7 @@ export function AdminLayout() {
                 ) : null}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
                 className="hidden items-center gap-2 sm:inline-flex"
@@ -785,19 +774,6 @@ export function AdminLayout() {
                 <MessageSquare className="h-4 w-4" />
                 返回聊天
               </Button>
-              <a
-                href="https://github.com/nageoffer/ragent"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
-                aria-label="打开 GitHub 仓库"
-              >
-                <Github className="h-4 w-4" />
-                <span className="font-medium">Star</span>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                  {starLabel}
-                </span>
-              </a>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -926,4 +902,3 @@ export function AdminLayout() {
     </div>
   );
 }
-

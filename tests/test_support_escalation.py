@@ -87,6 +87,24 @@ def test_escalation_requires_reason_and_valid_category():
         database.engine.dispose()
 
 
+def test_supervisor_resolves_the_shared_demo_support_owner():
+    database, db, demo_owner, _case = _fixture()
+    try:
+        demo_owner.is_demo = True
+        supervisor = User(
+            username="support-supervisor",
+            password_hash="hash",
+            role="supervisor",
+        )
+        db.add(supervisor)
+        db.commit()
+
+        assert SupportService().owner_for(db, supervisor) == demo_owner.id
+    finally:
+        db.close()
+        database.engine.dispose()
+
+
 def test_supervisor_queue_accept_and_resolve():
     database, db, user, case = _fixture()
     service = SupportService()
@@ -143,7 +161,7 @@ def test_request_more_evidence_keeps_case_escalated():
         raised = service.raise_escalation(
             db, user.id, case.id, user.id, "food_safety", "食品安全需补充材料"
         )
-        resolved = service.resolve_escalation(
+        pending_evidence = service.resolve_escalation(
             db,
             user.id,
             raised["id"],
@@ -151,8 +169,37 @@ def test_request_more_evidence_keeps_case_escalated():
             "request_more_evidence",
             "请补充商品照片与批次",
         )
-        assert resolved["status"] == "resolved"
-        assert resolved["resolution"] == "request_more_evidence"
+        assert pending_evidence["status"] == "accepted"
+        assert pending_evidence["resolution"] == "request_more_evidence"
+        assert pending_evidence["assignedTo"] == user.id
+        assert pending_evidence["resolvedAt"] is None
+        persisted = db.get(SupportCase, case.id)
+        assert persisted is not None
+        assert persisted.status == "escalated"
+    finally:
+        db.close()
+        database.engine.dispose()
+
+
+def test_transfer_specialist_uses_transferred_lifecycle_state():
+    database, db, user, case = _fixture()
+    service = SupportService()
+    try:
+        raised = service.raise_escalation(
+            db, user.id, case.id, user.id, "food_safety", "需要食品安全专员处理"
+        )
+        transferred = service.resolve_escalation(
+            db,
+            user.id,
+            raised["id"],
+            user.id,
+            "transfer_specialist",
+            "已转食品安全专员",
+        )
+
+        assert transferred["status"] == "transferred"
+        assert transferred["resolution"] == "transfer_specialist"
+        assert transferred["resolvedAt"] is not None
         persisted = db.get(SupportCase, case.id)
         assert persisted is not None
         assert persisted.status == "escalated"

@@ -81,12 +81,14 @@ function TraceIdCell({ traceId }: { traceId: string }) {
 
   return (
     <div className="trace-list-trace-id-row">
-      <span className="trace-list-trace-id-text">{traceId}</span>
+      <span className="trace-list-trace-id-text" title={traceId}>
+        {traceId}
+      </span>
       <button
         type="button"
-        className="trace-list-trace-id-copy"
+        className="trace-list-trace-id-copy opacity-100"
         onClick={handleCopy}
-        aria-label="复制 Trace Id"
+        aria-label={`复制 Trace Id ${traceId}`}
       >
         <Copy className="h-3 w-3" />
       </button>
@@ -374,8 +376,13 @@ export function RunsTable({
         ) : runs.length === 0 ? (
           <div className="trace-list-table-empty">暂无链路数据</div>
         ) : (
-          <div className="trace-list-table-wrap">
-            <Table className="trace-list-table">
+          <div
+            className="trace-list-table-wrap trace-list-persistent-scrollbar overflow-x-auto overflow-y-auto"
+            role="region"
+            aria-label="链路运行列表"
+            tabIndex={0}
+          >
+            <Table className="trace-list-table min-w-[1360px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="trace-col-question">用户问题</TableHead>
