@@ -25,7 +25,6 @@ import {
   submitFeedback,
   cancelFeedback,
   generateRecommendedQuestions,
-  regenerateTurn as regenerateTurnRequest
 } from "@/services/chatService";
 import { createStreamResponse } from "@/hooks/useStreamResponse";
 import { storage } from "@/utils/storage";
@@ -363,6 +362,234 @@ export const useChatStore = create<ChatState>((set, get) => {
     }));
   };
 
+  /**
+   * 共享流式链路：发送新消息与重新生成都走这里。
+   * - 建立 SSE 流并实时应用 agent_progress / token / thinking / finish 等事件
+   * - userPlaceholderId 为 sendMessage 的本地 user 占位 id（onMeta 时替换为后端 id）；
+   *   regenerate 场景传 undefined（原 user 消息已是后端 id）
+   */
+  async function runAssistantStream(opts: {
+    payload: Record<string, unknown>;
+    assistantId: string;
+    userPlaceholderId?: string;
+  }) {
+    const { payload, assistantId, userPlaceholderId } = opts;
+    const url = `${API_BASE_URL}/rag/v3/chat`;
+    const token = storage.getToken();
+
+    const handlers = {
+      onMeta: (metaPayload: import("@/types").StreamMetaPayload) => {
+        if (get().streamingMessageId !== assistantId) return;
+        const nextId = metaPayload.conversationId || get().currentSessionId;
+        if (!nextId) return;
+        const lastTime = new Date().toISOString();
+        const existing = get().sessions.find((session) => session.id === nextId);
+        set((state) => ({
+          currentSessionId: nextId,
+          isCreatingNew: false,
+          streamTaskId: metaPayload.taskId,
+          messages: state.messages.map((message) => {
+            if (userPlaceholderId && message.id === userPlaceholderId && metaPayload.userMessageId) {
+              return {
+                ...message,
+                id: String(metaPayload.userMessageId),
+                turnId: metaPayload.turnId ?? undefined
+              };
+            }
+            if (message.id === assistantId) {
+              return { ...message, turnId: metaPayload.turnId ?? undefined };
+            }
+            return message;
+          }),
+          sessions: upsertSession(state.sessions, {
+            id: nextId,
+            title: metaPayload.title || existing?.title || "新对话",
+            lastTime
+          })
+        }));
+        if (get().cancelRequested) {
+          stopTask(metaPayload.taskId).catch(() => null);
+        }
+      },
+      onMessage: (msgPayload: MessageDeltaPayload) => {
+        if (!msgPayload || typeof msgPayload !== "object") return;
+        if (msgPayload.type !== "response") return;
+        get().appendStreamContent(msgPayload.delta);
+      },
+      onThinking: (msgPayload: MessageDeltaPayload) => {
+        if (!msgPayload || typeof msgPayload !== "object") return;
+        if (msgPayload.type !== "think") return;
+        get().appendThinkingContent(msgPayload.delta);
+      },
+      onAgentProgress: (progressPayload: AgentProgressPayload) => {
+        if (get().streamingMessageId !== assistantId) return;
+        if (!progressPayload || typeof progressPayload !== "object") return;
+        handleAgentProgress(progressPayload);
+      },
+      onReject: (msgPayload: MessageDeltaPayload) => {
+        if (!msgPayload || typeof msgPayload !== "object") return;
+        get().appendStreamContent(msgPayload.delta);
+      },
+      onFinish: (finishPayload: CompletionPayload) => {
+        if (get().streamingMessageId !== assistantId) return;
+        if (!finishPayload) return;
+        if (finishPayload.title && get().currentSessionId) {
+          get().updateSessionTitle(get().currentSessionId as string, finishPayload.title);
+        }
+        const currentId = get().currentSessionId;
+        if (currentId) {
+          const lastTime = new Date().toISOString();
+          const existingTitle =
+            get().sessions.find((session) => session.id === currentId)?.title || "新对话";
+          const nextTitle = finishPayload.title || existingTitle;
+          set((state) => ({
+            sessions: upsertSession(state.sessions, {
+              id: currentId,
+              title: nextTitle,
+              lastTime
+            })
+          }));
+        }
+        set((state) => ({
+          messages: state.messages.map((message) =>
+            message.id === state.streamingMessageId
+              ? {
+                  ...message,
+                  id: finishPayload.messageId
+                    ? String(finishPayload.messageId)
+                    : message.id,
+                  status: "done",
+                  isThinking: false,
+                  sources: finishPayload.sources ?? message.sources,
+                  messageStatus: finishPayload.messageStatus ?? "NORMAL",
+                  turnId: finishPayload.turnId ?? message.turnId,
+                  version: finishPayload.version ?? message.version,
+                  thinkingDuration:
+                    message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+                  agentExecutionStatus: "completed",
+                  agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
+                }
+              : message
+          )
+        }));
+      },
+      onCancel: (cancelPayload: CompletionPayload) => {
+        if (get().streamingMessageId !== assistantId) return;
+        if (cancelPayload?.title && get().currentSessionId) {
+          get().updateSessionTitle(get().currentSessionId as string, cancelPayload.title);
+        }
+        set((state) => ({
+          messages: state.messages.map((message) => {
+            if (message.id !== state.streamingMessageId) return message;
+            const nextId = cancelPayload?.messageId
+              ? String(cancelPayload.messageId)
+              : message.id;
+            return {
+              ...message,
+              id: nextId,
+              content: message.content,
+              status: "cancelled",
+              isThinking: false,
+              sources: cancelPayload?.sources ?? message.sources,
+              messageStatus: cancelPayload?.messageStatus ?? "INTERRUPTED",
+              turnId: cancelPayload?.turnId ?? message.turnId,
+              version: cancelPayload?.version ?? message.version,
+              thinkingDuration:
+                message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+              agentSteps: cancelAgentSteps(message.agentSteps),
+              agentExecutionStatus: "cancelled"
+            };
+          }),
+          isStreaming: false,
+          thinkingStartAt: null,
+          streamTaskId: null,
+          streamAbort: null,
+          streamingMessageId: null,
+          cancelRequested: false
+        }));
+      },
+      onDone: () => {
+        if (get().streamingMessageId !== assistantId) return;
+        set({
+          isStreaming: false,
+          thinkingStartAt: null,
+          streamTaskId: null,
+          streamAbort: null,
+          streamingMessageId: null,
+          cancelRequested: false
+        });
+      },
+      onTitle: (titlePayload: { title: string }) => {
+        if (get().streamingMessageId !== assistantId) return;
+        if (titlePayload?.title && get().currentSessionId) {
+          get().updateSessionTitle(get().currentSessionId as string, titlePayload.title);
+        }
+      },
+      onError: (error: Error) => {
+        if (get().streamingMessageId !== assistantId) return;
+        set((state) => ({
+          isStreaming: false,
+          thinkingStartAt: null,
+          streamTaskId: null,
+          streamAbort: null,
+          cancelRequested: false,
+          messages: state.messages.map((message) =>
+            message.id === state.streamingMessageId
+              ? {
+                  ...message,
+                  id: (error as Error & { messageId?: string }).messageId || message.id,
+                  status: "error",
+                  messageStatus: "ERROR",
+                  isThinking: false,
+                  thinkingDuration:
+                    message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+                  agentSteps: failLastRunningStep(message.agentSteps),
+                  agentExecutionStatus: "failed"
+                }
+              : message
+          )
+        }));
+        toast.error(error.message || "生成失败");
+      }
+    };
+
+    const { start, cancel } = createStreamResponse(
+      {
+        url,
+        method: "POST",
+        body: payload,
+        headers: token
+          ? { Authorization: token.startsWith("Bearer ") ? token : `Bearer ${token}` }
+          : undefined,
+        // A failed transport must be resumed explicitly with the same requestId;
+        // blind GET retries can start duplicate model generations.
+        retryCount: 0
+      },
+      handlers
+    );
+
+    set({ streamAbort: cancel });
+
+    try {
+      await start();
+    } catch (error) {
+      if ((error as Error).name === "AbortError") {
+        return;
+      }
+      handlers.onError?.(error as Error);
+    } finally {
+      if (get().streamingMessageId === assistantId) {
+        set({
+          isStreaming: false,
+          streamTaskId: null,
+          streamAbort: null,
+          streamingMessageId: null,
+          cancelRequested: false
+        });
+      }
+    }
+  }
+
   return {
   sessions: [],
   currentSessionId: null,
@@ -572,236 +799,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       deepThinking: deepThinkingEnabled ? true : undefined,
       knowledgeBaseIds: knowledgeBaseIds.map(Number)
     };
-    const url = `${API_BASE_URL}/rag/v3/chat`;
-    const token = storage.getToken();
-
-    const handlers = {
-      onMeta: (payload: import("@/types").StreamMetaPayload) => {
-        if (get().streamingMessageId !== assistantId) return;
-        const nextId = payload.conversationId || get().currentSessionId;
-        if (!nextId) return;
-        const lastTime = new Date().toISOString();
-        const existing = get().sessions.find((session) => session.id === nextId);
-        set((state) => ({
-          currentSessionId: nextId,
-          isCreatingNew: false,
-          streamTaskId: payload.taskId,
-          messages: state.messages.map((message) => {
-            if (message.id === userMessage.id && payload.userMessageId) {
-              return {
-                ...message,
-                id: String(payload.userMessageId),
-                turnId: payload.turnId ?? undefined
-              };
-            }
-            if (message.id === assistantId) {
-              return { ...message, turnId: payload.turnId ?? undefined };
-            }
-            return message;
-          }),
-          sessions: upsertSession(state.sessions, {
-            id: nextId,
-            title: payload.title || existing?.title || "新对话",
-            lastTime
-          })
-        }));
-        if (get().cancelRequested) {
-          stopTask(payload.taskId).catch(() => null);
-        }
-      },
-      onMessage: (payload: MessageDeltaPayload) => {
-        if (!payload || typeof payload !== "object") return;
-        if (payload.type !== "response") return;
-        get().appendStreamContent(payload.delta);
-      },
-      onThinking: (payload: MessageDeltaPayload) => {
-        if (!payload || typeof payload !== "object") return;
-        if (payload.type !== "think") return;
-        get().appendThinkingContent(payload.delta);
-      },
-      onAgentProgress: (payload: AgentProgressPayload) => {
-        if (get().streamingMessageId !== assistantId) return;
-        if (!payload || typeof payload !== "object") return;
-        handleAgentProgress(payload);
-      },
-      onReject: (payload: MessageDeltaPayload) => {
-        if (!payload || typeof payload !== "object") return;
-        get().appendStreamContent(payload.delta);
-      },
-      onFinish: (payload: CompletionPayload) => {
-        if (get().streamingMessageId !== assistantId) return;
-        if (!payload) return;
-        if (payload.title && get().currentSessionId) {
-          get().updateSessionTitle(get().currentSessionId as string, payload.title);
-        }
-        const currentId = get().currentSessionId;
-        if (currentId) {
-          const lastTime = new Date().toISOString();
-          const existingTitle =
-            get().sessions.find((session) => session.id === currentId)?.title || "新对话";
-          const nextTitle = payload.title || existingTitle;
-          set((state) => ({
-            sessions: upsertSession(state.sessions, {
-              id: currentId,
-              title: nextTitle,
-              lastTime
-            })
-          }));
-        }
-        if (payload.messageId) {
-          set((state) => ({
-            messages: state.messages.map((message) =>
-              message.id === state.streamingMessageId
-                ? {
-                    ...message,
-                    id: String(payload.messageId),
-                    status: "done",
-                    isThinking: false,
-                    sources: payload.sources ?? message.sources,
-                    messageStatus: payload.messageStatus ?? "NORMAL",
-                    turnId: payload.turnId ?? message.turnId,
-                    version: payload.version ?? message.version,
-                    thinkingDuration:
-                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
-                    agentExecutionStatus: "completed",
-                    agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
-                  }
-                : message
-            )
-          }));
-        } else {
-          set((state) => ({
-            messages: state.messages.map((message) =>
-              message.id === state.streamingMessageId
-                ? {
-                    ...message,
-                    status: "done",
-                    isThinking: false,
-                    sources: payload.sources ?? message.sources,
-                    messageStatus: payload.messageStatus ?? "NORMAL",
-                    thinkingDuration:
-                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
-                    agentExecutionStatus: "completed",
-                    agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
-                  }
-                : message
-            )
-          }));
-        }
-      },
-      onCancel: (payload: CompletionPayload) => {
-        if (get().streamingMessageId !== assistantId) return;
-        if (payload?.title && get().currentSessionId) {
-          get().updateSessionTitle(get().currentSessionId as string, payload.title);
-        }
-        set((state) => ({
-          messages: state.messages.map((message) => {
-            if (message.id !== state.streamingMessageId) return message;
-            const nextId = payload?.messageId ? String(payload.messageId) : message.id;
-            return {
-              ...message,
-              id: nextId,
-              content: message.content,
-              status: "cancelled",
-              isThinking: false,
-              sources: payload?.sources ?? message.sources,
-              messageStatus: payload?.messageStatus ?? "INTERRUPTED",
-              turnId: payload?.turnId ?? message.turnId,
-              version: payload?.version ?? message.version,
-              thinkingDuration:
-                message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
-              agentSteps: cancelAgentSteps(message.agentSteps),
-              agentExecutionStatus: "cancelled"
-            };
-          }),
-          isStreaming: false,
-          thinkingStartAt: null,
-          streamTaskId: null,
-          streamAbort: null,
-          streamingMessageId: null,
-          cancelRequested: false
-        }));
-      },
-      onDone: () => {
-        if (get().streamingMessageId !== assistantId) return;
-        set({
-          isStreaming: false,
-          thinkingStartAt: null,
-          streamTaskId: null,
-          streamAbort: null,
-          streamingMessageId: null,
-          cancelRequested: false
-        });
-      },
-      onTitle: (payload: { title: string }) => {
-        if (get().streamingMessageId !== assistantId) return;
-        if (payload?.title && get().currentSessionId) {
-          get().updateSessionTitle(get().currentSessionId as string, payload.title);
-        }
-      },
-      onError: (error: Error) => {
-        if (get().streamingMessageId !== assistantId) return;
-        set((state) => ({
-          isStreaming: false,
-          thinkingStartAt: null,
-          streamTaskId: null,
-          streamAbort: null,
-          cancelRequested: false,
-          messages: state.messages.map((message) =>
-            message.id === state.streamingMessageId
-              ? {
-                  ...message,
-                  id: (error as Error & { messageId?: string }).messageId || message.id,
-                  status: "error",
-                  messageStatus: "ERROR",
-                  isThinking: false,
-                  thinkingDuration:
-                    message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
-                  agentSteps: failLastRunningStep(message.agentSteps),
-                  agentExecutionStatus: "failed"
-                }
-              : message
-          )
-        }));
-        toast.error(error.message || "生成失败");
-      }
-    };
-
-    const { start, cancel } = createStreamResponse(
-      {
-        url,
-        method: "POST",
-        body: streamPayload,
-        headers: token
-          ? { Authorization: token.startsWith("Bearer ") ? token : `Bearer ${token}` }
-          : undefined,
-        // A failed transport must be resumed explicitly with the same requestId;
-        // blind GET retries can start duplicate model generations.
-        retryCount: 0
-      },
-      handlers
-    );
-
-    set({ streamAbort: cancel });
-
-    try {
-      await start();
-    } catch (error) {
-      if ((error as Error).name === "AbortError") {
-        return;
-      }
-      handlers.onError?.(error as Error);
-    } finally {
-      if (get().streamingMessageId === assistantId) {
-        set({
-          isStreaming: false,
-          streamTaskId: null,
-          streamAbort: null,
-          streamingMessageId: null,
-          cancelRequested: false
-        });
-      }
-    }
+    await runAssistantStream({
+      payload: streamPayload,
+      assistantId,
+      userPlaceholderId: userMessage.id
+    });
   },
   cancelGeneration: () => {
     const { isStreaming, streamTaskId, streamingMessageId } = get();
@@ -968,19 +970,68 @@ export const useChatStore = create<ChatState>((set, get) => {
   regenerateTurn: async (turnId) => {
     const sessionId = get().currentSessionId;
     if (!sessionId || get().isStreaming || get().isLoading) return;
-    set({ isLoading: true });
-    try {
-      await regenerateTurnRequest(turnId);
-      const data = await listMessages(sessionId);
-      if (get().currentSessionId === sessionId) {
-        set({ messages: mapConversationMessages(data) });
-      }
-      toast.success("已重新生成答案");
-    } catch (error) {
-      toast.error((error as Error).message || "重新生成失败");
-    } finally {
-      set({ isLoading: false });
+    const state = get();
+    // 找到该轮次的 assistant 消息与原始问题
+    const targetIndex = state.messages.findIndex(
+      (message) => message.turnId === turnId && message.role === "assistant"
+    );
+    if (targetIndex < 0) {
+      toast.error("未找到可重新生成的回答");
+      return;
     }
+    const userMsg = [...state.messages]
+      .reverse()
+      .find((message) => message.turnId === turnId && message.role === "user");
+    const question = userMsg?.content?.trim() ?? "";
+    if (!question) {
+      toast.error("未找到原问题");
+      return;
+    }
+    const deepThinkingEnabled = state.deepThinkingEnabled;
+    const knowledgeBaseIds = state.knowledgeBaseIds;
+    const inputFocusKey = Date.now();
+    const requestId =
+      globalThis.crypto?.randomUUID?.() ||
+      `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+    const assistantId = `assistant-${Date.now()}`;
+    const newAssistant: Message = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      thinking: deepThinkingEnabled ? "" : undefined,
+      isDeepThinking: deepThinkingEnabled,
+      isThinking: deepThinkingEnabled,
+      status: "streaming",
+      feedback: null,
+      agentSteps: [],
+      agentExecutionStatus: "running",
+      createdAt: new Date().toISOString()
+    };
+    // 用新的流式占位替换原回答，复用同一消息位置
+    set((state) => ({
+      messages: state.messages.map((message, index) =>
+        index === targetIndex ? newAssistant : message
+      ),
+      isStreaming: true,
+      streamingMessageId: assistantId,
+      thinkingStartAt: null,
+      inputFocusKey,
+      streamTaskId: null,
+      cancelRequested: false
+    }));
+
+    await runAssistantStream({
+      payload: {
+        question,
+        conversationId: sessionId,
+        turnId,
+        regenerate: true,
+        requestId,
+        deepThinking: deepThinkingEnabled ? true : undefined,
+        knowledgeBaseIds: knowledgeBaseIds.map(Number)
+      },
+      assistantId
+    });
   }
   };
 });
