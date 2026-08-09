@@ -148,18 +148,23 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       return () => window.clearTimeout(timer);
     }
     if (wasStreaming && !isStreaming) {
-      // 流式结束：用户未主动滚离时强制贴底展示完整回答（含 Timeline 折叠后的高度变化）；
-      // 用户滚离过（查看历史）则不抢滚动
-      if (!userScrolledAwayRef.current) {
-        scrollToBottom();
-        const timer = window.setTimeout(scrollToBottom, 120);
-        const lateTimer = window.setTimeout(scrollToBottom, 360);
-        return () => {
-          window.clearTimeout(timer);
-          window.clearTimeout(lateTimer);
-        };
-      }
-      return;
+      // 流式结束：若此刻用户仍接近底部则贴底展示完整回答。
+      // 用多阶段重试覆盖 Timeline 折叠等后续布局变化（折叠会改变消息高度与滚动位置），
+      // 用户主动滚离（不接近底部）时保持位置不抢。
+      const tryStick = () => {
+        if (isNearBottomRef.current()) {
+          scrollToBottom();
+        }
+      };
+      tryStick();
+      const timer = window.setTimeout(tryStick, 120);
+      const lateTimer = window.setTimeout(tryStick, 360);
+      const settleTimer = window.setTimeout(tryStick, 900);
+      return () => {
+        window.clearTimeout(timer);
+        window.clearTimeout(lateTimer);
+        window.clearTimeout(settleTimer);
+      };
     }
     return;
   }, [isStreaming, stickToBottom, scrollToBottom]);

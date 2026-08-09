@@ -53,7 +53,8 @@ describe("MessageList stream-end scroll behavior", () => {
     expect(scroller).not.toBeNull();
     Object.defineProperty(scroller!, "scrollHeight", { value: 800, configurable: true, writable: true });
     Object.defineProperty(scroller!, "clientHeight", { value: 300, configurable: true, writable: true });
-    Object.defineProperty(scroller!, "scrollTop", { value: 0, configurable: true, writable: true });
+    // 用户在底部（距底 0）
+    Object.defineProperty(scroller!, "scrollTop", { value: 500, configurable: true, writable: true });
 
     rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
 
