@@ -182,14 +182,14 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
         if value.query:
             query = query.where(or_(left.name.ilike(f"%{value.query}%"), right.name.ilike(f"%{value.query}%")))
         rows = context.db.execute(query.order_by(AssociationRule.lift.desc()).limit(value.limit)).all()
-        return [ToolEvidence(id=f"association:{rule.id}", content=f"{left_name} → {right_name}：共同出现 {rule.cooccurrence_count} 次，支持度 {rule.support:.3f}，置信度 {rule.confidence:.3f}，提升度 {rule.lift:.2f}。", source="commerce_association_rules", provenance="derived", metadata={"rule_id": rule.id, "lift": rule.lift, "support": rule.support}) for rule, left_name, right_name in rows]
+        return [ToolEvidence(id=f"association:{rule.id}", content=f"{left_name} → {right_name}：共同出现 {rule.cooccurrence_count} 次，支持度 {rule.support:.3f}，置信度 {rule.confidence:.3f}，提升度 {rule.lift:.2f}。", source="commerce_association_rules", provenance="derived", metadata={"factType": "association_rule", "rule_id": rule.id, "lift": rule.lift, "support": rule.support}) for rule, left_name, right_name in rows]
 
     async def product_metrics(context: ToolContext, value: ProductMetricsInput) -> list[ToolEvidence]:
         query = select(Product.id, Product.name, Product.category, func.count(BasketItem.id), func.coalesce(func.sum(BasketItem.quantity), 0)).outerjoin(BasketItem, BasketItem.product_id == Product.id).where(Product.owner_id == context.owner_id).group_by(Product.id, Product.name, Product.category)
         if value.query:
             query = query.where(or_(Product.name.ilike(f"%{value.query}%"), Product.category.ilike(f"%{value.query}%")))
         rows = context.db.execute(query.order_by(func.count(BasketItem.id).desc()).limit(value.limit)).all()
-        return [ToolEvidence(id=f"product:{product_id}", content=f"商品 {name}（{category}）：出现在 {line_count} 条交易明细中，记录数量合计 {quantity}。", source="commerce_product_metrics", provenance="observed+derived", metadata={"product_id": product_id, "line_count": line_count}) for product_id, name, category, line_count, quantity in rows]
+        return [ToolEvidence(id=f"product:{product_id}", content=f"商品 {name}（{category}）：出现在 {line_count} 条交易明细中，记录数量合计 {quantity}。", source="commerce_product_metrics", provenance="observed+derived", metadata={"factType": "product_metrics", "product_id": product_id, "line_count": line_count}) for product_id, name, category, line_count, quantity in rows]
 
     async def support_cases(context: ToolContext, value: SupportSearchInput) -> list[ToolEvidence]:
         query = select(SupportCase).where(SupportCase.owner_id == context.owner_id)

@@ -24,6 +24,8 @@ export interface ConversationMessageVO {
   turnId?: number | null;
   version?: number | null;
   answerVersions?: AnswerVersion[];
+  /** 后端持久化的 Agent 执行记录（string 或已解析对象；老消息可能缺失/null） */
+  agentExecutionJson?: unknown;
 }
 
 export async function listSessions(): Promise<ConversationVO[]> {
@@ -77,6 +79,18 @@ export async function listMessages(conversationId: string): Promise<Conversation
       createTime: row.createdAt as string,
       turnId: typeof row.turnId === "number" ? row.turnId : null,
       version: typeof row.version === "number" ? row.version : null,
+      // 兼容 string 与已解析对象两种形态；解析失败或缺失则保持 null（前端优雅降级）
+      agentExecutionJson: (() => {
+        const raw = row.agent_execution_json ?? row.agentExecutionJson;
+        if (typeof raw === "string") {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        }
+        return raw && typeof raw === "object" ? raw : null;
+      })(),
       answerVersions: Array.isArray(row.answerVersions)
         ? (row.answerVersions as Array<Record<string, unknown>>).map((version) => ({
             id: String(version.id),

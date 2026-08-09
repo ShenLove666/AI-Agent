@@ -1,6 +1,7 @@
 import * as React from "react";
 import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
 
+import { AgentExecutionTimeline } from "@/components/chat/AgentExecutionTimeline";
 import { FeedbackButtons } from "@/components/chat/FeedbackButtons";
 import { MarkdownRenderer } from "@/components/chat/MarkdownRenderer";
 import { RecommendedQuestions } from "@/components/chat/RecommendedQuestions";
@@ -94,6 +95,15 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
             AI 辅助
           </span>
         </div>
+        <AgentExecutionTimeline
+          steps={renderedMessage.agentSteps}
+          status={
+            renderedMessage.agentExecutionStatus ??
+            (renderedMessage.status === "streaming" ? "running" : "completed")
+          }
+          summary={renderedMessage.agentExecutionSummary}
+          initialExpanded={renderedMessage.status === "streaming"}
+        />
         {isThinking ? (
           <ThinkingIndicator content={renderedMessage.thinking} duration={renderedMessage.thinkingDuration} />
         ) : null}

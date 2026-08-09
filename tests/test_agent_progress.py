@@ -1,0 +1,487 @@
+"""Agent 执行进度（AgentProgressEvent）与 SSE 实时输出的回归测试。
+
+覆盖：
+1. agentic.run(progress_sink=...) 的事件顺序（planning → tool → review）
+2. /api/v1/rag/v3/chat SSE 中 agent_progress 先于任何 message(token) 输出
+3. intent 回归：搭配推荐类问题不再误判 policy_lookup
+4. 0-result replan 不得仅提高 min_lift 重复调用同一工具
+5. progress 事件不含 rationale / 内部英文工具名 / 参数原文
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import httpx
+
+import app.application_core  # noqa: F401  (注册全部 ORM 模型)
+from app.framework.database import Database
+from app.framework.migrations import upgrade_database
+from app.infra_ai.contracts import ModelStreamChunk
+from app.modules.commerce.models import AssociationRule, Basket, BasketItem, Product
+from app.modules.rag.agentic import AgenticRagCoordinator
+from app.modules.users.models import User
+
+
+class _CommercePlanner:
+    """固定返回商品关联 + 商品指标两个工具的模型规划器。"""
+
+    async def complete(self, _request):
+        return (
+            '{"mode":"research","calls":['
+            '{"name":"commerce.search_association_rules","arguments":{"query":"牛肉","min_lift":1.0}},'
+            '{"name":"commerce.get_product_metrics","arguments":{"query":"牛肉"}}'
+            '],"rationale":"查询牛肉的搭配与经营数据"}'
+        )
+
+
+class _StreamRouter:
+    async def complete(self, request):
+        return "这是根据证据生成的测试回答。"
+
+    async def stream(self, request, cancel_event=None):
+        yield ModelStreamChunk("response", "这是根据证据生成的测试回答。")
+
+
+def _seed_commerce(db, owner_id: int) -> None:
+    """给 owner 构造 牛肉/根茎类蔬菜 + 关联规则 + 交易明细。"""
+    import_id = 1
+    beef = Product(owner_id=owner_id, source_key="beef", name="牛肉", category="肉类")
+    veg = Product(
+        owner_id=owner_id, source_key="veg", name="根茎类蔬菜", category="果蔬"
+    )
+    db.add_all([beef, veg])
+    db.flush()
+    for index in range(3):
+        basket = Basket(
+            owner_id=owner_id,
+            import_id=import_id,
+            source_basket_key=f"basket-{index}",
+        )
+        db.add(basket)
+        db.flush()
+        db.add(
+            BasketItem(
+                basket_id=basket.id,
+                product_id=beef.id,
+                quantity=1,
+                source_row_key=f"beef-{index}",
+            )
+        )
+        db.add(
+            BasketItem(
+                basket_id=basket.id,
+                product_id=veg.id,
+                quantity=1,
+                source_row_key=f"veg-{index}",
+            )
+        )
+    db.add(
+        AssociationRule(
+            owner_id=owner_id,
+            import_id=import_id,
+            antecedent_product_id=beef.id,
+            consequent_product_id=veg.id,
+            cooccurrence_count=3,
+            support=1.0,
+            confidence=1.0,
+            lift=1.5,
+            fingerprint="a" * 64,
+        )
+    )
+    db.commit()
+
+
+def _parse_sse(text: str) -> list[dict]:
+    parsed = []
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        event_name = None
+        data = None
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event_name = line[len("event: "):]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: "):])
+        parsed.append({"event": event_name, "data": data})
+    return parsed
+
+
+def test_agentic_run_emits_progress_event_sequence(tmp_path: Path):
+    async def scenario():
+        database = Database(f"sqlite:///{tmp_path / 'progress-agent.db'}")
+        upgrade_database(database)
+        coordinator = AgenticRagCoordinator(_CommercePlanner(), None, max_steps=2)
+        with database.session_factory() as db:
+            owner = User(username="progress-owner", password_hash="hash")
+            db.add(owner)
+            db.flush()
+            _seed_commerce(db, owner.id)
+            events: list[dict] = []
+
+            async def sink(event):
+                events.append(event)
+
+            result = await coordinator.run(
+                db,
+                user_id=owner.id,
+                question="牛肉和什么商品适合搭配推荐？",
+                progress_sink=sink,
+            )
+
+        assert result.terminal_state == "grounded"
+        phases = [(item["phase"], item["status"]) for item in events]
+        # 1) planning running 最先
+        assert phases[0] == ("planning", "running")
+        # 2) planning completed 先于 tool running
+        assert phases.index(("planning", "completed")) < phases.index(
+            ("tool", "running")
+        )
+        # 3) tool 完成后再 review
+        assert phases.index(("review", "running")) > phases.index(
+            ("tool", "completed")
+        )
+        # 4) review completed 是最后一个 agent 事件
+        assert phases.index(("review", "completed")) == len(phases) - 1
+        # seq 严格递增
+        seqs = [item["seq"] for item in events]
+        assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+        # 工具事件的中文展示
+        first_tool = next(
+            item
+            for item in events
+            if item["phase"] == "tool" and item["status"] == "running"
+        )
+        assert first_tool["title"] == "商品关联分析"
+        assert first_tool["tool"]["label"] == "商品关联分析"
+        assert first_tool["detail"] == "牛肉"
+        completed_tool = next(
+            item
+            for item in events
+            if item["phase"] == "tool" and item["status"] == "completed"
+        )
+        assert completed_tool["tool"]["evidenceCount"] == 1
+        assert completed_tool["detail"] == "找到 1 条可用数据"
+        review_completed = events[-1]
+        assert review_completed["detail"] == "已核验 2 条证据"
+        assert review_completed["metrics"]["evidenceCount"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_sse_stream_emits_agent_progress_before_tokens():
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/progress-sse.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.application import create_app
+
+            app = create_app()
+            app.state.container.chat.model_router = _StreamRouter()
+            app.state.container.agentic.model_router = _CommercePlanner()
+            transport = httpx.ASGITransport(app=app)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    await client.post(
+                        "/api/v1/auth/register",
+                        json={
+                            "username": "progress-user",
+                            "password": "password123",
+                        },
+                    )
+                    login = await client.post(
+                        "/api/v1/auth/login",
+                        json={"username": "progress-user", "password": "password123"},
+                    )
+                    headers = {
+                        "Authorization": f"Bearer {login.json()['data']['access_token']}"
+                    }
+                    from app.modules.users.repository import UserRepository
+
+                    with app.state.container.database.session_factory() as db:
+                        user = UserRepository().get_by_username(db, "progress-user")
+                        _seed_commerce(db, user.id)
+
+                    response = await client.post(
+                        "/api/v1/rag/v3/chat",
+                        json={
+                            "question": "牛肉和什么商品适合搭配推荐？",
+                            "requestId": "request-progress-sse-001",
+                        },
+                        headers=headers,
+                    )
+                    assert response.status_code == 200
+                    parsed = _parse_sse(response.text)
+                    progress = [
+                        item for item in parsed if item["event"] == "agent_progress"
+                    ]
+                    messages = [item for item in parsed if item["event"] == "message"]
+                    assert progress and messages
+                    # 1) 第一个 agent_progress 是 planning running，且先于任何 token
+                    first = progress[0]["data"]
+                    assert first["phase"] == "planning"
+                    assert first["status"] == "running"
+                    assert "taskId" in first
+                    assert parsed.index(progress[0]) < parsed.index(messages[0])
+                    # 2) planning completed 先于 tool running
+                    planning_completed = next(
+                        item
+                        for item in progress
+                        if item["data"]["phase"] == "planning"
+                        and item["data"]["status"] == "completed"
+                    )
+                    tool_running = next(
+                        item
+                        for item in progress
+                        if item["data"]["phase"] == "tool"
+                        and item["data"]["status"] == "running"
+                    )
+                    assert parsed.index(planning_completed) < parsed.index(
+                        tool_running
+                    )
+                    # 3) seq 全流唯一递增（prepare 与 generation 共享计数器）
+                    seqs = [item["data"]["seq"] for item in progress]
+                    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+                    # 4) 结束事件完整
+                    assert parsed[-1]["event"] == "done"
+                    assert any(
+                        item["event"] == "agent_progress"
+                        and item["data"]["phase"] == "complete"
+                        for item in parsed
+                    )
+
+                    # 5) assistant 消息持久化了 sanitized 执行摘要
+                    from sqlalchemy import select
+
+                    from app.modules.conversations.models import Message
+
+                    with app.state.container.database.session_factory() as db:
+                        latest = db.scalar(
+                            select(Message)
+                            .where(Message.role == "assistant")
+                            .order_by(Message.id.desc())
+                        )
+                        assert latest is not None
+                        assert latest.agent_execution_json is not None
+                        payload = json.loads(latest.agent_execution_json)
+                        assert payload["summary"]["planCount"] == 1
+                        assert payload["summary"]["toolCallCount"] == 2
+                        assert payload["summary"]["evidenceCount"] == 2
+                        assert payload["summary"]["replanCount"] == 0
+                        assert payload["summary"]["durationMs"] >= 0
+                        for step in payload["steps"]:
+                            tool = step.get("tool") or {}
+                            assert "argumentsSummary" not in tool
+                            assert "name" not in tool
+                            assert "arguments" not in step
+
+    asyncio.run(scenario())
+
+
+def test_intent_requirements_commerce_beats_policy_lookup():
+    coordinator = AgenticRagCoordinator(None, None)
+    # 「依据」单独出现不触发 policy_lookup；商品/搭配/推荐 → commerce
+    intent, required, risk = coordinator._intent_requirements(
+        "牛肉和什么商品适合搭配推荐？有什么依据？"
+    )
+    assert intent == "commerce_analysis"
+    assert "association_rule" in required
+    assert risk == "low"
+    # 明确政策框架词 + 依据 → 仍为 policy_lookup
+    intent2, required2, risk2 = coordinator._intent_requirements(
+        "退货有什么平台规定和法律依据？"
+    )
+    assert intent2 == "policy_lookup"
+    assert required2 == {"policy"}
+    assert risk2 == "medium"
+    # 高风险售后问题不被 commerce 分支吞掉
+    intent3, _, risk3 = coordinator._intent_requirements(
+        "鲜活商品没有质量问题，可以按七日无理由退款吗？"
+    )
+    assert intent3 == "refund_policy"
+    assert risk3 == "high"
+
+
+def test_zero_result_replan_does_not_just_raise_min_lift(tmp_path: Path):
+    async def scenario():
+        # 1) _fallback_decision：已用工具被排除，第二轮换工具而非提高阈值
+        coordinator = AgenticRagCoordinator(None, None)
+        second = coordinator._fallback_decision(
+            "牛肉和什么商品适合搭配推荐？",
+            [
+                {
+                    "mode": "research",
+                    "calls": [
+                        {
+                            "name": "commerce.search_association_rules",
+                            "arguments": {"query": "牛肉", "min_lift": 1.0},
+                        },
+                        {
+                            "name": "commerce.get_product_metrics",
+                            "arguments": {"query": "牛肉"},
+                        },
+                    ],
+                }
+            ],
+            "retry: 当前计划没有获得可用证据",
+        )
+        assert second.mode == "research"
+        assert all(
+            call.name != "commerce.search_association_rules" for call in second.calls
+        )
+        assert all(
+            float(call.arguments.get("min_lift", 1.0)) <= 1.0 for call in second.calls
+        )
+
+        # 2) 模型路径：planner system prompt 必须包含 0-result 重规划约束
+        class _RecordingRouter:
+            def __init__(self):
+                self.last_request = None
+
+            async def complete(self, request):
+                self.last_request = request
+                return (
+                    '{"mode":"research","calls":[{"name":"commerce.search_association_rules",'
+                    '"arguments":{"query":"牛肉","min_lift":3.0}}],"rationale":"提高提升度"}'
+                )
+
+        router = _RecordingRouter()
+        model_coordinator = AgenticRagCoordinator(router, None)
+        decision = await model_coordinator._decide(
+            {
+                "question": "牛肉和什么商品适合搭配推荐？",
+                "user_id": 1,
+                "knowledge_base_ids": (),
+                "db": None,
+                "results": [],
+                "plan_count": 1,
+                "tool_calls": 1,
+                "plan_history": [
+                    {
+                        "mode": "research",
+                        "calls": [
+                            {
+                                "name": "commerce.search_association_rules",
+                                "arguments": {"query": "牛肉", "min_lift": 1.0},
+                            }
+                        ],
+                    }
+                ],
+                "tool_errors": [],
+                "steps": [],
+                "review_feedback": "retry: 当前计划没有获得可用证据",
+            }
+        )
+        assert decision.runtime_mode == "model_backed"
+        assert (
+            "禁止仅通过提高 min_lift、min_confidence、threshold 等过滤条件重复调用同一工具"
+            in router.last_request.messages[0].content
+        )
+
+        # 3) 集成：无任何数据 → 0 结果 → replan 后第二轮换工具
+        database = Database(f"sqlite:///{tmp_path / 'zero-replan.db'}")
+        upgrade_database(database)
+        with database.session_factory() as db:
+            owner = User(username="zero-owner", password_hash="hash")
+            db.add(owner)
+            db.commit()
+            events: list[dict] = []
+
+            async def sink(event):
+                events.append(event)
+
+            result = await AgenticRagCoordinator(None, None, max_steps=2).run(
+                db,
+                user_id=owner.id,
+                question="牛肉和什么商品适合搭配推荐？",
+                progress_sink=sink,
+            )
+            planner_steps = [
+                step for step in result.steps if step["agent"] == "planner"
+            ]
+            assert len(planner_steps) == 2
+            first_calls = planner_steps[0]["calls"]
+            second_calls = planner_steps[1]["calls"]
+            assert first_calls != second_calls
+            assert all(
+                call["name"] != "commerce.search_association_rules"
+                for call in second_calls
+            )
+            assert all(
+                float(call["arguments"].get("min_lift", 1.0)) <= 1.0
+                for call in second_calls
+            )
+            assert result.terminal_state == "escalated"
+            phases = [(item["phase"], item["status"]) for item in events]
+            assert ("replan", "running") in phases
+            assert ("review", "warning") in phases
+
+    asyncio.run(scenario())
+
+
+def test_progress_events_do_not_leak_internal_text(tmp_path: Path):
+    async def scenario():
+        database = Database(f"sqlite:///{tmp_path / 'sanitized.db'}")
+        upgrade_database(database)
+        coordinator = AgenticRagCoordinator(_CommercePlanner(), None, max_steps=2)
+        with database.session_factory() as db:
+            owner = User(username="sanitized-owner", password_hash="hash")
+            db.add(owner)
+            db.flush()
+            _seed_commerce(db, owner.id)
+            events: list[dict] = []
+
+            async def sink(event):
+                events.append(event)
+
+            await coordinator.run(
+                db,
+                user_id=owner.id,
+                question="牛肉和什么商品适合搭配推荐？",
+                progress_sink=sink,
+            )
+
+        assert events
+        internal_tokens = (
+            "commerce.",
+            "support.",
+            "knowledge.",
+            "search_association_rules",
+            "get_product_metrics",
+            "association_rule",
+            "product_metrics",
+            "rationale",
+            "calls",
+        )
+        for event in events:
+            tool = event.get("tool") or {}
+            display_text = " ".join(
+                filter(
+                    None,
+                    [
+                        event.get("title"),
+                        event.get("detail"),
+                        tool.get("argumentsSummary"),
+                    ],
+                )
+            )
+            for token in internal_tokens:
+                assert token not in display_text, (token, display_text)
+            # 不输出完整 JSON arguments
+            assert "{" not in display_text and '"' not in display_text
+            # 工具名只出现在 tool.name（程序字段），label 必须是中文
+            if tool:
+                assert tool["label"]
+                assert tool["label"] == event["title"]
+            # 事件里不存在 planner rationale 字段
+            assert "rationale" not in event
+
+    asyncio.run(scenario())

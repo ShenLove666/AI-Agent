@@ -1,4 +1,9 @@
-import type { CompletionPayload, MessageDeltaPayload, StreamMetaPayload } from "@/types";
+import type {
+  AgentProgressPayload,
+  CompletionPayload,
+  MessageDeltaPayload,
+  StreamMetaPayload
+} from "@/types";
 import { storage } from "@/utils/storage";
 import { ApiError } from "@/services/ApiError";
 
@@ -6,6 +11,7 @@ export interface StreamHandlers {
   onMeta?: (payload: StreamMetaPayload) => void;
   onMessage?: (payload: MessageDeltaPayload) => void;
   onThinking?: (payload: MessageDeltaPayload) => void;
+  onAgentProgress?: (payload: AgentProgressPayload) => void;
   onFinish?: (payload: CompletionPayload) => void;
   onDone?: () => void;
   onCancel?: (payload: CompletionPayload) => void;
@@ -57,6 +63,9 @@ async function readSseStream(response: Response, handlers: StreamHandlers, signa
     switch (eventName) {
       case "meta":
         handlers.onMeta?.(payload as StreamMetaPayload);
+        break;
+      case "agent_progress":
+        handlers.onAgentProgress?.(payload as AgentProgressPayload);
         break;
       case "message":
         {

@@ -71,6 +71,9 @@ class Message(Base):
     )
     recommended_questions_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Agent 执行摘要（JSON 文本，可空）：由迁移 0010 追加在表末尾，
+    # 需保持为模型最后一个字段以匹配 SQLite ALTER TABLE 的列顺序。
+    agent_execution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ChatRequestRun(Base):

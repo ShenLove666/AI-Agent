@@ -2,6 +2,11 @@ import { create } from "zustand";
 import { toast } from "sonner";
 
 import type {
+  AgentExecutionStep,
+  AgentExecutionSummary,
+  AgentProgressPayload,
+  AgentProgressPhase,
+  AgentProgressStatus,
   CompletionPayload,
   FeedbackValue,
   Message,
@@ -77,6 +82,166 @@ function mapPersistedMessageStatus(status?: Message["messageStatus"] | null): Me
   return "done";
 }
 
+const AGENT_PROGRESS_PHASES: AgentProgressPhase[] = [
+  "rewrite",
+  "planning",
+  "tool",
+  "review",
+  "replan",
+  "generation",
+  "complete"
+];
+
+const AGENT_PROGRESS_STATUSES: AgentProgressStatus[] = [
+  "pending",
+  "running",
+  "completed",
+  "warning",
+  "failed",
+  "cancelled"
+];
+
+function isAgentProgressPhase(value: unknown): value is AgentProgressPhase {
+  return typeof value === "string" && (AGENT_PROGRESS_PHASES as string[]).includes(value);
+}
+
+function isAgentProgressStatus(value: unknown): value is AgentProgressStatus {
+  return typeof value === "string" && (AGENT_PROGRESS_STATUSES as string[]).includes(value);
+}
+
+/**
+ * 构造稳定 stepId：`plan-${plan}-${phase}-${toolName}-${occurrence}`，
+ * occurrence 为该 plan+phase+tool 组合在已有步骤中出现的次数。
+ * running→completed 的同一逻辑步骤得到相同 stepId，可原地更新。
+ */
+function buildAgentStepId(payload: AgentProgressPayload, steps: AgentExecutionStep[]): string {
+  const plan = payload.plan ?? 1;
+  const toolName = payload.tool?.name ?? "";
+  const key = (step: AgentExecutionStep) =>
+    `${step.plan}|${step.phase}|${step.tool?.name ?? ""}`;
+  const occurrence =
+    steps.filter((step) => key(step) === `${plan}|${payload.phase}|${toolName}`).length + 1;
+  return `plan-${plan}-${payload.phase}-${toolName}-${occurrence}`;
+}
+
+/** finish 时计算汇总：tool 步骤完成/失败数、工具证据之和、replan 数、最大 plan 编号 */
+function computeAgentExecutionSummary(steps?: AgentExecutionStep[]): AgentExecutionSummary | null {
+  if (!steps || steps.length === 0) return null;
+  const toolSteps = steps.filter((step) => step.phase === "tool" && step.tool);
+  const toolCallCount = toolSteps.filter(
+    (step) => step.status === "completed" || step.status === "failed"
+  ).length;
+  const evidenceCount = toolSteps.reduce(
+    (sum, step) => sum + (step.tool?.status === "completed" ? step.tool.evidenceCount ?? 0 : 0),
+    0
+  );
+  const replanCount = steps.filter((step) => step.phase === "replan").length;
+  const planCount = steps.reduce((max, step) => Math.max(max, step.plan), 1);
+  return { planCount, toolCallCount, evidenceCount, replanCount };
+}
+
+function cancelAgentSteps(steps?: AgentExecutionStep[]): AgentExecutionStep[] | undefined {
+  if (!steps) return steps;
+  return steps.map((step) =>
+    step.status === "running" ? { ...step, status: "cancelled" as const } : step
+  );
+}
+
+function failLastRunningStep(steps?: AgentExecutionStep[]): AgentExecutionStep[] | undefined {
+  if (!steps || steps.length === 0) return steps;
+  const lastRunningIndex = steps.reduce(
+    (found, step, index) => (step.status === "running" ? index : found),
+    -1
+  );
+  if (lastRunningIndex < 0) return steps;
+  return steps.map((step, index) =>
+    index === lastRunningIndex ? { ...step, status: "failed" as const } : step
+  );
+}
+
+function toNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * 从后端持久化的 agent_execution_json（字符串或已解析对象）恢复时间线。
+ * 字段缺失/null/解析失败一律忽略，返回空对象（优雅降级）。
+ */
+function restoreAgentExecution(
+  json?: unknown
+): Pick<Message, "agentSteps" | "agentExecutionStatus" | "agentExecutionSummary"> {
+  if (!json || typeof json !== "object") return {};
+  const raw = json as Record<string, unknown>;
+  if (!Array.isArray(raw.steps)) return {};
+  const steps: AgentExecutionStep[] = [];
+  let maxPlan = 1;
+  for (const item of raw.steps) {
+    if (!item || typeof item !== "object") continue;
+    const step = item as Record<string, unknown>;
+    const plan = (() => {
+      const value = toNumber(step.plan, 1);
+      return value > 0 ? value : 1;
+    })();
+    const phase = isAgentProgressPhase(step.phase) ? step.phase : "tool";
+    const status = isAgentProgressStatus(step.status) ? step.status : "completed";
+    const seq = toNumber(step.seq, steps.length);
+    const rawTool = step.tool as Record<string, unknown> | null | undefined;
+    const toolLabel = typeof step.toolLabel === "string" ? step.toolLabel : "";
+    const tool: AgentExecutionStep["tool"] =
+      rawTool && typeof rawTool === "object" && typeof rawTool.name === "string"
+        ? {
+            name: String(rawTool.name),
+            label: typeof rawTool.label === "string" ? rawTool.label : String(rawTool.name),
+            status: isAgentProgressStatus(rawTool.status) ? rawTool.status : "completed",
+            argumentsSummary:
+              typeof rawTool.argumentsSummary === "string"
+                ? rawTool.argumentsSummary
+                : undefined,
+            durationMs:
+              typeof rawTool.durationMs === "number" ? rawTool.durationMs : undefined,
+            evidenceCount:
+              typeof rawTool.evidenceCount === "number" ? rawTool.evidenceCount : undefined
+          }
+        : toolLabel
+          ? { name: toolLabel, label: toolLabel, status: "completed" as const }
+          : undefined;
+    const stepId =
+      typeof step.stepId === "string" && step.stepId
+        ? step.stepId
+        : `plan-${plan}-${phase}-${tool?.name ?? ""}-${seq}`;
+    steps.push({
+      stepId,
+      seq,
+      phase,
+      status,
+      plan,
+      title: String(step.title ?? ""),
+      detail: typeof step.detail === "string" ? step.detail : undefined,
+      tool
+    });
+    if (plan > maxPlan) maxPlan = plan;
+  }
+  steps.sort((a, b) => a.seq - b.seq);
+  if (steps.length === 0) return {};
+  const summaryRaw = raw.summary as Record<string, unknown> | null | undefined;
+  const summary: AgentExecutionSummary =
+    summaryRaw && typeof summaryRaw === "object"
+      ? {
+          planCount: toNumber(summaryRaw.planCount, maxPlan),
+          toolCallCount: toNumber(summaryRaw.toolCallCount, 0),
+          evidenceCount: toNumber(summaryRaw.evidenceCount, 0),
+          replanCount: toNumber(summaryRaw.replanCount, 0),
+          durationMs: typeof summaryRaw.durationMs === "number" ? summaryRaw.durationMs : undefined
+        }
+      : computeAgentExecutionSummary(steps) ?? {
+          planCount: maxPlan,
+          toolCallCount: 0,
+          evidenceCount: 0,
+          replanCount: 0
+        };
+  return { agentSteps: steps, agentExecutionStatus: "completed", agentExecutionSummary: summary };
+}
+
 function upsertSession(sessions: Session[], next: Session) {
   const index = sessions.findIndex((session) => session.id === next.id);
   const updated = [...sessions];
@@ -144,13 +309,58 @@ function mapConversationMessages(data: ConversationMessageVO[]): Message[] {
     messageStatus: item.messageStatus ?? "NORMAL",
     turnId: item.turnId ?? undefined,
     version: item.version ?? undefined,
-    answerVersions: item.answerVersions
+    answerVersions: item.answerVersions,
+    // 老消息无 agent_execution_json 时保持 undefined，页面正常降级
+    ...restoreAgentExecution(item.agentExecutionJson)
   }));
 }
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set, get) => {
+  /**
+   * 应用单条 agent_progress 事件到当前流式消息。
+   * - 仅更新 streamingMessageId 对应的 assistant 消息（老请求不污染新请求）
+   * - seq 全局递增去重
+   * - stepId 由前端构造，running→completed 原地更新
+   * - phase=complete 只是收尾标记，不进入时间线（finish 事件负责收尾）
+   */
+  const handleAgentProgress = (payload: AgentProgressPayload) => {
+    const { streamingMessageId } = get();
+    if (!streamingMessageId) return;
+    const target = get().messages.find((message) => message.id === streamingMessageId);
+    // 消息已被替换（会话切换/重新加载）或已结束（取消/失败）时忽略后续事件
+    if (!target || target.role !== "assistant") return;
+    if (target.agentExecutionStatus !== "running") return;
+    const steps = target.agentSteps ?? [];
+    if (steps.some((step) => step.seq === payload.seq)) return;
+    if (payload.phase === "complete") return;
+    const stepId = buildAgentStepId(payload, steps);
+    const existingIndex = steps.findIndex((step) => step.stepId === stepId);
+    const nextStep: AgentExecutionStep = {
+      stepId,
+      seq: payload.seq,
+      phase: payload.phase,
+      status: payload.status,
+      plan: payload.plan ?? 1,
+      title: payload.title,
+      detail: payload.detail,
+      tool: payload.tool ?? undefined
+    };
+    const nextSteps =
+      existingIndex >= 0
+        ? steps.map((step, index) => (index === existingIndex ? { ...step, ...nextStep } : step))
+        : [...steps, nextStep];
+    set((state) => ({
+      messages: state.messages.map((message) =>
+        message.id === state.streamingMessageId
+          ? { ...message, agentSteps: nextSteps }
+          : message
+      )
+    }));
+  };
+
+  return {
   sessions: [],
   currentSessionId: null,
   messages: [],
@@ -329,6 +539,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isThinking: deepThinkingEnabled,
       status: "streaming",
       feedback: null,
+      agentSteps: [],
+      agentExecutionStatus: "running",
       createdAt: new Date().toISOString()
     };
 
@@ -404,6 +616,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (payload.type !== "think") return;
         get().appendThinkingContent(payload.delta);
       },
+      onAgentProgress: (payload: AgentProgressPayload) => {
+        if (get().streamingMessageId !== assistantId) return;
+        if (!payload || typeof payload !== "object") return;
+        handleAgentProgress(payload);
+      },
       onReject: (payload: MessageDeltaPayload) => {
         if (!payload || typeof payload !== "object") return;
         get().appendStreamContent(payload.delta);
@@ -442,7 +659,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     turnId: payload.turnId ?? message.turnId,
                     version: payload.version ?? message.version,
                     thinkingDuration:
-                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt)
+                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+                    agentExecutionStatus: "completed",
+                    agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
                   }
                 : message
             )
@@ -458,7 +677,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     sources: payload.sources ?? message.sources,
                     messageStatus: payload.messageStatus ?? "NORMAL",
                     thinkingDuration:
-                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt)
+                      message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+                    agentExecutionStatus: "completed",
+                    agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
                   }
                 : message
             )
@@ -485,7 +706,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               turnId: payload?.turnId ?? message.turnId,
               version: payload?.version ?? message.version,
               thinkingDuration:
-                message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt)
+                message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+              agentSteps: cancelAgentSteps(message.agentSteps),
+              agentExecutionStatus: "cancelled"
             };
           }),
           isStreaming: false,
@@ -530,7 +753,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   messageStatus: "ERROR",
                   isThinking: false,
                   thinkingDuration:
-                    message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt)
+                    message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
+                  agentSteps: failLastRunningStep(message.agentSteps),
+                  agentExecutionStatus: "failed"
                 }
               : message
           )
@@ -576,9 +801,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
   cancelGeneration: () => {
-    const { isStreaming, streamTaskId } = get();
+    const { isStreaming, streamTaskId, streamingMessageId } = get();
     if (!isStreaming) return;
     set({ cancelRequested: true });
+    if (streamingMessageId) {
+      // 用户主动停止：进行中的步骤标记 cancelled，后续 agent_progress 事件被忽略
+      set((state) => ({
+        messages: state.messages.map((message) =>
+          message.id === streamingMessageId
+            ? {
+                ...message,
+                agentSteps: cancelAgentSteps(message.agentSteps),
+                agentExecutionStatus: "cancelled"
+              }
+            : message
+        )
+      }));
+    }
     if (streamTaskId) {
       stopTask(streamTaskId).catch(() => null);
     }
@@ -740,4 +979,5 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ isLoading: false });
     }
   }
-}));
+  };
+});

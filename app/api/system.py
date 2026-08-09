@@ -114,6 +114,8 @@ def create_system_router(settings: Settings) -> APIRouter:
                         yield _sse("message", {"type": "think", "delta": data})
                     elif event_type == "citations":
                         citations = [source_ref(item, index) for index, item in enumerate(data, 1)]
+                    elif event_type == "agent_progress":
+                        yield _sse("agent_progress", {**data, "taskId": task_id})
                     elif event_type == "done":
                         yield _sse(
                             "finish",

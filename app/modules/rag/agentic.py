@@ -12,6 +12,15 @@ from sqlalchemy.orm import Session
 from app.infra_ai.contracts import ChatMessage, ChatRequest
 from app.infra_ai.router import ChatModelRouter
 from app.modules.rag.agent_tools import ToolContext, ToolRegistry, build_tool_registry
+from app.modules.rag.progress import (
+    AgentProgressEvent,
+    ProgressSink,
+    make_counting_sink,
+    phase_text,
+    summarize_arguments,
+    tool_evidence_summary,
+    tool_label,
+)
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import SearchResult
 
@@ -24,6 +33,15 @@ _LEGACY_NAMES = {
     "support.get_quality_metrics": "support_cases",
     "support.get_knowledge_gaps": "support_cases",
 }
+
+
+def _join_chinese(items: list[str]) -> str:
+    """中文列举：['A'] -> 'A'；['A','B'] -> 'A和B'；更多 -> 'A、B和C'。"""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return "、".join(items[:-1]) + "和" + items[-1]
 
 
 class ToolCallPlan(BaseModel):
@@ -144,10 +162,28 @@ class AgenticRagCoordinator:
         self.max_steps = max(1, max_steps)
         self.max_tool_calls = max(1, max_tool_calls)
         self.registry = registry or build_tool_registry(retrieval)
+        self.graph = self._compile_graph(None)
+
+    def _compile_graph(self, sink: ProgressSink | None):
+        """构造 LangGraph。sink 通过闭包捕获，随 run() 请求级传入，避免实例共享。
+
+        节点函数签名保持 (state) -> dict，sink 由闭包持有，天然支持并发请求。
+        """
+        emit = make_counting_sink(sink)
+
+        async def planner_node(state: _State) -> dict[str, Any]:
+            return await self._planner_node(state, emit)
+
+        async def tools_node(state: _State) -> dict[str, Any]:
+            return await self._tools_node(state, emit)
+
+        async def review_node(state: _State) -> dict[str, Any]:
+            return await self._review_node(state, emit)
+
         graph = StateGraph(_State)
-        graph.add_node("planner_agent", self._planner_node)
-        graph.add_node("tool_agents", self._tools_node)
-        graph.add_node("evidence_agent", self._review_node)
+        graph.add_node("planner_agent", planner_node)
+        graph.add_node("tool_agents", tools_node)
+        graph.add_node("evidence_agent", review_node)
         graph.add_edge(START, "planner_agent")
         graph.add_conditional_edges(
             "planner_agent", self._after_plan, {"act": "tool_agents", "finish": END}
@@ -158,7 +194,7 @@ class AgenticRagCoordinator:
             self._after_review,
             {"replan": "planner_agent", "finish": END},
         )
-        self.graph = graph.compile()
+        return graph.compile()
 
     async def run(
         self,
@@ -167,8 +203,9 @@ class AgenticRagCoordinator:
         user_id: int,
         question: str,
         knowledge_base_ids: tuple[int, ...] = (),
+        progress_sink: ProgressSink | None = None,
     ) -> AgenticRun:
-        state = await self.graph.ainvoke(
+        state = await self._compile_graph(progress_sink).ainvoke(
             {
                 "question": question,
                 "user_id": user_id,
@@ -352,7 +389,7 @@ class AgenticRagCoordinator:
             messages=[
                 ChatMessage(
                     "system",
-                    '你是零售运营规划 Agent。只返回 JSON：{"mode":"research|direct|refuse|escalate","calls":[{"name":"工具名","arguments":{}}],"rationale":"摘要"}。证据不足重规划时必须改变工具或参数，否则结束。可用工具：'
+                    '你是零售运营规划 Agent。只返回 JSON：{"mode":"research|direct|refuse|escalate","calls":[{"name":"工具名","arguments":{}}],"rationale":"摘要"}。证据不足重规划时必须改变工具或参数，否则结束。当上一轮工具成功但返回 0 条结果时，重新规划必须扩大召回、修改实体表达、降低合理过滤条件或更换数据源；禁止仅通过提高 min_lift、min_confidence、threshold 等过滤条件重复调用同一工具。可用工具：'
                     + tool_text,
                 ),
                 ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
@@ -394,7 +431,20 @@ class AgenticRagCoordinator:
         except Exception:
             return self._fallback_decision(question, history, feedback)
 
-    async def _planner_node(self, state: _State) -> dict[str, Any]:
+    async def _planner_node(
+        self, state: _State, sink: ProgressSink
+    ) -> dict[str, Any]:
+        count = state.get("plan_count", 0) + 1
+        await sink(
+            {
+                "phase": "planning",
+                "status": "running",
+                "agent": "planner",
+                "plan": count,
+                "title": phase_text("planning", "running"),
+                "detail": "正在判断需要查询哪些业务数据",
+            }
+        )
         decision = await self._decide(state)
         # Risk Guard：高风险/中风险问题不允许 direct 直答，防止绕过证据审查门禁
         if decision.mode == "direct":
@@ -420,7 +470,25 @@ class AgenticRagCoordinator:
                         "风险门禁：高风险问题且无可用的查证路径，转人工",
                         "risk_guard",
                     )
-        count = state.get("plan_count", 0) + 1
+        if decision.mode == "research":
+            labels = [tool_label(call.name) for call in decision.calls]
+            plan_detail = "准备查询" + _join_chinese(labels)
+        else:
+            plan_detail = {
+                "direct": "可直接回答",
+                "refuse": "拒绝回答",
+                "escalate": "转人工复核",
+            }[decision.mode]
+        await sink(
+            {
+                "phase": "planning",
+                "status": "completed",
+                "agent": "planner",
+                "plan": count,
+                "title": phase_text("planning", "completed"),
+                "detail": plan_detail,
+            }
+        )
         history = [
             *state.get("plan_history", []),
             {
@@ -459,12 +527,13 @@ class AgenticRagCoordinator:
             "act" if decision is not None and decision.mode == "research" else "finish"
         )
 
-    async def _tools_node(self, state: _State) -> dict[str, Any]:
+    async def _tools_node(self, state: _State, sink: ProgressSink) -> dict[str, Any]:
         results = list(state.get("results", []))
         errors = list(state.get("tool_errors", []))
         executions: list[dict[str, Any]] = []
         used = state.get("tool_calls", 0)
         decision = state.get("decision")
+        plan = state.get("plan_count", 1)
         context = ToolContext(
             state["db"], state["user_id"], state.get("knowledge_base_ids", ())
         )
@@ -472,6 +541,24 @@ class AgenticRagCoordinator:
             if used >= self.max_tool_calls:
                 errors.append({"tool": call.name, "code": "TOOL_BUDGET_EXCEEDED"})
                 break
+            label = tool_label(call.name)
+            arguments_summary = summarize_arguments(call.name, call.arguments)
+            await sink(
+                {
+                    "phase": "tool",
+                    "status": "running",
+                    "agent": "tools",
+                    "plan": plan,
+                    "title": label,
+                    "detail": arguments_summary,
+                    "tool": {
+                        "name": call.name,
+                        "label": label,
+                        "status": "running",
+                        "argumentsSummary": arguments_summary,
+                    },
+                }
+            )
             outcome = await self.registry.execute(call.name, call.arguments, context)
             used += 1
             executions.append(outcome.model_dump(exclude={"evidence"}))
@@ -480,6 +567,30 @@ class AgenticRagCoordinator:
             )
             if outcome.error_code:
                 errors.append({"tool": outcome.tool, "code": outcome.error_code})
+            evidence_count = len(outcome.evidence)
+            if outcome.status == "success":
+                status: Literal["completed", "failed"] = "completed"
+                detail = tool_evidence_summary(evidence_count)
+            else:
+                status = "failed"
+                detail = "查询失败，已跳过该数据源"
+            await sink(
+                {
+                    "phase": "tool",
+                    "status": status,
+                    "agent": "tools",
+                    "plan": plan,
+                    "title": label,
+                    "detail": detail,
+                    "tool": {
+                        "name": call.name,
+                        "label": label,
+                        "status": status,
+                        "durationMs": outcome.duration_ms,
+                        "evidenceCount": evidence_count,
+                    },
+                }
+            )
         return {
             "results": results,
             "tool_calls": used,
@@ -496,11 +607,22 @@ class AgenticRagCoordinator:
             ],
         }
 
-    async def _review_node(self, state: _State) -> dict[str, Any]:
+    async def _review_node(self, state: _State, sink: ProgressSink) -> dict[str, Any]:
         results = state.get("results", [])
         can_replan = (
             state.get("plan_count", 0) < self.max_steps
             and state.get("tool_calls", 0) < self.max_tool_calls
+        )
+        plan = state.get("plan_count", 1)
+        await sink(
+            {
+                "phase": "review",
+                "status": "running",
+                "agent": "evidence_reviewer",
+                "plan": plan,
+                "title": phase_text("review", "running"),
+                "detail": "正在核对已获取的证据是否满足回答要求",
+            }
         )
         details = self._review_evidence(state["question"], results, can_replan)
         prefix = "retry" if details.decision == "replan" else details.decision
@@ -511,6 +633,69 @@ class AgenticRagCoordinator:
             "escalate": "escalated",
             "refuse": "refused",
         }[details.decision]
+        review_metrics: dict[str, Any] = {
+            "evidenceCount": len(results),
+            "coverage": details.coverage,
+            "conflictCount": len(details.conflicts),
+        }
+        if details.decision == "ready":
+            await sink(
+                {
+                    "phase": "review",
+                    "status": "completed",
+                    "agent": "evidence_reviewer",
+                    "plan": plan,
+                    "title": phase_text("review", "completed"),
+                    "detail": f"已核验 {len(results)} 条证据",
+                    "metrics": review_metrics,
+                }
+            )
+        elif details.decision == "replan":
+            await sink(
+                {
+                    "phase": "review",
+                    "status": "warning",
+                    "agent": "evidence_reviewer",
+                    "plan": plan,
+                    "title": "当前证据不足",
+                    "detail": "正在补充查询",
+                    "metrics": review_metrics,
+                }
+            )
+            await sink(
+                {
+                    "phase": "replan",
+                    "status": "running",
+                    "agent": "evidence_reviewer",
+                    "plan": plan + 1,
+                    "title": phase_text("replan", "running"),
+                    "detail": "首次查询信息不足，正在尝试新的数据来源",
+                }
+            )
+        elif details.decision == "escalate":
+            await sink(
+                {
+                    "phase": "review",
+                    "status": "warning",
+                    "agent": "evidence_reviewer",
+                    "plan": plan,
+                    "title": "现有证据不足以形成可靠结论",
+                    "detail": details.summary,
+                    "metrics": review_metrics,
+                }
+            )
+        else:
+            await sink(
+                {
+                    "phase": "review",
+                    "status": "completed",
+                    "agent": "evidence_reviewer",
+                    "plan": plan,
+                    "title": "已确认拒绝回答",
+                    "detail": details.summary,
+                    "metrics": review_metrics,
+                }
+            )
         return {
             "review": review,
             "review_details": details,
@@ -597,6 +782,48 @@ class AgenticRagCoordinator:
             term in lowered for term in ("送达", "配送", "物流", "骑手", "延误", "迟到")
         ):
             return "delivery_status", {"order", "delivery"}, "medium"
+        # 商业分析：优先级高于 policy_lookup。含高优先级政策风险词
+        # （退款/退货/食品安全/支付安全等）时让位给政策/售后分支。
+        if any(
+            term in lowered
+            for term in (
+                "商品", "销量", "搭配", "关联", "共现", "购物篮", "经营",
+                "销售", "推荐", "提升度", "支持度", "置信度",
+                "购买组合", "商品组合", "销售数据", "卖得",
+            )
+        ) and not any(
+            term in lowered
+            for term in (
+                "退款", "退货", "七日无理由", "赔付", "食品安全", "变质",
+                "还能吃", "还能喝", "不冰", "扣款", "支付", "验证码", "账号安全",
+            )
+        ):
+            required: set[str] = set()
+            if any(
+                term in lowered
+                for term in (
+                    "搭配", "关联", "共现", "购物篮", "提升度", "支持度",
+                    "置信度", "购买组合", "商品组合",
+                )
+            ):
+                required.add("association_rule")
+            if any(
+                term in lowered
+                for term in ("销量", "经营", "销售", "卖得", "销售数据")
+            ):
+                required.add("product_metrics")
+            if not required:
+                required = {"association_rule", "product_metrics"}
+            return "commerce_analysis", required, "low"
+        # 政策检索：必须有明确政策框架词才触发；单独的「依据」不触发。
+        if any(
+            term in lowered
+            for term in (
+                "政策", "规则", "法规", "平台规定", "售后规定",
+                "法律依据", "监管要求", "官方规定",
+            )
+        ):
+            return "policy_lookup", {"policy"}, "medium"
         if any(term in lowered for term in ("退款", "退货", "七日无理由", "赔付")):
             required = {"policy"}
             if has_order:
@@ -611,8 +838,6 @@ class AgenticRagCoordinator:
             return "food_safety", required, "high"
         if any(term in lowered for term in ("扣款", "支付", "验证码", "账号安全")):
             return "account_or_payment_risk", {"policy"}, "high"
-        if any(term in lowered for term in ("规则", "政策", "依据", "法规")):
-            return "policy_lookup", {"policy"}, "medium"
         return "general", set(), "low"
 
     @staticmethod
