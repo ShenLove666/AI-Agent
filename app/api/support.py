@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import CurrentSupervisor, CurrentUser, DbSession
+from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.support.service import SupportService
@@ -96,6 +97,7 @@ class OutboundRequest(BaseModel):
 
 
 def _owner(db, user) -> int:
+    """商家数据归属：组织成员解析到组织 owner；否则限用户自己的数据。"""
     return service.owner_for(db, user)
 
 

@@ -66,6 +66,88 @@ export type RetailRule = {
   evidence: string[];
   origin: "derived";
 };
+export type RetailCampaign = {
+  id: number;
+  name: string;
+  status: string;
+  version: number;
+  rule?: null | {
+    from: string;
+    to: string;
+    count: number;
+    support: number;
+    confidence: number;
+    lift: number;
+    evidence: string[];
+  };
+};
+export type RetailCampaignDetail = {
+  id: number;
+  name: string;
+  status: string;
+  version: number;
+  lockVersion: number;
+  rejectedReason: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rule: null | {
+    id: number;
+    count: number;
+    support: number;
+    confidence: number;
+    lift: number;
+    evidence: string[];
+    origin: "derived";
+  };
+  versions: Array<{
+    version: number;
+    channel: string;
+    copy: string;
+    ruleSnapshot: Record<string, number | string>;
+    approvedBy: number | null;
+    approvedAt: string | null;
+    createdAt: string;
+  }>;
+  task: null | { id: number; title: string; status: string };
+};
+export type RetailTask = {
+  id: number;
+  title: string;
+  status: string;
+  targetMetric?: string;
+  sourceType?: string;
+  sourceId?: string;
+  assigneeId?: number | null;
+  verificationRunId?: number | null;
+  changeVersion?: string | null;
+  createdAt?: string;
+};
+export type RetailTaskDetail = {
+  id: number;
+  sourceType: string;
+  sourceId: string;
+  title: string;
+  status: string;
+  assigneeId: number | null;
+  targetMetric: string | null;
+  changeVersion: string | null;
+  verificationRunId: number | null;
+  beforeEvidence: Record<string, unknown>;
+  afterEvidence: Record<string, unknown>;
+  associationRuleId: number | null;
+  supportCaseId: number | null;
+  isDemo: boolean;
+  createdAt: string;
+  updatedAt: string;
+  verificationRun: null | {
+    id: number;
+    status: string;
+    startedAt: string;
+    completedAt: string | null;
+    isDemo: boolean;
+  };
+};
 export type RetailOverview = {
   ready: boolean;
   dataState: "ready" | "empty";
@@ -88,23 +170,9 @@ export type RetailOverview = {
     origin: "observed+derived";
   };
   rules: RetailRule[];
-  campaigns: Array<{
-    id: number;
-    name: string;
-    status: string;
-    version: number;
-    rule?: null | {
-      from: string;
-      to: string;
-      count: number;
-      support: number;
-      confidence: number;
-      lift: number;
-      evidence: string[];
-    };
-  }>;
+  campaigns: RetailCampaign[];
   metrics: RetailMetric[];
-  tasks: Array<{ id: number; title: string; status: string; targetMetric?: string }>;
+  tasks: RetailTask[];
   evaluations: Array<{ id: number; status: string; startedAt: string; isDemo: boolean }>;
 };
 
@@ -116,8 +184,29 @@ export const getRetailDataSourceQuality = (id: number) =>
 export const getRetailDataSourcePreview = (id: number) =>
   api.get<never, RetailDataSourcePreview>(`/data-sources/${id}/preview`);
 export const createRetailCampaign = (ruleId: number) => api.post("/retail/campaigns", { ruleId });
-export const transitionRetailTask = (taskId: number, status: string) =>
-  api.post(`/retail/optimization-tasks/${taskId}/transition`, { status });
+export const getRetailCampaign = (campaignId: number) =>
+  api.get<never, RetailCampaignDetail>(`/retail/campaigns/${campaignId}`);
+export const transitionRetailCampaign = (
+  campaignId: number,
+  action: "confirm" | "reject" | "publish",
+  expectedVersion: number,
+  reason?: string
+) =>
+  api.post(`/retail/campaigns/${campaignId}/transition`, {
+    action,
+    expectedVersion,
+    reason
+  });
+export const transitionRetailTask = (taskId: number, status: string, changeVersion?: string) =>
+  api.post(`/retail/optimization-tasks/${taskId}/transition`, { status, changeVersion });
+export const getRetailTask = (taskId: number) =>
+  api.get<never, RetailTaskDetail>(`/retail/optimization-tasks/${taskId}`);
+export const assignRetailTask = (taskId: number, assigneeId: number | null) =>
+  api.post(`/retail/optimization-tasks/${taskId}/assign`, { assigneeId });
+export const verifyRetailTask = (taskId: number) =>
+  api.post(`/retail/optimization-tasks/${taskId}/verify`);
+export const syncFailedEvaluations = () =>
+  api.post<never, { created: number }>("/retail/optimization-tasks/sync-from-evaluations");
 export const getRetailReport = () =>
   api.get<{ filename: string; content: string }, { filename: string; content: string }>(
     "/retail/reports/weekly"

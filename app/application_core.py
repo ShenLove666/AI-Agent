@@ -27,6 +27,7 @@ from app.api.knowledge_mutations import router as knowledge_mutation_router
 from app.api.management import router as management_router
 from app.api.orders import router as orders_router
 from app.api.retail import data_source_router, router as retail_router
+from app.api.settings import router as settings_router
 from app.api.system import create_system_router
 from app.api.support import router as support_router
 from app.container import build_container as build_ai_container
@@ -53,6 +54,11 @@ from app.modules.retrieval.postprocessors import (
     WeightedRrfPostProcessor,
 )
 from app.modules.retrieval.vector_channel import VectorSearchChannel
+from app.modules.settings.repository import RuntimeSettingsRepository
+from app.modules.settings.service import (
+    RuntimeSettingsService,
+    apply_restart_env_overrides,
+)
 from app.modules.users.repository import UserRepository
 from app.modules.users.service import AuthService
 from app.modules.vector.indexer import VectorIndexer
@@ -84,6 +90,7 @@ class ApplicationContainer:
     retrieval: MultiChannelRetrievalEngine
     agentic: AgenticRagCoordinator
     chat: RagChatService
+    runtime_settings: RuntimeSettingsService
 
 
 def build_vector_components():
@@ -148,6 +155,9 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
     traces = RagTraceService()
     rewrite = QueryRewriteService(ai.chat_router)
     agentic = AgenticRagCoordinator(ai.chat_router, retrieval)
+    runtime_settings = RuntimeSettingsService(
+        app_settings, RuntimeSettingsRepository()
+    )
     return ApplicationContainer(
         settings=app_settings,
         database=database,
@@ -169,7 +179,9 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
             history_token_budget=app_settings.prompt_history_token_budget,
             context_token_budget=app_settings.prompt_context_token_budget,
             agentic=agentic,
+            runtime_settings_repository=RuntimeSettingsRepository(),
         ),
+        runtime_settings=runtime_settings,
     )
 
 
@@ -180,6 +192,10 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         upgrade_database(container.database)
+        # 需重启生效的配置：合并回环境变量后重建容器
+        if apply_restart_env_overrides(container.database):
+            rebuilt = build_container(Settings())
+            app.state.container = rebuilt
         yield
         container.database.engine.dispose()
 
@@ -200,6 +216,7 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     install_http_conventions(app)
     prefix = resolved_settings.api_prefix
     for router in (
+        settings_router,
         create_system_router(resolved_settings),
         auth_router,
         conversation_router,

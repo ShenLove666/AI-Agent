@@ -8,35 +8,63 @@ import {
   ClipboardCheck,
   Database,
   Download,
+  FileText,
   RefreshCw,
+  Send,
   ShoppingBasket,
   Sparkles,
   Store,
   Target,
-  TriangleAlert
+  TriangleAlert,
+  UserRound,
+  XCircle
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/stores/authStore";
 import { DataSourcesView } from "./DataSourcesView";
 import {
+  assignRetailTask,
   createRetailCampaign,
+  getRetailCampaign,
   getRetailOverview,
   getRetailReport,
+  getRetailTask,
+  syncFailedEvaluations,
+  transitionRetailCampaign,
   transitionRetailTask,
-  type RetailOverview
+  verifyRetailTask,
+  type RetailCampaign,
+  type RetailCampaignDetail,
+  type RetailTask,
+  type RetailTaskDetail
 } from "@/services/retailService";
 
 const statusLabel: Record<string, string> = {
   draft: "待确认",
-  published: "已发布",
-  new: "待确认",
   confirmed: "已确认",
+  published: "已发布",
+  rejected: "已驳回",
+  new: "待确认",
   optimizing: "优化中",
   pending_verification: "待复测",
   resolved: "已解决",
-  completed: "已完成"
+  completed: "已完成",
+  pending: "待执行",
+  failed: "失败"
 };
 const nextStatus: Record<string, string> = {
   new: "confirmed",
@@ -68,10 +96,27 @@ function OriginBadge({ origin }: { origin: "observed" | "derived" | "synthetic" 
 }
 
 export function RetailOperationsPage() {
+  const permissions = useAuthStore((state) => state.user?.permissions ?? []);
+  const canConfirm = permissions.includes("campaign.confirm");
+  const canPublish = permissions.includes("campaign.publish");
+  const canAssign = permissions.includes("task.assign");
+  const canEval = permissions.includes("evaluation.run");
+
   const [data, setData] = useState<RetailOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+
+  // 方案详情抽屉
+  const [campaignDetail, setCampaignDetail] = useState<RetailCampaignDetail | null>(null);
+  const [campaignDetailOpen, setCampaignDetailOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  // 任务详情抽屉
+  const [taskDetail, setTaskDetail] = useState<RetailTaskDetail | null>(null);
+  const [taskDetailOpen, setTaskDetailOpen] = useState(false);
+  const [assigneeId, setAssigneeId] = useState("");
+  const [changeVersion, setChangeVersion] = useState("");
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -103,6 +148,145 @@ export function RetailOperationsPage() {
       toast.success("运营周报已生成");
     } catch {
       /* interceptor shows message */
+    }
+  };
+
+  const openCampaignDetail = async (campaign: RetailCampaign) => {
+    setBusy(`campaign-open-${campaign.id}`);
+    try {
+      const detail = await getRetailCampaign(campaign.id);
+      setCampaignDetail(detail);
+      setRejectReason("");
+      setCampaignDetailOpen(true);
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const openTaskDetail = async (task: RetailTask) => {
+    setBusy(`task-open-${task.id}`);
+    try {
+      const detail = await getRetailTask(task.id);
+      setTaskDetail(detail);
+      setAssigneeId(detail.assigneeId ? String(detail.assigneeId) : "");
+      setChangeVersion(detail.changeVersion ?? "");
+      setTaskDetailOpen(true);
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const transitionCampaign = async (
+    action: "confirm" | "reject" | "publish",
+    detail: RetailCampaignDetail
+  ) => {
+    if (action === "reject" && !rejectReason.trim()) {
+      toast.error("请填写驳回原因");
+      return;
+    }
+    setBusy(`campaign-${action}`);
+    try {
+      await transitionRetailCampaign(
+        detail.id,
+        action,
+        detail.lockVersion,
+        action === "reject" ? rejectReason : undefined
+      );
+      toast.success(
+        action === "confirm"
+          ? "方案已确认，已自动创建评测运行与优化任务"
+          : action === "publish"
+            ? "方案已发布"
+            : "方案已驳回"
+      );
+      setCampaignDetailOpen(false);
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const createCampaign = async (ruleId: number) => {
+    setBusy(`rule-${ruleId}`);
+    try {
+      await createRetailCampaign(ruleId);
+      toast.success("已创建运营方案");
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const advanceTask = async (task: RetailTaskDetail) => {
+    const target = nextStatus[task.status];
+    if (!target) return;
+    if (target === "pending_verification" && !changeVersion.trim()) {
+      toast.error("进入待复测必须填写关联的配置或知识版本号");
+      return;
+    }
+    setBusy(`task-${task.id}`);
+    try {
+      await transitionRetailTask(
+        task.id,
+        target,
+        target === "pending_verification" ? changeVersion : undefined
+      );
+      toast.success(`任务已推进到：${statusLabel[target]}`);
+      setTaskDetailOpen(false);
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const assignTask = async (task: RetailTaskDetail) => {
+    setBusy(`task-assign-${task.id}`);
+    try {
+      await assignRetailTask(task.id, assigneeId ? Number(assigneeId) : null);
+      toast.success(assigneeId ? "任务已分派" : "已取消分派");
+      setTaskDetailOpen(false);
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const startVerify = async (task: RetailTaskDetail) => {
+    setBusy(`task-verify-${task.id}`);
+    try {
+      const result = await verifyRetailTask(task.id);
+      toast.success(`复测运行 #${result.runId} 已创建并关联到任务`);
+      setTaskDetailOpen(false);
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const syncFromEvaluations = async () => {
+    setBusy("sync-evaluations");
+    try {
+      const result = await syncFailedEvaluations();
+      toast.success(result.created > 0 ? `已补建 ${result.created} 个优化任务` : "没有需要补建的任务");
+      await load();
+    } catch {
+      /* interceptor shows message */
+    } finally {
+      setBusy("");
     }
   };
 
@@ -341,23 +525,16 @@ export function RetailOperationsPage() {
                     订单 {rule.evidence.slice(0, 3).join("、")}
                   </td>
                   <td className="px-5 py-4">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={busy === `rule-${rule.id}`}
-                      onClick={async () => {
-                        setBusy(`rule-${rule.id}`);
-                        try {
-                          await createRetailCampaign(rule.id);
-                          toast.success("已创建运营方案");
-                          await load();
-                        } finally {
-                          setBusy("");
-                        }
-                      }}
-                    >
-                      创建方案
-                    </Button>
+                    {canConfirm && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={busy === `rule-${rule.id}`}
+                        onClick={() => void createCampaign(rule.id)}
+                      >
+                        创建方案
+                      </Button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -373,11 +550,22 @@ export function RetailOperationsPage() {
             <h2 className="font-semibold">AI 运营方案</h2>
           </div>
           <div className="mt-4 space-y-3">
+            {data.campaigns.length === 0 && (
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
+                暂无方案，可在上方关联规则表中创建
+              </div>
+            )}
             {data.campaigns.map((item) => (
-              <div key={item.id} className="rounded-xl border border-slate-100 p-3">
+              <button
+                key={item.id}
+                type="button"
+                className="w-full rounded-xl border border-slate-100 p-3 text-left transition hover:border-teal-200 hover:bg-teal-50/30"
+                disabled={busy === `campaign-open-${item.id}`}
+                onClick={() => void openCampaignDetail(item)}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-medium text-slate-800">{item.name}</p>
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
+                  <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">
                     {statusLabel[item.status] || item.status}
                   </span>
                 </div>
@@ -394,8 +582,10 @@ export function RetailOperationsPage() {
                     </p>
                   </div>
                 ) : null}
-                <p className="mt-2 text-xs text-slate-400">版本 v{item.version} · 保留规则快照</p>
-              </div>
+                <p className="mt-2 text-xs text-slate-400">
+                  版本 v{item.version} · 保留规则快照 · 点击查看详情
+                </p>
+              </button>
             ))}
           </div>
         </div>
@@ -430,42 +620,315 @@ export function RetailOperationsPage() {
             <h2 className="font-semibold">优化任务闭环</h2>
           </div>
           <div className="mt-4 space-y-3">
-            {data.tasks.map((task) => (
-              <div key={task.id} className="rounded-xl border border-slate-100 p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-medium text-slate-800">{task.title}</p>
-                  <span className="whitespace-nowrap rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
-                    {statusLabel[task.status] || task.status}
-                  </span>
-                </div>
-                <p className="mt-2 text-xs text-slate-400">
-                  目标：{task.targetMetric || "完成问题验证"}
+            {data.tasks.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center">
+                <p className="text-xs leading-5 text-slate-400">
+                  暂无优化任务。任务会在方案确认、评测失败或客服知识缺口时自动创建。
                 </p>
-                {nextStatus[task.status] && (
+                {canAssign && (
                   <Button
-                    className="mt-3 w-full"
                     size="sm"
                     variant="outline"
-                    disabled={busy === `task-${task.id}`}
-                    onClick={async () => {
-                      setBusy(`task-${task.id}`);
-                      try {
-                        await transitionRetailTask(task.id, nextStatus[task.status]);
-                        toast.success("任务状态已推进");
-                        await load();
-                      } finally {
-                        setBusy("");
-                      }
-                    }}
+                    className="mt-3"
+                    disabled={busy === "sync-evaluations"}
+                    onClick={() => void syncFromEvaluations()}
                   >
-                    推进到：{statusLabel[nextStatus[task.status]]}
+                    从失败评测创建任务
                   </Button>
                 )}
               </div>
-            ))}
+            ) : (
+              data.tasks.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  className="w-full rounded-xl border border-slate-100 p-3 text-left transition hover:border-amber-200 hover:bg-amber-50/30"
+                  disabled={busy === `task-open-${task.id}`}
+                  onClick={() => void openTaskDetail(task)}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-slate-800">{task.title}</p>
+                    <span className="whitespace-nowrap rounded-full bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700">
+                      {statusLabel[task.status] || task.status}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-400">
+                    目标：{task.targetMetric || "完成问题验证"}
+                    {task.sourceType ? ` · 来源：${sourceTypeLabel(task.sourceType)}` : ""}
+                    {task.verificationRunId ? ` · 复测 #${task.verificationRunId}` : ""}
+                    {nextStatus[task.status] ? " · 点击查看详情并推进" : " · 点击查看详情"}
+                  </p>
+                </button>
+              ))
+            )}
           </div>
         </div>
       </section>
+
+      {/* 方案详情抽屉 */}
+      <Dialog open={campaignDetailOpen} onOpenChange={setCampaignDetailOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          {campaignDetail && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {campaignDetail.name}
+                  <Badge
+                    variant={
+                      campaignDetail.status === "published"
+                        ? "default"
+                        : campaignDetail.status === "rejected"
+                          ? "destructive"
+                          : "outline"
+                    }
+                  >
+                    {statusLabel[campaignDetail.status] || campaignDetail.status}
+                  </Badge>
+                </DialogTitle>
+                <DialogDescription>
+                  版本 v{campaignDetail.version} · 创建于{" "}
+                  {campaignDetail.createdAt.slice(0, 10)}
+                  {campaignDetail.publishedAt
+                    ? ` · 发布于 ${campaignDetail.publishedAt.slice(0, 10)}`
+                    : ""}
+                </DialogDescription>
+              </DialogHeader>
+
+              {campaignDetail.rule && (
+                <div className="rounded-xl bg-slate-50 p-4">
+                  <p className="text-sm font-medium text-slate-700">关联规则（证据快照）</p>
+                  <p className="mt-2 text-sm text-slate-800">
+                    共现 {campaignDetail.rule.count} 单 · 支持度 {campaignDetail.rule.support}% ·
+                    置信度 {campaignDetail.rule.confidence}% · 提升度 {campaignDetail.rule.lift}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    证据订单：{campaignDetail.rule.evidence.slice(0, 8).join("、") || "无"}
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {campaignDetail.versions.map((version) => (
+                  <div key={version.version} className="rounded-xl border border-slate-100 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-slate-600">
+                        方案文案 · v{version.version} · {version.channel}
+                      </span>
+                      {version.approvedAt && (
+                        <span className="text-xs text-teal-600">
+                          已确认于 {version.approvedAt.slice(0, 10)}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">{version.copy}</p>
+                  </div>
+                ))}
+              </div>
+
+              {campaignDetail.rejectedReason && (
+                <div className="rounded-xl border border-rose-100 bg-rose-50 p-4 text-sm text-rose-700">
+                  驳回原因：{campaignDetail.rejectedReason}
+                </div>
+              )}
+
+              {campaignDetail.task && (
+                <div className="rounded-xl bg-amber-50/60 p-3 text-xs text-slate-600">
+                  关联优化任务：{campaignDetail.task.title}（{statusLabel[campaignDetail.task.status]}）
+                </div>
+              )}
+
+              {campaignDetail.status === "draft" && canConfirm && (
+                <div className="rounded-xl border border-slate-100 p-4">
+                  <Label htmlFor="reject-reason">驳回原因（驳回时必填）</Label>
+                  <Input
+                    id="reject-reason"
+                    className="mt-2"
+                    placeholder="例如：毛利不满足投放要求"
+                    value={rejectReason}
+                    onChange={(event) => setRejectReason(event.target.value)}
+                  />
+                </div>
+              )}
+
+              <DialogFooter className="gap-2">
+                {campaignDetail.status === "draft" && canConfirm && (
+                  <>
+                    <Button
+                      variant="destructive"
+                      disabled={busy === "campaign-reject"}
+                      onClick={() => void transitionCampaign("reject", campaignDetail)}
+                    >
+                      <XCircle className="mr-2 h-4 w-4" />
+                      驳回方案
+                    </Button>
+                    <Button
+                      disabled={busy === "campaign-confirm"}
+                      onClick={() => void transitionCampaign("confirm", campaignDetail)}
+                    >
+                      <Check className="mr-2 h-4 w-4" />
+                      确认方案
+                    </Button>
+                  </>
+                )}
+                {campaignDetail.status === "confirmed" && canPublish && (
+                  <Button
+                    disabled={busy === "campaign-publish"}
+                    onClick={() => void transitionCampaign("publish", campaignDetail)}
+                  >
+                    <Send className="mr-2 h-4 w-4" />
+                    发布方案
+                  </Button>
+                )}
+                {(campaignDetail.status === "published" ||
+                  campaignDetail.status === "rejected") && (
+                  <span className="text-xs text-slate-400">
+                    该状态为终态，如需调整请重新创建方案
+                  </span>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 任务详情抽屉 */}
+      <Dialog open={taskDetailOpen} onOpenChange={setTaskDetailOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          {taskDetail && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {taskDetail.title}
+                  <Badge variant="outline">
+                    {statusLabel[taskDetail.status] || taskDetail.status}
+                  </Badge>
+                </DialogTitle>
+                <DialogDescription>
+                  来源：{sourceTypeLabel(taskDetail.sourceType)} #{taskDetail.sourceId}
+                  {taskDetail.verificationRun ? ` · 复测运行 #${taskDetail.verificationRun.id}` : ""}
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">目标指标</p>
+                  <p className="mt-1 font-medium text-slate-800">
+                    {taskDetail.targetMetric || "-"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">关联版本号</p>
+                  <p className="mt-1 font-medium text-slate-800">
+                    {taskDetail.changeVersion || "未关联"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">负责人</p>
+                  <p className="mt-1 font-medium text-slate-800">
+                    {taskDetail.assigneeId ? `用户 #${taskDetail.assigneeId}` : "未分派"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">复测状态</p>
+                  <p className="mt-1 font-medium text-slate-800">
+                    {taskDetail.verificationRun
+                      ? statusLabel[taskDetail.verificationRun.status] || taskDetail.verificationRun.status
+                      : "未发起"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-slate-100 p-3">
+                  <p className="text-xs font-semibold text-slate-600">修改前证据</p>
+                  <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-[11px] text-slate-500">
+                    {JSON.stringify(taskDetail.beforeEvidence, null, 2)}
+                  </pre>
+                </div>
+                <div className="rounded-xl border border-slate-100 p-3">
+                  <p className="text-xs font-semibold text-slate-600">修改后证据（复测）</p>
+                  {Object.keys(taskDetail.afterEvidence).length === 0 ? (
+                    <p className="mt-2 text-xs text-slate-400">
+                      复测完成后写入修改后指标，未完成前不可标记已解决
+                    </p>
+                  ) : (
+                    <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap text-[11px] text-slate-500">
+                      {JSON.stringify(taskDetail.afterEvidence, null, 2)}
+                    </pre>
+                  )}
+                </div>
+              </div>
+
+              {taskDetail.status === "optimizing" && canAssign && (
+                <div className="rounded-xl border border-slate-100 p-4">
+                  <Label htmlFor="task-assignee">
+                    分派给用户（输入用户 ID，留空取消分派）
+                  </Label>
+                  <Input
+                    id="task-assignee"
+                    className="mt-2"
+                    type="number"
+                    placeholder="用户 ID"
+                    value={assigneeId}
+                    onChange={(event) => setAssigneeId(event.target.value)}
+                  />
+                </div>
+              )}
+              {(taskDetail.status === "optimizing" || taskDetail.status === "pending_verification") &&
+                nextStatus[taskDetail.status] === "pending_verification" && (
+                  <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-4">
+                    <Label htmlFor="task-version">关联配置/知识版本号（进入待复测必填）</Label>
+                    <Input
+                      id="task-version"
+                      className="mt-2"
+                      placeholder="例如 v3 或 knowledge-release-12"
+                      value={changeVersion}
+                      onChange={(event) => setChangeVersion(event.target.value)}
+                    />
+                  </div>
+                )}
+              {taskDetail.status === "pending_verification" && (
+                <p className="text-xs leading-5 text-slate-500">
+                  已进入待复测。请先「发起复测」，复测运行完成后将修改后指标写入任务，才能标记已解决。
+                </p>
+              )}
+
+              <DialogFooter className="gap-2">
+                {taskDetail.status === "optimizing" && canAssign && (
+                  <Button
+                    variant="outline"
+                    disabled={busy === `task-assign-${taskDetail.id}`}
+                    onClick={() => void assignTask(taskDetail)}
+                  >
+                    <UserRound className="mr-2 h-4 w-4" />
+                    保存分派
+                  </Button>
+                )}
+                {(taskDetail.status === "optimizing" ||
+                  taskDetail.status === "pending_verification") &&
+                  canEval && (
+                    <Button
+                      variant="outline"
+                      disabled={busy === `task-verify-${taskDetail.id}`}
+                      onClick={() => void startVerify(taskDetail)}
+                    >
+                      <FileText className="mr-2 h-4 w-4" />
+                      发起复测
+                    </Button>
+                  )}
+                {nextStatus[taskDetail.status] && canAssign && (
+                  <Button
+                    disabled={busy === `task-${taskDetail.id}`}
+                    onClick={() => void advanceTask(taskDetail)}
+                  >
+                    推进到：{statusLabel[nextStatus[taskDetail.status]]}
+                  </Button>
+                )}
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <aside className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-xs leading-6 text-amber-900">
         <strong>数据可信度说明：</strong>本地授权数据提供 9,835 个匿名购物篮和 43,367
@@ -475,4 +938,14 @@ export function RetailOperationsPage() {
       </aside>
     </div>
   );
+}
+
+function sourceTypeLabel(sourceType: string): string {
+  const labels: Record<string, string> = {
+    campaign: "运营方案",
+    evaluation: "评测运行",
+    knowledge_gap: "客服知识缺口",
+    basket_rule: "购物篮规则"
+  };
+  return labels[sourceType] ?? sourceType;
 }

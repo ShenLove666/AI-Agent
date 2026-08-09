@@ -37,6 +37,7 @@ from app.modules.provenance.catalog import (
     validate_lineage,
 )
 from app.modules.provenance.models import DataSource
+from app.modules.users.models import User
 
 
 class RetailDataError(ValueError):
@@ -1126,6 +1127,12 @@ class RetailService:
                 "title": task.title,
                 "status": task.status,
                 "targetMetric": task.target_metric,
+                "sourceType": task.source_type,
+                "sourceId": task.source_id,
+                "assigneeId": task.assignee_id,
+                "verificationRunId": task.verification_run_id,
+                "changeVersion": task.change_version,
+                "createdAt": task.created_at.isoformat(),
             }
             for task in db.scalars(
                 select(OptimizationTask).where(OptimizationTask.owner_id == owner_id)
@@ -1189,6 +1196,17 @@ class RetailService:
         )
         if not rule:
             raise RetailDataError("关联规则不存在")
+        existing = db.scalar(
+            select(Campaign).where(
+                Campaign.owner_id == owner_id,
+                Campaign.rule_id == rule_id,
+                Campaign.status.in_(["draft", "confirmed"]),
+            )
+        )
+        if existing:
+            raise RetailDataError(
+                "该关联规则已有未完成的运营方案（待确认或已确认），请先处理或发布"
+            )
         campaign = Campaign(
             owner_id=owner_id,
             rule_id=rule.id,
@@ -1217,8 +1235,355 @@ class RetailService:
         db.commit()
         return campaign
 
+    def campaign_detail(self, db: Session, owner_id: int, campaign_id: int) -> dict:
+        """方案详情：文案、渠道、关联规则、证据、版本历史与关联任务。"""
+        campaign = db.scalar(
+            select(Campaign).where(
+                Campaign.id == campaign_id, Campaign.owner_id == owner_id
+            )
+        )
+        if not campaign:
+            raise RetailDataError("运营方案不存在")
+        rule = db.get(AssociationRule, campaign.rule_id)
+        versions = list(
+            db.scalars(
+                select(CampaignVersion)
+                .where(CampaignVersion.campaign_id == campaign.id)
+                .order_by(CampaignVersion.version)
+            )
+        )
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.owner_id == owner_id,
+                OptimizationTask.source_type == "campaign",
+                OptimizationTask.source_id == str(campaign.id),
+            )
+        )
+        return {
+            "id": campaign.id,
+            "name": campaign.name,
+            "status": campaign.status,
+            "version": campaign.current_version,
+            "lockVersion": campaign.lock_version,
+            "rejectedReason": campaign.rejected_reason,
+            "publishedAt": campaign.published_at.isoformat()
+            if campaign.published_at
+            else None,
+            "createdAt": campaign.created_at.isoformat(),
+            "updatedAt": campaign.updated_at.isoformat(),
+            "rule": self._rule_vo(rule) if rule else None,
+            "versions": [
+                {
+                    "version": item.version,
+                    "channel": item.channel,
+                    "copy": item.copy,
+                    "ruleSnapshot": json.loads(item.rule_snapshot_json or "{}"),
+                    "approvedBy": item.approved_by,
+                    "approvedAt": item.approved_at.isoformat()
+                    if item.approved_at
+                    else None,
+                    "createdAt": item.created_at.isoformat(),
+                }
+                for item in versions
+            ],
+            "task": (
+                {"id": task.id, "title": task.title, "status": task.status}
+                if task
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _rule_vo(rule: AssociationRule | None) -> dict | None:
+        if rule is None:
+            return None
+        return {
+            "id": rule.id,
+            "count": rule.cooccurrence_count,
+            "support": round(rule.support * 100, 2),
+            "confidence": round(rule.confidence * 100, 2),
+            "lift": round(rule.lift, 2),
+            "evidence": json.loads(rule.evidence_json or "[]"),
+            "origin": "derived",
+        }
+
+    # draft → confirmed → published；draft → rejected
+    CAMPAIGN_FLOW = {
+        "confirm": ("draft", "confirmed"),
+        "reject": ("draft", "rejected"),
+        "publish": ("confirmed", "published"),
+    }
+
+    def transition_campaign(
+        self,
+        db: Session,
+        owner_id: int,
+        campaign_id: int,
+        action: str,
+        expected_version: int,
+        reason: str | None = None,
+    ) -> Campaign:
+        if action not in self.CAMPAIGN_FLOW:
+            raise RetailDataError(f"不支持的操作：{action}")
+        from_status, to_status = self.CAMPAIGN_FLOW[action]
+        campaign = db.scalar(
+            select(Campaign).where(
+                Campaign.id == campaign_id, Campaign.owner_id == owner_id
+            )
+        )
+        if not campaign:
+            raise RetailDataError("运营方案不存在")
+        if campaign.status != from_status:
+            raise RetailDataError(f"不能从 {campaign.status} 执行 {action} 操作")
+        if campaign.lock_version != expected_version:
+            raise RetailDataError("方案已被其他操作修改，请刷新后重试")
+        campaign.status = to_status
+        campaign.lock_version += 1
+        if action == "reject":
+            campaign.rejected_reason = reason
+        if action == "publish":
+            campaign.published_at = datetime.utcnow()
+        if action == "confirm":
+            version = db.scalar(
+                select(CampaignVersion)
+                .where(CampaignVersion.campaign_id == campaign.id)
+                .order_by(CampaignVersion.version.desc())
+            )
+            if version is not None:
+                version.approved_by = owner_id
+                version.approved_at = datetime.utcnow()
+            self._create_campaign_task(db, owner_id, campaign)
+            self._create_campaign_eval_run(db, owner_id, campaign, version)
+        if action == "publish":
+            latest_version = db.scalar(
+                select(CampaignVersion)
+                .where(CampaignVersion.campaign_id == campaign.id)
+                .order_by(CampaignVersion.version.desc())
+            )
+            db.add(
+                OperationEvent(
+                    owner_id=owner_id,
+                    event_key=f"campaign-exposed-{campaign.id}-{campaign.current_version}",
+                    event_type="campaign_exposed",
+                    occurred_at=datetime.utcnow(),
+                    campaign_version_id=latest_version.id if latest_version else None,
+                    payload_json=json.dumps(
+                        {"campaignId": campaign.id, "channel": "即时零售"},
+                        ensure_ascii=False,
+                    ),
+                    data_origin="derived",
+                    is_demo=campaign.is_demo,
+                )
+            )
+        db.commit()
+        return campaign
+
+    def _create_campaign_task(
+        self, db: Session, owner_id: int, campaign: Campaign
+    ) -> None:
+        existing = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.owner_id == owner_id,
+                OptimizationTask.source_type == "campaign",
+                OptimizationTask.source_id == str(campaign.id),
+            )
+        )
+        if existing:
+            return
+        db.add(
+            OptimizationTask(
+                owner_id=owner_id,
+                source_type="campaign",
+                source_id=str(campaign.id),
+                title=f"验证并跟进方案：{campaign.name}",
+                status="new",
+                target_metric="搭配购采用率",
+                before_evidence_json=json.dumps(
+                    {"origin": "campaign_confirm", "campaignId": campaign.id},
+                    ensure_ascii=False,
+                ),
+                association_rule_id=campaign.rule_id,
+                is_demo=campaign.is_demo,
+            )
+        )
+
+    def _create_campaign_eval_run(
+        self,
+        db: Session,
+        owner_id: int,
+        campaign: Campaign,
+        version: CampaignVersion | None,
+    ) -> None:
+        dataset = db.scalar(
+            select(EvaluationDataset)
+            .where(EvaluationDataset.owner_id == owner_id)
+            .order_by(EvaluationDataset.id.desc())
+        )
+        if dataset is None:
+            return
+        db.add(
+            EvaluationRun(
+                owner_id=owner_id,
+                dataset_id=dataset.id,
+                campaign_version_id=version.id if version else None,
+                status="pending",
+                config_snapshot_json=json.dumps(
+                    {
+                        "origin": "campaign_confirm",
+                        "campaignId": campaign.id,
+                        "status": "pending",
+                    },
+                    ensure_ascii=False,
+                ),
+                is_demo=campaign.is_demo,
+            )
+        )
+
+    def task_detail(self, db: Session, owner_id: int, task_id: int) -> dict:
+        """任务详情：来源、负责人、目标指标、修改版本、前后证据与复测运行。"""
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
+            )
+        )
+        if not task:
+            raise RetailDataError("优化任务不存在")
+        verification_run = (
+            db.get(EvaluationRun, task.verification_run_id)
+            if task.verification_run_id
+            else None
+        )
+        return {
+            "id": task.id,
+            "sourceType": task.source_type,
+            "sourceId": task.source_id,
+            "title": task.title,
+            "status": task.status,
+            "assigneeId": task.assignee_id,
+            "targetMetric": task.target_metric,
+            "changeVersion": task.change_version,
+            "verificationRunId": task.verification_run_id,
+            "beforeEvidence": json.loads(task.before_evidence_json or "{}"),
+            "afterEvidence": json.loads(task.after_evidence_json or "{}"),
+            "associationRuleId": task.association_rule_id,
+            "supportCaseId": task.support_case_id,
+            "isDemo": task.is_demo,
+            "createdAt": task.created_at.isoformat(),
+            "updatedAt": task.updated_at.isoformat(),
+            "verificationRun": (
+                {
+                    "id": verification_run.id,
+                    "status": verification_run.status,
+                    "startedAt": verification_run.started_at.isoformat(),
+                    "completedAt": verification_run.completed_at.isoformat()
+                    if verification_run.completed_at
+                    else None,
+                    "isDemo": verification_run.is_demo,
+                }
+                if verification_run
+                else None
+            ),
+        }
+
+    def assign_task(
+        self, db: Session, owner_id: int, task_id: int, assignee_id: int | None
+    ) -> OptimizationTask:
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
+            )
+        )
+        if not task:
+            raise RetailDataError("优化任务不存在")
+        if assignee_id is not None and db.get(User, assignee_id) is None:
+            raise RetailDataError("负责人不存在")
+        task.assignee_id = assignee_id
+        db.commit()
+        return task
+
+    def verify_task(self, db: Session, owner_id: int, task_id: int) -> EvaluationRun:
+        """发起复测：创建评测运行并关联到任务，用于验证修改效果。"""
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
+            )
+        )
+        if not task:
+            raise RetailDataError("优化任务不存在")
+        if task.status not in {"optimizing", "pending_verification"}:
+            raise RetailDataError("当前任务状态无法发起复测")
+        dataset = db.scalar(
+            select(EvaluationDataset)
+            .where(EvaluationDataset.owner_id == owner_id)
+            .order_by(EvaluationDataset.id.desc())
+        )
+        if dataset is None:
+            raise RetailDataError("该商家还没有评测集，无法发起复测")
+        run = EvaluationRun(
+            owner_id=owner_id,
+            dataset_id=dataset.id,
+            status="pending",
+            config_snapshot_json=json.dumps(
+                {"origin": "task_verify", "taskId": task.id}, ensure_ascii=False
+            ),
+            is_demo=task.is_demo,
+        )
+        db.add(run)
+        db.flush()
+        task.verification_run_id = run.id
+        db.commit()
+        return run
+
+    def sync_failed_evaluations(self, db: Session, owner_id: int) -> int:
+        """把存在失败用例的评测运行补建为优化任务（幂等）。"""
+        failed_run_ids = set(
+            db.scalars(
+                select(EvaluationResult.run_id)
+                .where(EvaluationResult.expected_point_score < 100)
+            ).all()
+        )
+        created = 0
+        for run_id in failed_run_ids:
+            run = db.get(EvaluationRun, run_id)
+            if run is None or run.owner_id != owner_id:
+                continue
+            existing = db.scalar(
+                select(OptimizationTask).where(
+                    OptimizationTask.owner_id == owner_id,
+                    OptimizationTask.source_type == "evaluation",
+                    OptimizationTask.source_id == str(run_id),
+                )
+            )
+            if existing:
+                continue
+            db.add(
+                OptimizationTask(
+                    owner_id=owner_id,
+                    source_type="evaluation",
+                    source_id=str(run_id),
+                    title=f"评测失败复测与修复（评测运行 #{run_id}）",
+                    status="new",
+                    target_metric="评测通过率",
+                    before_evidence_json=json.dumps(
+                        {"origin": "evaluation_failure", "runId": run_id},
+                        ensure_ascii=False,
+                    ),
+                    is_demo=run.is_demo,
+                )
+            )
+            created += 1
+        if created:
+            db.commit()
+        return created
+
     def transition_task(
-        self, db: Session, owner_id: int, task_id: int, target: str
+        self,
+        db: Session,
+        owner_id: int,
+        task_id: int,
+        target: str,
+        *,
+        change_version: str | None = None,
     ) -> OptimizationTask:
         task = db.scalar(
             select(OptimizationTask).where(
@@ -1235,7 +1600,16 @@ class RetailService:
         }
         if flow.get(task.status) != target:
             raise RetailDataError(f"不能从 {task.status} 跳转到 {target}")
+        if target == "pending_verification" and not change_version:
+            raise RetailDataError("进入待复测必须关联配置或知识版本号（changeVersion）")
+        if target == "resolved":
+            if not task.verification_run_id:
+                raise RetailDataError("进入已解决必须先发起复测（关联复测运行）")
+            if not task.after_evidence_json or task.after_evidence_json == "{}":
+                raise RetailDataError("进入已解决必须关联复测结果（修改后指标）")
         task.status = target
+        if change_version:
+            task.change_version = change_version
         db.commit()
         return task
 

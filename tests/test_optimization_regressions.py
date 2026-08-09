@@ -80,10 +80,11 @@ def test_frontend_contracts_auth_and_knowledge_state_are_real():
                     settings = (await client.get("/api/v1/rag/settings", headers=headers)).json()[
                         "data"
                     ]
-                    assert {"upload", "rag", "ai"} <= settings.keys()
-                    assert {"providers", "selection", "stream", "chat", "embedding", "rerank"} <= settings[
-                        "ai"
-                    ].keys()
+                    assert {"version", "items", "audits"} <= settings.keys()
+                    assert settings["version"] >= 1
+                    keys = {item["key"] for item in settings["items"]}
+                    assert "retrieval_candidate_limit" in keys
+                    assert "deepseek_api_key" in keys
 
                     not_implemented = await client.get("/api/v1/agents", headers=headers)
                     assert not_implemented.status_code == 501

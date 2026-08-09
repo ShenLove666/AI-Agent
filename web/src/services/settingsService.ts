@@ -1,83 +1,48 @@
 import { api } from "@/services/api";
 
+export interface RuntimeSettingItem {
+  key: string;
+  label: string;
+  description: string;
+  scope: "immediate" | "restart";
+  valueType: "int" | "float" | "str" | "secret";
+  /** secret 类型只返回是否已配置，永不返回明文 */
+  configured: boolean;
+  value: string | number | null;
+  default: string | number | null;
+  overridden: boolean;
+  enum?: string[] | null;
+}
+
+export interface RuntimeSettingAudit {
+  key: string;
+  operation: "update" | "reset";
+  oldValue: string | null;
+  newValue: string | null;
+  operatorName: string | null;
+  scope: string;
+  createdAt: string;
+}
+
 export interface SystemSettings {
-  upload: {
-    maxFileSize: number;
-    maxRequestSize: number;
-  };
-  rag: {
-    default: {
-      collectionName: string;
-      dimension: number;
-      metricType: string;
-    };
-    queryRewrite: {
-      enabled: boolean;
-    };
-    rateLimit: {
-      global: {
-        enabled: boolean;
-        maxConcurrent: number;
-        maxWaitSeconds: number;
-        leaseSeconds: number;
-        pollIntervalMs: number;
-      };
-    };
-    memory: {
-      historyKeepTurns: number;
-      summaryStartTurns: number;
-      summaryEnabled: boolean;
-      summaryMaxChars: number;
-      titleMaxLength: number;
-    };
-  };
-  ai: {
-    providers: Record<
-      string,
-      {
-        url: string;
-        apiKey?: string | null;
-        endpoints: Record<string, string>;
-      }
-    >;
-    selection: {
-      failureThreshold: number;
-      openDurationMs: number;
-    };
-    stream: {
-      messageChunkSize: number;
-    };
-    chat: ModelGroup;
-    embedding: ModelGroup;
-    rerank: ModelGroup;
-  };
-}
-
-export interface ModelGroup {
-  defaultModel?: string | null;
-  candidates: ModelCandidate[];
-  // chat 组档位机制字段，embedding/rerank 为空
-  defaultTier?: string | null;
-  deepThinkingTier?: string | null;
-  tiers?: Record<string, TierConfig> | null;
-}
-
-export interface TierConfig {
-  candidates: string[];
-  timeoutMs?: number | null;
-}
-
-export interface ModelCandidate {
-  id: string;
-  provider: string;
-  model: string;
-  url?: string | null;
-  dimension?: number | null;
-  priority?: number | null;
-  enabled?: boolean | null;
-  supportsThinking?: boolean | null;
+  /** 全局配置版本号，PATCH 时用于并发冲突检测 */
+  version: number;
+  items: RuntimeSettingItem[];
+  audits: RuntimeSettingAudit[];
 }
 
 export async function getSystemSettings(): Promise<SystemSettings> {
   return api.get<SystemSettings, SystemSettings>("/rag/settings");
+}
+
+export async function patchSystemSettings(
+  expectedVersion: number,
+  changes: Array<{ key: string; value: string | number }>,
+  resetKeys: string[]
+): Promise<{ version: number }> {
+  return api.patch<unknown, { version: number }>("/rag/settings", {
+    expectedVersion,
+    changes,
+    resetKeys
+  });
 }

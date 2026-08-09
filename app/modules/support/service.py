@@ -30,6 +30,7 @@ from app.modules.knowledge.models import (
 )
 from app.modules.orders.models import Order, OutboundMessage
 from app.modules.orders.service import OrderService
+from app.modules.optimization.models import OptimizationTask
 from app.modules.support.outbound import OutboundService, build_customer_channel
 from app.modules.support.models import (
     KnowledgeGap,
@@ -97,23 +98,15 @@ def _without_frontmatter(content: str) -> str:
 
 
 class SupportService:
-    def owner_for(self, db: Session, user: User) -> int:
-        if user.role in {"admin", "supervisor"}:
-            owner = db.scalar(
-                select(SupportCase.owner_id)
-                .join(User, User.id == SupportCase.owner_id)
-                .where(User.is_demo.is_(True))
-                .order_by(SupportCase.id.desc())
-                .limit(1)
-            )
-            if owner is not None:
-                return int(owner)
-            demo_owner = db.scalar(
-                select(User.id).where(User.is_demo.is_(True)).order_by(User.id).limit(1)
-            )
-            if demo_owner is not None:
-                return int(demo_owner)
-        return int(user.id)
+    def owner_for(self, db: Session, user: User) -> int | None:
+        """商家数据归属：仅当用户是某商家组织成员时返回该组织 owner_user_id。
+
+        不再隐式代理"最新 demo 商家"；无成员关系的用户（包括未绑定的
+        平台管理员）返回 None，由调用方按读返回空 / 写拒绝处理。
+        """
+        from app.modules.users.access import resolve_owner
+
+        return resolve_owner(db, user)
 
     def list_cases(
         self,
@@ -1115,6 +1108,7 @@ class SupportService:
             entries.append(evidence)
             gap.evidence_json = json.dumps(entries[-20:], ensure_ascii=False)
             gap.updated_at = datetime.utcnow()
+            self._create_task_from_gap(db, owner_id, gap)
         db.commit()
         return {
             "id": label.id,
@@ -1124,6 +1118,45 @@ class SupportService:
             "severity": label.severity,
             "note": label.note,
         }
+
+    def _create_task_from_gap(
+        self, db: Session, owner_id: int, gap: KnowledgeGap
+    ) -> None:
+        """客服质检失败（知识缺口）→ 自动创建优化任务（幂等去重）。"""
+        existing = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.owner_id == owner_id,
+                OptimizationTask.source_type == "knowledge_gap",
+                OptimizationTask.source_id == str(gap.id),
+            )
+        )
+        if existing:
+            return
+        case_id = None
+        for entry in _json(gap.evidence_json, []):
+            if isinstance(entry, dict) and entry.get("caseId"):
+                case_id = int(entry["caseId"])
+                break
+        db.add(
+            OptimizationTask(
+                owner_id=owner_id,
+                source_type="knowledge_gap",
+                source_id=str(gap.id),
+                title=f"补齐知识缺口：{gap.title}",
+                status="new",
+                target_metric="知识命中率",
+                before_evidence_json=json.dumps(
+                    {
+                        "origin": "quality_label",
+                        "gapId": gap.id,
+                        "category": gap.category,
+                    },
+                    ensure_ascii=False,
+                ),
+                support_case_id=case_id,
+                is_demo=gap.is_demo,
+            )
+        )
 
     def resolve_gap(
         self, db: Session, owner_id: int, gap_id: int, actor_id: int, release_id: int

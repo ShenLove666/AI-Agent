@@ -10,7 +10,7 @@ from app.framework.errors import AppError
 from app.framework.migrations import upgrade_database
 from app.modules.support.models import SupportCase
 from app.modules.support.service import SupportService
-from app.modules.users.models import User
+from app.modules.users.models import Organization, OrganizationMember, User
 
 
 def _fixture():
@@ -87,7 +87,8 @@ def test_escalation_requires_reason_and_valid_category():
         database.engine.dispose()
 
 
-def test_supervisor_resolves_the_shared_demo_support_owner():
+def test_supervisor_resolves_org_member_owner_not_magic_proxy():
+    """组织成员关系解析：加入商家组织的用户解析到该组织 owner；未加入则返回 None。"""
     database, db, demo_owner, _case = _fixture()
     try:
         demo_owner.is_demo = True
@@ -97,8 +98,22 @@ def test_supervisor_resolves_the_shared_demo_support_owner():
             role="supervisor",
         )
         db.add(supervisor)
+        db.flush()
+        org = Organization(name="演示商家组织", owner_user_id=demo_owner.id, is_demo=True)
+        db.add(org)
+        db.flush()
+
+        # 未加入组织的 supervisor 不再隐式代理 demo 商家数据（只能看到自己的数据）
+        assert SupportService().owner_for(db, supervisor) == supervisor.id
+
+        db.add(
+            OrganizationMember(
+                org_id=org.id, user_id=supervisor.id, role="support_supervisor"
+            )
+        )
         db.commit()
 
+        # 成为成员后按明确成员关系解析到组织 owner
         assert SupportService().owner_for(db, supervisor) == demo_owner.id
     finally:
         db.close()

@@ -4,6 +4,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.framework.errors import AppError
@@ -52,8 +53,63 @@ def get_current_supervisor(user: Annotated[Any, Depends(get_current_user)]) -> U
     return user
 
 
+def make_permission_requirement(permission: str):
+    """按权限能力生成依赖：校验组织角色/全局角色派生的权限集合。"""
+
+    def require(
+        request: Request,
+        db: Annotated[Session, Depends(get_db)],
+        user: Annotated[Any, Depends(get_current_user)],
+    ) -> User:
+        from app.modules.users.access import has_permission
+
+        if not has_permission(db, user, permission):
+            raise AppError("FORBIDDEN", f"需要权限：{permission}", 403)
+        return user
+
+    return require
+
+
+def get_current_permissions(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[Any, Depends(get_current_user)],
+) -> frozenset[str]:
+    from app.modules.users.access import permissions_for
+
+    return permissions_for(db, user)
+
+
+def get_current_org(
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[Any, Depends(get_current_user)],
+) -> dict | None:
+    """当前用户的商家归属：{orgId, orgName, ownerUserId, role}；无成员返回 None。"""
+    from app.modules.users.models import Organization, OrganizationMember
+
+    membership = db.scalar(
+        select(OrganizationMember)
+        .where(OrganizationMember.user_id == user.id)
+        .limit(1)
+    )
+    if membership is None:
+        return None
+    org = db.get(Organization, membership.org_id)
+    if org is None:
+        return None
+    return {
+        "orgId": org.id,
+        "orgName": org.name,
+        "ownerUserId": org.owner_user_id,
+        "role": membership.role,
+    }
+
+
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUserId = Annotated[int, Depends(get_current_user_id)]
 CurrentUser = Annotated[Any, Depends(get_current_user)]
 CurrentAdmin = Annotated[Any, Depends(get_current_admin)]
 CurrentSupervisor = Annotated[Any, Depends(get_current_supervisor)]
+CurrentPermissions = Annotated[frozenset[str], Depends(get_current_permissions)]
+CurrentOrg = Annotated[dict | None, Depends(get_current_org)]

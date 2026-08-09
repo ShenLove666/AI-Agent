@@ -607,7 +607,7 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
     assert second.created_documents == 0
     assert second.reused_documents == len(service.catalog.documents)
     assert second.reused_evaluation_cases == len(service.catalog.evaluation_cases)
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
     assert db.scalar(select(func.count(KnowledgeDocument.id))) == 1 + len(
         service.catalog.documents
     )
@@ -656,7 +656,7 @@ def test_seed_demo_is_idempotent_and_clear_preserves_every_real_user_record(
 
     assert cleared.removed_documents == len(service.catalog.documents)
     assert cleared.removed_files == len(service.catalog.documents)
-    assert cleared.removed_users == 1
+    assert cleared.removed_users == 4
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
     for model, identifier in real_ids.items():
         assert db.get(model, identifier) is not None, model.__name__
@@ -790,7 +790,7 @@ def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_cl
     with database.session_factory() as db:
         assert db.scalar(
             select(func.count(User.id)).where(User.is_demo.is_(True))
-        ) == 1
+        ) == 4
 
     assert cli.main(["clear-demo", "--yes"]) == 0
     clear_output = capsys.readouterr().out
@@ -857,7 +857,7 @@ def test_demo_cli_reports_cleanup_failure_without_losing_retry_metadata(
     with database.session_factory() as db:
         assert db.scalar(
             select(func.count(User.id)).where(User.is_demo.is_(True))
-        ) == 1
+        ) == 4
     database.engine.dispose()
 
 
@@ -1053,7 +1053,7 @@ def test_clear_external_partial_failure_rolls_back_db_and_retry_succeeds(
         service.clear(db)
 
     assert db.get(KnowledgeDocument, demo_documents[0].id) is not None
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
 
     store.fail_document_id = None
     service.clear(db)
@@ -1071,7 +1071,7 @@ def test_reset_stops_when_external_cleanup_fails(app, db: Session):
     with pytest.raises(DemoSeedError, match="cleanup"):
         service.seed(db, password="StrongDemo123!", reset=True)
 
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
 
 
 def test_clear_fails_closed_when_vector_cleanup_capability_is_unavailable(
@@ -1085,7 +1085,7 @@ def test_clear_fails_closed_when_vector_cleanup_capability_is_unavailable(
     with pytest.raises(DemoSeedError, match="vector.*cleanup|cleanup.*vector"):
         service.clear(db)
 
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
 
 
 def test_seed_reconciles_managed_bytes_and_missing_chunks(app, db: Session):
@@ -1161,7 +1161,7 @@ def test_seed_compensation_cleanup_failure_preserves_retry_metadata(
     with pytest.raises(DemoSeedError, match="cleanup"):
         service.seed(db, password="StrongDemo123!")
 
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
     assert db.scalar(select(func.count(KnowledgeDocument.id))) == len(
         service.catalog.documents
     )
@@ -1464,7 +1464,7 @@ def test_partial_vector_cleanup_failure_keeps_attempt_metadata_for_retry(
     assert store.delete_attempts[-1] == document.id
     assert store.records
     assert document.vector_indexed is True
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
 
 
 def test_samefile_oserror_fails_closed_before_clear_mutation(
@@ -1491,7 +1491,7 @@ def test_samefile_oserror_fails_closed_before_clear_mutation(
         service.clear(db)
 
     assert all(path.is_file() for path in demo_files)
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 1
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
     for model, identifier in real_ids.items():
         assert db.get(model, identifier) is not None
 

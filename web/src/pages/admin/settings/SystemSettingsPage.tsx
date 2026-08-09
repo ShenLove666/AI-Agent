@@ -1,9 +1,11 @@
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { RotateCcw, Save, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -12,43 +14,99 @@ import {
   TableHeader,
   TableRow
 } from "@/components/ui/table";
-import type { SystemSettings } from "@/services/settingsService";
-import { getSystemSettings } from "@/services/settingsService";
+import { useAuthStore } from "@/stores/authStore";
+import type { RuntimeSettingItem, SystemSettings } from "@/services/settingsService";
+import { getSystemSettings, patchSystemSettings } from "@/services/settingsService";
 import { getErrorMessage } from "@/utils/error";
 
-const BoolBadge = ({ value }: { value: boolean }) => (
-  <Badge variant={value ? "default" : "outline"}>{value ? "启用" : "禁用"}</Badge>
-);
-
-function InfoItem({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1 rounded-lg border border-slate-200/70 bg-white px-4 py-3">
-      <span className="text-xs text-slate-500">{label}</span>
-      <div className="text-sm font-medium text-slate-800">{value}</div>
-    </div>
-  );
-}
-
 export function SystemSettingsPage() {
+  const permissions = useAuthStore((state) => state.user?.permissions ?? []);
+  const canWrite = permissions.includes("settings.write");
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [resetting, setResetting] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
 
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     try {
       setLoading(true);
       const data = await getSystemSettings();
       setSettings(data);
+      const initial: Record<string, string> = {};
+      for (const item of data.items) {
+        if (item.valueType !== "secret") {
+          initial[item.key] = String(item.value ?? "");
+        }
+      }
+      setDraft(initial);
+      setResetting(new Set());
     } catch (error) {
       toast.error(getErrorMessage(error, "加载系统配置失败"));
       console.error(error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    loadSettings();
-  }, []);
+    void loadSettings();
+  }, [loadSettings]);
+
+  const dirtyKeys = useMemo(() => {
+    if (!settings) return new Set<string>();
+    return new Set(
+      settings.items
+        .filter((item) => item.valueType !== "secret")
+        .filter((item) => draft[item.key] !== String(item.value ?? ""))
+        .map((item) => item.key)
+    );
+  }, [settings, draft]);
+
+  const updateDraft = (key: string, value: string) =>
+    setDraft((previous) => ({ ...previous, [key]: value }));
+
+  const toggleReset = (key: string) =>
+    setResetting((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  const save = async () => {
+    if (!settings) return;
+    setSaving(true);
+    try {
+      const changes = settings.items
+        .filter((item) => item.valueType === "secret" || dirtyKeys.has(item.key))
+        .filter((item) => {
+          if (item.valueType === "secret") return draft[item.key] !== undefined && draft[item.key] !== "";
+          return true;
+        })
+        .map((item) => ({ key: item.key, value: draft[item.key] ?? "" }));
+      const resetKeys = settings.items
+        .filter((item) => resetting.has(item.key))
+        .map((item) => item.key);
+      if (changes.length === 0 && resetKeys.length === 0) {
+        toast.info("没有需要保存的修改");
+        return;
+      }
+      const result = await patchSystemSettings(settings.version, changes, resetKeys);
+      toast.success(`配置已保存（版本 v${result.version}）`);
+      await loadSettings();
+    } catch (error) {
+      const message = getErrorMessage(error, "保存失败");
+      if (message.includes("已被其他操作修改")) {
+        toast.error(`${message}，正在刷新最新配置…`);
+        await loadSettings();
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -66,255 +124,206 @@ export function SystemSettingsPage() {
     );
   }
 
-  const { rag, ai } = settings;
-  const providers = Object.entries(ai.providers || {});
+  const immediateItems = settings.items.filter((item) => item.scope === "immediate");
+  const restartItems = settings.items.filter((item) => item.scope === "restart");
+
+  const renderItem = (item: RuntimeSettingItem) => {
+    const isSecret = item.valueType === "secret";
+    const value = isSecret ? "" : draft[item.key] ?? "";
+    const original = isSecret ? (item.configured ? "已配置" : "未配置") : String(item.value ?? "");
+    const dirty = isSecret ? value !== "" : value !== original;
+    return (
+      <TableRow key={item.key} className={dirty ? "bg-amber-50/60" : undefined}>
+        <TableCell className="align-top">
+          <div className="font-medium text-slate-800">{item.label}</div>
+          <div className="mt-0.5 max-w-[420px] text-xs leading-5 text-slate-500">
+            {item.description}
+          </div>
+          <div className="mt-1 flex items-center gap-2">
+            <code className="text-[11px] text-slate-400">{item.key}</code>
+            {item.overridden && (
+              <Badge variant="outline" className="text-[10px] text-amber-700">
+                已修改
+              </Badge>
+            )}
+          </div>
+        </TableCell>
+        <TableCell>
+          <div className="flex items-center gap-2">
+            {isSecret ? (
+              <Input
+                type="password"
+                placeholder={item.configured ? "已配置（输入新值以替换）" : "未配置（输入密钥）"}
+                value={value}
+                onChange={(event) => updateDraft(item.key, event.target.value)}
+                disabled={!canWrite}
+                className="w-64"
+              />
+            ) : (
+              <Input
+                value={value}
+                onChange={(event) => updateDraft(item.key, event.target.value)}
+                disabled={!canWrite}
+                className="w-36"
+              />
+            )}
+            {!isSecret && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!canWrite || !item.overridden || resetting.has(item.key)}
+                onClick={() => toggleReset(item.key)}
+                title="恢复默认"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        </TableCell>
+        <TableCell className="align-top">
+          <div className="text-xs text-slate-400">
+            {isSecret
+              ? item.configured
+                ? "已配置（不回显明文）"
+                : "未配置"
+              : `默认 ${String(item.default ?? "")}`}
+          </div>
+          {resetting.has(item.key) && (
+            <div className="mt-1 rounded bg-amber-100 px-2 py-1 text-[11px] text-amber-800">
+              将恢复默认
+            </div>
+          )}
+        </TableCell>
+        <TableCell className="align-top text-xs text-slate-500">
+          {dirty ? (
+            <div className="rounded bg-amber-50 px-2 py-1">
+              修改前：<span className="text-slate-400">{original}</span>
+              <br />
+              修改后：<span className="font-medium text-amber-800">{value || "（留空）"}</span>
+            </div>
+          ) : (
+            <span className="text-slate-300">-</span>
+          )}
+        </TableCell>
+      </TableRow>
+    );
+  };
 
   return (
     <div className="admin-page">
       <div className="admin-page-header">
         <div>
           <h1 className="admin-page-title">系统配置</h1>
-          <p className="admin-page-subtitle">只读展示当前 application 配置</p>
+          <p className="admin-page-subtitle">
+            运行时配置 · 当前版本 v{settings.version}
+            {canWrite ? " · 可编辑" : " · 只读（需要 settings.write 权限）"}
+          </p>
         </div>
+        {canWrite && (
+          <div className="flex gap-2">
+            <Button variant="outline" disabled={saving} onClick={() => void loadSettings()}>
+              <Undo2 className="mr-2 h-4 w-4" />
+              撤销修改
+            </Button>
+            <Button onClick={() => void save()} disabled={saving}>
+              <Save className="mr-2 h-4 w-4" />
+              保存配置
+            </Button>
+          </div>
+        )}
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>RAG 默认配置</CardTitle>
-          <CardDescription>向量空间与检索基础参数</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <InfoItem label="Collection" value={rag.default.collectionName} />
-          <InfoItem label="Dimension" value={rag.default.dimension} />
-          <InfoItem label="Metric Type" value={rag.default.metricType} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>查询改写</CardTitle>
-          <CardDescription>历史上下文压缩与改写策略</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <InfoItem label="Enabled" value={<BoolBadge value={rag.queryRewrite.enabled} />} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>全局限流</CardTitle>
-          <CardDescription>并发与租约控制</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <InfoItem label="Enabled" value={<BoolBadge value={rag.rateLimit.global.enabled} />} />
-          <InfoItem label="Max Concurrent" value={rag.rateLimit.global.maxConcurrent} />
-          <InfoItem label="Max Wait Seconds" value={rag.rateLimit.global.maxWaitSeconds} />
-          <InfoItem label="Lease Seconds" value={rag.rateLimit.global.leaseSeconds} />
-          <InfoItem label="Poll Interval (ms)" value={rag.rateLimit.global.pollIntervalMs} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>记忆管理</CardTitle>
-          <CardDescription>摘要与上下文保留策略</CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-3">
-          <InfoItem label="History Keep Turns" value={rag.memory.historyKeepTurns} />
-          <InfoItem label="Summary Start Turns" value={rag.memory.summaryStartTurns} />
-          <InfoItem
-            label="Summary Enabled"
-            value={<BoolBadge value={rag.memory.summaryEnabled} />}
-          />
-          <InfoItem label="Summary Max Chars" value={rag.memory.summaryMaxChars} />
-          <InfoItem label="Title Max Length" value={rag.memory.titleMaxLength} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>模型服务提供方</CardTitle>
-          <CardDescription>接入地址与端点配置</CardDescription>
+          <CardTitle>立即生效参数</CardTitle>
+          <CardDescription>保存后无需重启，下一次对话/检索立即使用新值</CardDescription>
         </CardHeader>
         <CardContent>
-          <Table className="min-w-[760px]">
+          <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[140px]">Provider</TableHead>
-                <TableHead className="w-[240px]">URL</TableHead>
-                <TableHead className="w-[200px]">API Key</TableHead>
-                <TableHead>Endpoints</TableHead>
+                <TableHead className="w-[320px]">配置项</TableHead>
+                <TableHead className="w-[220px]">当前值</TableHead>
+                <TableHead className="w-[160px]">默认值</TableHead>
+                <TableHead>修改对比</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
-              {providers.map(([name, provider]) => (
-                <TableRow key={name}>
-                  <TableCell className="font-medium">{name}</TableCell>
-                  <TableCell>{provider.url}</TableCell>
-                  <TableCell>{provider.apiKey ? provider.apiKey : "-"}</TableCell>
-                  <TableCell>
-                    <div className="space-y-1 text-xs text-muted-foreground">
-                      {Object.entries(provider.endpoints).map(([key, value]) => (
-                        <div key={key}>
-                          {key}: {value}
-                        </div>
-                      ))}
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
+            <TableBody>{immediateItems.map(renderItem)}</TableBody>
           </Table>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>模型选择策略</CardTitle>
-          <CardDescription>熔断与选择阈值</CardDescription>
+          <CardTitle>需重启生效参数</CardTitle>
+          <CardDescription>
+            保存后写入配置库，服务重启时自动合并生效；API Key 仅显示是否已配置，不回显明文
+          </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <InfoItem label="Failure Threshold" value={ai.selection.failureThreshold} />
-          <InfoItem label="Open Duration (ms)" value={ai.selection.openDurationMs} />
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[320px]">配置项</TableHead>
+                <TableHead className="w-[220px]">当前值</TableHead>
+                <TableHead className="w-[160px]">默认值</TableHead>
+                <TableHead>修改对比</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>{restartItems.map(renderItem)}</TableBody>
+          </Table>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>流式响应</CardTitle>
-          <CardDescription>输出分片大小</CardDescription>
+          <CardTitle>配置审计</CardTitle>
+          <CardDescription>最近 20 条修改记录：操作者、时间、旧值、新值</CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-2">
-          <InfoItem label="Message Chunk Size" value={ai.stream.messageChunkSize} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Chat 模型配置</CardTitle>
-          <CardDescription>档位路由与候选注册表</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <InfoItem label="Default Tier" value={ai.chat.defaultTier ?? "-"} />
-            <InfoItem label="Deep Thinking Tier" value={ai.chat.deepThinkingTier ?? "-"} />
-          </div>
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-slate-500">档位（Tiers）</div>
-            <Table className="min-w-[560px]">
+        <CardContent>
+          {settings.audits.length === 0 ? (
+            <div className="py-6 text-center text-sm text-slate-400">暂无修改记录</div>
+          ) : (
+            <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[140px]">Tier</TableHead>
-                  <TableHead>候选（有序）</TableHead>
-                  <TableHead className="w-[120px]">Timeout (ms/候选)</TableHead>
+                  <TableHead>时间</TableHead>
+                  <TableHead>配置项</TableHead>
+                  <TableHead>操作</TableHead>
+                  <TableHead>操作者</TableHead>
+                  <TableHead>旧值 → 新值</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {Object.keys(ai.chat.tiers ?? {}).map((name) => {
-                  const cfg = ai.chat.tiers?.[name];
-                  if (!cfg) return null;
-                  return (
-                    <TableRow key={name}>
-                      <TableCell className="font-medium">{name}</TableCell>
-                      <TableCell>{cfg.candidates?.join(" → ")}</TableCell>
-                      <TableCell>{cfg.timeoutMs ?? "-"}</TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-          <div className="space-y-2">
-            <div className="text-xs font-medium text-slate-500">候选注册表（Candidates）</div>
-            <Table className="min-w-[640px]">
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-[220px]">ID</TableHead>
-                  <TableHead className="w-[120px]">Provider</TableHead>
-                  <TableHead className="w-[200px]">Model</TableHead>
-                  <TableHead className="w-[100px]">Thinking</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {ai.chat.candidates.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell className="font-medium">{item.id}</TableCell>
-                    <TableCell>{item.provider}</TableCell>
-                    <TableCell>{item.model}</TableCell>
-                    <TableCell>{item.supportsThinking ? "支持" : "-"}</TableCell>
+                {settings.audits.map((audit) => (
+                  <TableRow key={`${audit.createdAt}-${audit.key}-${audit.operation}`}>
+                    <TableCell className="whitespace-nowrap text-xs text-slate-500">
+                      {audit.createdAt.replace("T", " ").slice(0, 19)}
+                    </TableCell>
+                    <TableCell className="text-xs font-medium text-slate-700">{audit.key}</TableCell>
+                    <TableCell>
+                      <Badge variant={audit.operation === "reset" ? "outline" : "default"}>
+                        {audit.operation === "reset" ? "恢复默认" : "更新"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-500">{audit.operatorName ?? "-"}</TableCell>
+                    <TableCell className="max-w-[360px] truncate text-xs text-slate-500">
+                      {audit.operation === "reset"
+                        ? `${audit.oldValue ?? "默认"} → 默认`
+                        : `${audit.oldValue ?? "默认"} → ${audit.newValue ?? ""}`}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </div>
+          )}
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Embedding 模型配置</CardTitle>
-          <CardDescription>向量化模型列表</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <InfoItem label="Default Model" value={ai.embedding.defaultModel} />
-          </div>
-          <Table className="min-w-[720px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[220px]">ID</TableHead>
-                <TableHead className="w-[120px]">Provider</TableHead>
-                <TableHead className="w-[200px]">Model</TableHead>
-                <TableHead className="w-[110px]">Dimension</TableHead>
-                <TableHead className="w-[90px]">Priority</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ai.embedding.candidates.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.id}</TableCell>
-                  <TableCell>{item.provider}</TableCell>
-                  <TableCell>{item.model}</TableCell>
-                  <TableCell>{item.dimension}</TableCell>
-                  <TableCell>{item.priority}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Rerank 模型配置</CardTitle>
-          <CardDescription>重排模型列表</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <InfoItem label="Default Model" value={ai.rerank.defaultModel} />
-          </div>
-          <Table className="min-w-[640px]">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[220px]">ID</TableHead>
-                <TableHead className="w-[120px]">Provider</TableHead>
-                <TableHead className="w-[200px]">Model</TableHead>
-                <TableHead className="w-[90px]">Priority</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {ai.rerank.candidates.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell className="font-medium">{item.id}</TableCell>
-                  <TableCell>{item.provider}</TableCell>
-                  <TableCell>{item.model}</TableCell>
-                  <TableCell>{item.priority}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <aside className="rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4 text-xs leading-6 text-slate-600">
+        <strong>说明：</strong>所有修改会记录操作者、时间、旧值与新值；保存时携带版本号，若其他
+        操作已修改配置会提示冲突并刷新，避免相互覆盖。API Key 保存后不再回显明文，仅显示已配置。
+      </aside>
     </div>
   );
 }

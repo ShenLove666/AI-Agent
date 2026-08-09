@@ -79,6 +79,8 @@ type MenuItem = {
   hidden?: boolean;
   /** 仅对指定角色可见；缺省表示所有登录用户可见 */
   roles?: string[];
+  /** 按权限能力过滤（与 roles 同时满足才显示） */
+  permission?: string;
 };
 
 type MenuGroup = {
@@ -93,13 +95,15 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/support",
         label: "客服工作台",
-        icon: Inbox
+        icon: Inbox,
+        permission: "support.case.work"
       },
       {
         path: "/admin/support-supervisor",
         label: "主管队列",
         icon: ShieldAlert,
-        roles: ["supervisor", "admin"]
+        roles: ["supervisor", "admin"],
+        permission: "support.resolve"
       },
       {
         path: "/admin/support-knowledge",
@@ -129,13 +133,15 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/retail",
         label: "商品组合洞察",
         icon: LayoutDashboard,
-        roles: ["admin"]
+        roles: ["admin"],
+        permission: "retail.view"
       },
       {
         path: "/admin/operations",
         label: "商家运营洞察",
         icon: BarChart3,
-        roles: ["admin"]
+        roles: ["admin"],
+        permission: "retail.view"
       },
       {
         path: "/admin/agents",
@@ -220,7 +226,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/users",
         label: "用户管理",
-        icon: Users
+        icon: Users,
+        permission: "user.manage"
       },
       {
         path: "/admin/sample-questions",
@@ -231,7 +238,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/settings",
         label: "系统设置",
-        icon: Settings
+        icon: Settings,
+        permission: "settings.write"
       }
     ]
   }
@@ -527,9 +535,14 @@ export function AdminLayout() {
                   .filter((item) => !item.hidden)
                   .filter((item) => {
                     // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
-                    if (!item.roles || item.roles.length === 0) return true;
                     const role = user?.role || "user";
-                    return item.roles.includes(role);
+                    const roleOk =
+                      !item.roles || item.roles.length === 0 || item.roles.includes(role);
+                    // 权限能力：permission 缺省不限制；指定时按当前用户权限集合过滤
+                    const permissionOk =
+                      !item.permission ||
+                      (user?.permissions ?? []).includes(item.permission);
+                    return roleOk && permissionOk;
                   })
                   .flatMap((item) => {
                     if (!item.children || item.children.length === 0) {

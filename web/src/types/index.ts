@@ -12,6 +12,10 @@ export interface User {
   role: string;
   token: string;
   avatar?: string;
+  /** 权限能力集合（settings.write / campaign.confirm / ...），来自 /auth/me */
+  permissions?: string[];
+  /** 商家数据归属账号 id（组织 owner；无组织时为本人） */
+  merchantOwnerId?: number | null;
 }
 
 export type CurrentUser = Omit<User, "token">;
