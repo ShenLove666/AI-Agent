@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { ArrowDown } from "lucide-react";
 
 import { MessageItem } from "@/components/chat/MessageItem";
 import { QuestionRail, type QuestionRailItem } from "@/components/chat/QuestionRail";
@@ -7,6 +8,9 @@ import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
 import type { Message } from "@/types";
+
+/** 距底部小于该距离视为"接近底部"，自动跟随滚动；用户滚离更远时暂停跟随 */
+const NEAR_BOTTOM_THRESHOLD = 160;
 
 interface MessageListProps {
   messages: Message[];
@@ -29,6 +33,16 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     []
   );
   const [visibleEnd, setVisibleEnd] = React.useState(0);
+  const [showScrollDown, setShowScrollDown] = React.useState(false);
+
+  const isNearBottom = React.useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return true;
+    return (
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
+      NEAR_BOTTOM_THRESHOLD
+    );
+  }, []);
 
   const userQuestions = React.useMemo<QuestionRailItem[]>(() => {
     const items: QuestionRailItem[] = [];
@@ -77,11 +91,32 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     }
   }, []);
 
-  const stickToBottom = React.useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    scroller.scrollTop = scroller.scrollHeight;
-  }, []);
+  /**
+   * 流式输出期间的贴底：默认仅在用户接近底部时跟随，
+   * 用户滚离底部（往上翻历史）时暂停，避免抢滚动。
+   * 传 { force: true } 用于明确的"回到底部"意图。
+   */
+  const stickToBottom = React.useCallback(
+    (opts?: { force?: boolean }) => {
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      if (!opts?.force && !isNearBottom()) return;
+      scroller.scrollTop = scroller.scrollHeight;
+    },
+    [isNearBottom]
+  );
+
+  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮
+  // scrollerRef 回调中直接挂载（Virtuoso 不暴露 onScroll prop），dataset 去重防止重复挂载
+  const handleScrollerScrollRef = React.useRef<((event: Event) => void) | null>(null);
+  if (handleScrollerScrollRef.current === null) {
+    handleScrollerScrollRef.current = () => {
+      const near = isNearBottomRef.current();
+      setShowScrollDown((prev) => (prev === !near ? prev : !near));
+    };
+  }
+  const isNearBottomRef = React.useRef(isNearBottom);
+  isNearBottomRef.current = isNearBottom;
 
   React.useEffect(() => {
     const nextKey = sessionKey ?? "empty";
@@ -99,14 +134,16 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     const wasStreaming = prevStreamingRef.current;
     prevStreamingRef.current = isStreaming;
     if (!wasStreaming && isStreaming) {
-      stickToBottom();
-      const timer = window.setTimeout(stickToBottom, 120);
+      // 刚发送消息时用户位于底部：强制贴底一次；此后的内容增长只接近底部才跟随
+      stickToBottom({ force: true });
+      const timer = window.setTimeout(() => stickToBottom({ force: true }), 120);
       return () => window.clearTimeout(timer);
     }
     if (wasStreaming && !isStreaming) {
-      scrollToBottom();
-      const timer = window.setTimeout(scrollToBottom, 120);
-      const lateTimer = window.setTimeout(scrollToBottom, 360);
+      // 流式结束：仅在用户接近底部时贴底展示完整回答，滚离底部（查看历史）时不抢滚动
+      stickToBottom();
+      const timer = window.setTimeout(stickToBottom, 120);
+      const lateTimer = window.setTimeout(stickToBottom, 360);
       return () => {
         window.clearTimeout(timer);
         window.clearTimeout(lateTimer);
@@ -219,13 +256,10 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     }
     heightScrollRafRef.current = window.requestAnimationFrame(() => {
       heightScrollRafRef.current = null;
-      if (isStreaming) {
-        stickToBottom();
-      } else {
-        scrollToBottom();
-      }
+      // 流式增长与非流式高度变化都只在接近底部时跟随，避免抢用户滚动
+      stickToBottom();
     });
-  }, [isStreaming, isLoading, scrollToBottom, stickToBottom]);
+  }, [isStreaming, isLoading, stickToBottom]);
 
   // Intercept triple-click at mousedown phase to prevent browser from
   // extending paragraph selection across sibling message boundaries.
@@ -286,6 +320,12 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
         followOutput={false}
         scrollerRef={(node) => {
           scrollerRef.current = node as HTMLElement | null;
+          if (node && !node.dataset.scrollListenerAttached) {
+            node.dataset.scrollListenerAttached = "1";
+            node.addEventListener("scroll", handleScrollerScrollRef.current!, {
+              passive: true
+            });
+          }
         }}
         totalListHeightChanged={handleTotalListHeightChanged}
         rangeChanged={handleRangeChanged}
@@ -306,6 +346,16 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
         activeId={activeQuestionId}
         onSelect={handleSelectQuestion}
       />
+      {showScrollDown ? (
+        <button
+          type="button"
+          aria-label="滚动到底部"
+          onClick={() => scrollToBottom()}
+          className="absolute bottom-4 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+        >
+          <ArrowDown className="h-4 w-4" />
+        </button>
+      ) : null}
     </div>
   );
 }
