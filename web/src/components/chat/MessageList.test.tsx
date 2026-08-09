@@ -40,6 +40,56 @@ function fireScroll(top: number, total: number, client: number) {
 
 afterEach(cleanup);
 
+describe("MessageList stream-end scroll behavior", () => {
+  it("force-scrolls to the bottom when the stream ends if the user never scrolled away", () => {
+    const messages = [
+      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+    ];
+    const { rerender } = render(
+      <MessageList messages={messages} isLoading={false} isStreaming={true} />
+    );
+    const scroller = findScroller();
+    expect(scroller).not.toBeNull();
+    Object.defineProperty(scroller!, "scrollHeight", { value: 800, configurable: true, writable: true });
+    Object.defineProperty(scroller!, "clientHeight", { value: 300, configurable: true, writable: true });
+    Object.defineProperty(scroller!, "scrollTop", { value: 0, configurable: true, writable: true });
+
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
+
+    // 完成时用户未滚离 → 贴底（scrollTop 被设为 scrollHeight）
+    return Promise.resolve().then(() => {
+      expect(scroller!.scrollTop).toBe(800);
+    });
+  });
+
+  it("does not yank the viewport when the user scrolled away during streaming", async () => {
+    const messages = [
+      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+    ];
+    // 先以非流式渲染让会话加载贴底标记（1500ms）注册并过期，避免布局 effect 干扰
+    const { rerender } = render(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} />
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
+    const scroller = findScroller();
+    Object.defineProperty(scroller!, "scrollHeight", { value: 800, configurable: true, writable: true });
+    Object.defineProperty(scroller!, "clientHeight", { value: 300, configurable: true, writable: true });
+    Object.defineProperty(scroller!, "scrollTop", { value: 100, configurable: true, writable: true });
+    // 用户滚离底部（距底 800-100-300=400 > 160）
+    fireScroll(100, 800, 300);
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
+
+    // 用户滚离过 → 完成时不抢滚动，位置保持
+    return Promise.resolve().then(() => {
+      expect(scroller!.scrollTop).toBe(100);
+    });
+  });
+});
+
 describe("MessageList scroll-follow behavior", () => {
   it("shows the scroll-to-bottom button once the user scrolls away from the bottom", () => {
     const messages = [

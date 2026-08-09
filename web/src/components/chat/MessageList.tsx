@@ -106,13 +106,15 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     [isNearBottom]
   );
 
-  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮
+  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮；同时记录"用户是否主动滚离"
   // scrollerRef 回调中直接挂载（Virtuoso 不暴露 onScroll prop），dataset 去重防止重复挂载
+  const userScrolledAwayRef = React.useRef(false);
   const handleScrollerScrollRef = React.useRef<((event: Event) => void) | null>(null);
   if (handleScrollerScrollRef.current === null) {
     handleScrollerScrollRef.current = () => {
       const near = isNearBottomRef.current();
       setShowScrollDown((prev) => (prev === !near ? prev : !near));
+      userScrolledAwayRef.current = !near;
     };
   }
   const isNearBottomRef = React.useRef(isNearBottom);
@@ -127,6 +129,11 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
         window.clearTimeout(settleTimerRef.current);
         settleTimerRef.current = null;
       }
+      // 会话加载贴底标记独立过期（不受后续 rerender 的 cleanup 干扰）
+      settleTimerRef.current = window.setTimeout(() => {
+        pendingScrollRef.current = false;
+        settleTimerRef.current = null;
+      }, 1500);
     }
   }, [sessionKey]);
 
@@ -134,20 +141,25 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     const wasStreaming = prevStreamingRef.current;
     prevStreamingRef.current = isStreaming;
     if (!wasStreaming && isStreaming) {
-      // 刚发送消息时用户位于底部：强制贴底一次；此后的内容增长只接近底部才跟随
+      // 刚发送消息时用户位于底部：重置滚离标记并强制贴底一次；此后的内容增长只接近底部才跟随
+      userScrolledAwayRef.current = false;
       stickToBottom({ force: true });
       const timer = window.setTimeout(() => stickToBottom({ force: true }), 120);
       return () => window.clearTimeout(timer);
     }
     if (wasStreaming && !isStreaming) {
-      // 流式结束：仅在用户接近底部时贴底展示完整回答，滚离底部（查看历史）时不抢滚动
-      stickToBottom();
-      const timer = window.setTimeout(stickToBottom, 120);
-      const lateTimer = window.setTimeout(stickToBottom, 360);
-      return () => {
-        window.clearTimeout(timer);
-        window.clearTimeout(lateTimer);
-      };
+      // 流式结束：用户未主动滚离时强制贴底展示完整回答（含 Timeline 折叠后的高度变化）；
+      // 用户滚离过（查看历史）则不抢滚动
+      if (!userScrolledAwayRef.current) {
+        scrollToBottom();
+        const timer = window.setTimeout(scrollToBottom, 120);
+        const lateTimer = window.setTimeout(scrollToBottom, 360);
+        return () => {
+          window.clearTimeout(timer);
+          window.clearTimeout(lateTimer);
+        };
+      }
+      return;
     }
     return;
   }, [isStreaming, stickToBottom, scrollToBottom]);
@@ -186,22 +198,11 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       }
     });
   }
-    if (settleTimerRef.current) {
-      window.clearTimeout(settleTimerRef.current);
-    }
-    settleTimerRef.current = window.setTimeout(() => {
-      pendingScrollRef.current = false;
-      settleTimerRef.current = null;
-    }, 1500);
     return () => {
       active = false;
       window.cancelAnimationFrame(rafId);
       window.clearTimeout(timer);
       window.clearTimeout(lateTimer);
-      if (settleTimerRef.current) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
       window.removeEventListener("load", handleLoad);
     };
   }, [messages.length, isStreaming, isLoading, sessionKey]);
