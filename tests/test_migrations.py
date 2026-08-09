@@ -18,6 +18,7 @@ from app.modules.operations import models as operation_models  # noqa: F401,E402
 from app.modules.orders import models as order_models  # noqa: F401,E402
 from app.modules.provenance import models as provenance_models  # noqa: F401,E402
 from app.modules.optimization import models as optimization_models  # noqa: F401,E402
+from app.modules.settings import models as settings_models  # noqa: F401,E402
 from app.modules.support import models as support_models  # noqa: F401,E402
 from app.modules.users import models as user_models  # noqa: F401,E402
 

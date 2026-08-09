@@ -34,7 +34,13 @@ from app.modules.support.service import SupportService
 from app.modules.users.models import User
 
 
-def _agentic_run(*, grounded: bool, order_no: str | None = None) -> AgenticRun:
+def _agentic_run(
+    *,
+    grounded: bool,
+    order_no: str | None = None,
+    policy_content: str = "生鲜破损应保留照片，审核后退款；优惠券按活动规则返还。",
+    policy_metadata: dict | None = None,
+) -> AgenticRun:
     """构造一个模拟 Agent Runtime 返回的 AgenticRun。"""
     decision = AgentDecision(
         "research",
@@ -45,7 +51,7 @@ def _agentic_run(*, grounded: bool, order_no: str | None = None) -> AgenticRun:
     results = [
         SearchResult(
             id="policy:1",
-            content="生鲜破损应保留照片，审核后退款；优惠券按活动规则返还。",
+            content=policy_content,
             score=0.9,
             channel="knowledge.search",
             metadata={
@@ -54,6 +60,7 @@ def _agentic_run(*, grounded: bool, order_no: str | None = None) -> AgenticRun:
                 "document_name": "refund.md",
                 "release_version": "v1",
                 "provenance": "source",
+                **(policy_metadata or {}),
             },
         ),
     ]
@@ -94,10 +101,19 @@ def _agentic_run(*, grounded: bool, order_no: str | None = None) -> AgenticRun:
 class FakeCoordinator(AgenticRagCoordinator):
     """模拟 AgenticRagCoordinator，验证 SupportService 是否正确消费 AgenticRun。"""
 
-    def __init__(self, *, grounded: bool = True, order_no: str | None = None):
+    def __init__(
+        self,
+        *,
+        grounded: bool = True,
+        order_no: str | None = None,
+        policy_content: str = "生鲜破损应保留照片，审核后退款；优惠券按活动规则返还。",
+        policy_metadata: dict | None = None,
+    ):
         super().__init__(None, None)
         self.grounded = grounded
         self.order_no = order_no
+        self.policy_content = policy_content
+        self.policy_metadata = policy_metadata
         self.last_question: str | None = None
         self.last_knowledge_base_ids: tuple[int, ...] = ()
 
@@ -111,7 +127,12 @@ class FakeCoordinator(AgenticRagCoordinator):
     ) -> AgenticRun:
         self.last_question = question
         self.last_knowledge_base_ids = tuple(knowledge_base_ids)
-        return _agentic_run(grounded=self.grounded, order_no=self.order_no)
+        return _agentic_run(
+            grounded=self.grounded,
+            order_no=self.order_no,
+            policy_content=self.policy_content,
+            policy_metadata=self.policy_metadata,
+        )
 
 
 def _fixture(tmp_path):
@@ -211,6 +232,82 @@ def test_grounded_suggestion_has_citations_and_structured_resolution(tmp_path):
         assert resolution["escalationReason"] is None
         assert resolution["draftReply"]
         assert "转人工" not in resolution["recommendedActions"]
+    finally:
+        db.close()
+        database.engine.dispose()
+
+
+def test_grounded_suggestion_content_is_a_short_customer_ready_draft(tmp_path):
+    database, db, user, case = _fixture(tmp_path)
+    policy_content = """---
+title: 生鲜退款政策
+frontmatter: true
+source_url: https://example.gov/policies/refund
+content_origin: public_summary
+---
+生鲜商品破损时应保留照片并提交审核。""" + ("审核通过后按原支付路径退款。" * 40)
+    coordinator = FakeCoordinator(
+        order_no="NB-20260809-001",
+        policy_content=policy_content,
+    )
+    try:
+        result = asyncio.run(
+            SupportService().generate_suggestion(
+                db, user.id, case.id, user.id, None, coordinator=coordinator
+            )
+        )
+
+        assert result["status"] == "completed"
+        assert result["content"]
+        assert len(result["content"]) <= 320
+        assert "frontmatter" not in result["content"].lower()
+        assert "source_url" not in result["content"].lower()
+        assert "content_origin" not in result["content"].lower()
+        assert "---" not in result["content"]
+        assert "生鲜商品破损时应保留照片" not in result["content"]
+        assert "状态为已签收" not in result["content"]
+        assert result["resolution"]["facts"][0]["orderNo"] == "NB-20260809-001"
+        assert result["resolution"]["recommendedActions"]
+        assert result["resolution"]["missingFacts"] == []
+        assert result["citations"][0]["documentId"] == 1
+    finally:
+        db.close()
+        database.engine.dispose()
+
+
+def test_grounded_suggestion_citation_strips_frontmatter_and_keeps_provenance(
+    tmp_path,
+):
+    database, db, user, case = _fixture(tmp_path)
+    policy_content = """---
+title: 生鲜退款政策
+source_url: https://example.gov/policies/refund
+content_origin: public_summary
+---
+生鲜商品破损时应保留照片并提交审核。"""
+    coordinator = FakeCoordinator(
+        policy_content=policy_content,
+        policy_metadata={
+            "canonical_url": "https://example.gov/policies/refund",
+            "publisher": "测试监管机构",
+            "provenance": "public_summary",
+        },
+    )
+    try:
+        result = asyncio.run(
+            SupportService().generate_suggestion(
+                db, user.id, case.id, user.id, None, coordinator=coordinator
+            )
+        )
+
+        citation = result["citations"][0]
+        assert citation["excerpt"] == "生鲜商品破损时应保留照片并提交审核。"
+        assert citation["content"] == citation["excerpt"]
+        assert citation["documentId"] == 1
+        assert citation["releaseVersion"] == "v1"
+        assert citation["canonicalUrl"] == "https://example.gov/policies/refund"
+        assert citation["publisher"] == "测试监管机构"
+        assert citation["contentOrigin"] == "public_summary"
     finally:
         db.close()
         database.engine.dispose()

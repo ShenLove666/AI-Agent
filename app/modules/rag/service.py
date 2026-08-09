@@ -52,6 +52,7 @@ class RagChatService:
         history_token_budget: int = 3000,
         context_token_budget: int = 4000,
         agentic: AgenticRagCoordinator | None = None,
+        runtime_settings_repository=None,
     ):
         self.model_router = model_router
         self.conversations = conversations
@@ -64,6 +65,31 @@ class RagChatService:
         self.history_token_budget = history_token_budget
         self.context_token_budget = context_token_budget
         self.agentic = agentic
+        self.runtime_settings_repository = runtime_settings_repository
+
+    def _apply_runtime_overrides(self, db: Session) -> None:
+        """应用运行时配置中「立即生效」的参数（保存后无需重启）。"""
+        if self.runtime_settings_repository is None:
+            return
+        overrides = self.runtime_settings_repository.get_all(db)
+        self.retrieval_candidate_limit = int(
+            overrides.get("retrieval_candidate_limit", self.retrieval_candidate_limit)
+        )
+        self.retrieval_context_limit = int(
+            overrides.get("retrieval_context_limit", self.retrieval_context_limit)
+        )
+        self.history_token_budget = int(
+            overrides.get("prompt_history_token_budget", self.history_token_budget)
+        )
+        self.context_token_budget = int(
+            overrides.get("prompt_context_token_budget", self.context_token_budget)
+        )
+        if self.retrieval is not None:
+            self.retrieval.timeout_seconds = float(
+                overrides.get(
+                    "retrieval_timeout_seconds", self.retrieval.timeout_seconds
+                )
+            )
 
     def _budget_history(
         self, history: list[tuple[Message, Message]]
@@ -246,6 +272,7 @@ class RagChatService:
         request: ChatRequest,
         trace: TraceExecution,
     ) -> PreparedChat:
+        self._apply_runtime_overrides(db)
         request_run = self._begin_request(db, user_id, request)
         turn = (
             self.conversations.require_owned_turn(db, request.turn_id, user_id)

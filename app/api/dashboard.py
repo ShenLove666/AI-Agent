@@ -6,10 +6,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
-from app.api.dependencies import CurrentAdmin, DbSession
+from app.api.dependencies import DbSession, get_current_admin
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.conversations.models import Conversation, Message
@@ -68,10 +68,9 @@ def _window_bounds(window: DashboardWindow) -> tuple[datetime, datetime, datetim
     return start - _WINDOWS[window], start, end
 
 
-@router.get("/overview")
+@router.get("/overview", dependencies=[Depends(get_current_admin)])
 def overview(
     db: DbSession,
-    admin: CurrentAdmin,
     window: DashboardWindow = "24h",
 ) -> ApiResponse:
     previous_start, start, end = _window_bounds(window)
@@ -156,10 +155,9 @@ def _no_document_run_ids(db, start: datetime, end: datetime) -> set[str]:
     return result
 
 
-@router.get("/performance")
+@router.get("/performance", dependencies=[Depends(get_current_admin)])
 def performance(
     db: DbSession,
-    admin: CurrentAdmin,
     window: DashboardWindow = "24h",
 ) -> ApiResponse:
     _, start, end = _window_bounds(window)
@@ -186,10 +184,9 @@ def performance(
     )
 
 
-@router.get("/operations")
+@router.get("/operations", dependencies=[Depends(get_current_admin)])
 def operations(
     db: DbSession,
-    admin: CurrentAdmin,
     window: DashboardWindow = "7d",
 ) -> ApiResponse:
     """聚合商家使用、回答质量和待优化问题，形成运营闭环。"""
@@ -304,10 +301,9 @@ def _series(name: str, buckets: list[datetime], values: dict[datetime, float]) -
     }
 
 
-@router.get("/trends")
+@router.get("/trends", dependencies=[Depends(get_current_admin)])
 def trends(
     db: DbSession,
-    admin: CurrentAdmin,
     metric: Literal["sessions", "messages", "activeUsers", "avgLatency", "quality"],
     window: DashboardWindow = "7d",
     granularity: DashboardGranularity = "day",

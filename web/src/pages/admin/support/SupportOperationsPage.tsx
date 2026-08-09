@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useAuthStore } from "@/stores/authStore";
 import { KnowledgeSourcesView } from "./KnowledgeSourcesView";
 import {
   activateKnowledgeRelease,
@@ -62,6 +63,7 @@ const fmt = (value: number | null | undefined, suffix = "") =>
   value == null ? "暂无数据" : `${value}${suffix}`;
 
 export function SupportOperationsPage({ view = "reports" }: { view?: SupportOperationsView }) {
+  const permissions = useAuthStore((state) => state.user?.permissions ?? []);
   const [releases, setReleases] = useState<KnowledgeRelease[]>([]);
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [quality, setQuality] = useState<QualityOverview | null>(null);
@@ -80,24 +82,43 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [releaseRows, sourceRows, qualityData, evaluationData, coverageData] = await Promise.all([
-        getKnowledgeReleases(),
-        getKnowledgeSources(),
-        getQualityOverview(),
-        getEvaluationOverview(),
-        getSupportCoverage()
-      ]);
-      setReleases(releaseRows);
-      setSources(sourceRows);
-      setQuality(qualityData);
-      setEvaluation(evaluationData);
-      setCoverage(coverageData);
+      // 按视图只请求本视图需要的数据：避免无权限的请求触发 403 报错
+      // （如主管在质量视图不再请求 knowledge.manage 接口）
+      const requests: Array<Promise<unknown>> = [];
+      if (view === "knowledge") {
+        requests.push(
+          getKnowledgeReleases().then(setReleases),
+          getKnowledgeSources().then(setSources)
+        );
+      } else if (view === "quality") {
+        requests.push(
+          getQualityOverview().then(setQuality),
+          getSupportCoverage().then(setCoverage)
+        );
+        // 解决缺口需绑定知识版本（knowledge.manage）：只有该权限的用户才加载版本列表
+        if (permissions.includes("knowledge.manage")) {
+          requests.push(getKnowledgeReleases().then(setReleases));
+        }
+      } else if (view === "evaluation") {
+        requests.push(getEvaluationOverview().then(setEvaluation));
+        // 上线决策需绑定候选版本（该视图仅 admin 可进入）
+        requests.push(getKnowledgeReleases().then(setReleases));
+      } else {
+        // reports：聚合全部只读数据（单项失败不阻断整体展示）
+        const safe = <T,>(promise: Promise<T>) => promise.catch(() => null);
+        requests.push(
+          safe(getQualityOverview()).then((value) => setQuality(value)),
+          safe(getEvaluationOverview()).then((value) => setEvaluation(value)),
+          safe(getSupportCoverage()).then((value) => setCoverage(value))
+        );
+      }
+      await Promise.all(requests);
     } catch {
       toast.error("运营闭环数据加载失败，请确认后端已启动并完成迁移");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [view]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -123,29 +144,31 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
 
   return (
     <div className="mx-auto max-w-[1480px] space-y-5 pb-10">
-      <section className="rounded-[28px] border border-indigo-100 bg-gradient-to-r from-white via-indigo-50/70 to-blue-50 p-6">
-        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
-          <div>
-            <Badge className="mb-3 bg-indigo-600">
-              <Sparkles className="mr-1 h-3.5 w-3.5" />
+      <section className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+        <div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="rounded-md border border-indigo-100 bg-indigo-50 p-1 text-indigo-600">
+              <Sparkles className="h-4 w-4" />
+            </span>
+            <Badge variant="outline" className="border-indigo-200 bg-indigo-50 text-indigo-600">
               AI 客服质量闭环
             </Badge>
-            <h1 className="flex items-center gap-3 text-3xl font-semibold text-slate-950">
-              <Icon className="h-8 w-8 text-indigo-600" />
-              {meta.title}
-            </h1>
-            <p className="mt-2 text-sm text-slate-600">{meta.description}</p>
           </div>
-          <Button variant="outline" onClick={() => void load()}>
-            <RefreshCw className="mr-2 h-4 w-4" />
-            刷新
-          </Button>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-slate-900">
+            <Icon className="h-5 w-5 text-indigo-600" />
+            {meta.title}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">{meta.description}</p>
         </div>
+        <Button variant="outline" onClick={() => void load()}>
+          <RefreshCw className="mr-2 h-4 w-4" />
+          刷新
+        </Button>
       </section>
 
       {view === "knowledge" && (
         <section className="grid gap-4 lg:grid-cols-[1.4fr_.6fr]">
-          <div className="rounded-2xl border bg-white p-5">
+          <div className="rounded-lg border bg-white p-5">
             <h2 className="font-semibold">版本历史</h2>
             <div className="mt-4 space-y-3">
               {releases.length === 0 ? (
@@ -186,10 +209,10 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
               )}
             </div>
           </div>
-          <aside className="rounded-2xl border bg-slate-950 p-5 text-white">
-            <BookOpenCheck className="h-7 w-7 text-indigo-300" />
-            <h2 className="mt-4 text-lg font-semibold">发布规则</h2>
-            <ul className="mt-3 space-y-3 text-sm text-slate-300">
+          <aside className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-5">
+            <BookOpenCheck className="h-6 w-6 text-indigo-600" />
+            <h2 className="mt-3 text-base font-semibold text-slate-900">发布规则</h2>
+            <ul className="mt-3 space-y-3 text-sm text-slate-600">
               <li>1. 文档必须完成解析且可检索</li>
               <li>2. 发布后成员关系与哈希不可变</li>
               <li>3. 切换版本不会删除历史版本</li>
@@ -210,7 +233,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
             <Metric label="质检通过" value={quality?.passed} />
             <Metric label="待修缺口" value={quality?.openGaps} />
           </div>
-          <div className="rounded-2xl border bg-white p-5">
+          <div className="rounded-lg border bg-white p-5">
             <h2 className="font-semibold">知识缺口队列</h2>
             <div className="mt-4 space-y-3">
               {quality?.gaps.length ? (
@@ -260,7 +283,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
             <Metric label="评测用例" value={evaluation?.evaluationCaseCount} />
             <Metric label="候选知识版本" value={candidate?.version ?? "无"} />
           </div>
-          <div className="rounded-2xl border bg-white p-5">
+          <div className="rounded-lg border bg-white p-5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold">评测运行与上线门禁</h2>
@@ -332,9 +355,9 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
 
 function Metric({ label, value }: { label: string; value: number | string | undefined }) {
   return (
-    <div className="rounded-2xl border bg-white p-5">
+    <div className="rounded-lg border bg-white p-5">
       <p className="text-sm text-slate-500">{label}</p>
-      <strong className="mt-2 block text-3xl text-slate-950">{value ?? "—"}</strong>
+      <strong className="mt-1.5 block text-xl font-semibold text-slate-900">{value ?? "—"}</strong>
     </div>
   );
 }
@@ -367,10 +390,10 @@ function Reports({
         <Metric label="最近评测得分" value={fmt(latest?.score)} />
       </section>
       <section className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border bg-white p-5">
+        <div className="rounded-lg border bg-white p-5">
           <h2 className="font-semibold">知识健康度</h2>
           <div className="mt-5 flex items-end gap-3">
-            <strong className="text-4xl">
+            <strong className="text-2xl font-semibold">
               {releases.filter((item) => item.status === "published").length}
             </strong>
             <span className="pb-1 text-sm text-slate-500">个已发布版本</span>
@@ -379,12 +402,12 @@ function Reports({
             当前生效：{releases.find((item) => item.isActive)?.version ?? "未设置"}
           </p>
         </div>
-        <div className="rounded-2xl border bg-slate-950 p-5 text-white">
-          <h2 className="font-semibold">数据口径</h2>
-          <p className="mt-4 text-sm leading-6 text-slate-300">
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-5">
+          <h2 className="font-semibold text-slate-900">数据口径</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-600">
             本页不调用大模型编造指标。复核量来自人工决策记录，知识缺口来自质检聚合，评测得分来自固定用例与确定性规则。
           </p>
-          <Badge className="mt-4 bg-amber-500 text-slate-950">
+          <Badge className="mt-4 bg-amber-100 text-amber-900">
             {quality?.provenance === "demo" ? "当前为演示数据" : "当前含真实业务数据"}
           </Badge>
         </div>

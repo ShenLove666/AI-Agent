@@ -4,10 +4,14 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Request, UploadFile
+from fastapi import APIRouter, Depends, BackgroundTasks, File, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from app.api.dependencies import CurrentUserId, DbSession
+from app.api.dependencies import (
+    CurrentUserId,
+    DbSession,
+    make_permission_requirement,
+)
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.knowledge.uploads import save_upload, validate_upload
@@ -43,7 +47,7 @@ def serialize_document(item):
     }
 
 
-@router.post("", response_model=ApiResponse, status_code=201)
+@router.post("", response_model=ApiResponse, status_code=201, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def create_base(
     payload: KnowledgeBaseCreateRequest,
     db: DbSession,
@@ -56,13 +60,13 @@ def create_base(
     return ApiResponse(data=serialize_base(item), traceId=current_trace_id())
 
 
-@router.get("", response_model=ApiResponse)
+@router.get("", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_bases(db: DbSession, user_id: CurrentUserId, request: Request) -> ApiResponse:
     items = request.app.state.container.knowledge.list_bases(db, user_id)
     return ApiResponse(data=[serialize_base(item) for item in items], traceId=current_trace_id())
 
 
-@router.get("/{base_id}/documents", response_model=ApiResponse)
+@router.get("/{base_id}/documents", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_documents(
     base_id: int, db: DbSession, user_id: CurrentUserId, request: Request
 ) -> ApiResponse:
@@ -72,7 +76,7 @@ def list_documents(
     )
 
 
-@router.post("/{base_id}/documents", response_model=ApiResponse, status_code=202)
+@router.post("/{base_id}/documents", response_model=ApiResponse, status_code=202, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 async def upload_document(
     base_id: int,
     background_tasks: BackgroundTasks,

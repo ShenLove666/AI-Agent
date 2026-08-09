@@ -42,7 +42,7 @@ from app.modules.support.models import (
     SupportQualityLabel,
     SupportReleaseDecision,
 )
-from app.modules.users.models import User
+from app.modules.users.models import Organization, OrganizationMember, User
 from app.modules.commerce.service import RetailService
 from app.modules.commerce.models import Basket, BasketItem, CommerceImport, Product
 from app.modules.orders.models import (
@@ -112,6 +112,8 @@ class DemoClearResult:
     removed_vectors: int = 0
     removed_support_records: int = 0
     removed_order_records: int = 0
+    removed_members: int = 0
+    removed_organizations: int = 0
     external_cleanup_errors: tuple[str, ...] = ()
 
     @property
@@ -224,6 +226,7 @@ class DemoSeedService:
             user, created = self._upsert_user(db, password)
             mutated = True
             counts["created_users" if created else "reused_users"] += 1
+            self._upsert_organization(db, user, password)
 
             bases_by_key: dict[str, KnowledgeBase] = {}
             for catalog_base in self.catalog.knowledge_bases:
@@ -757,7 +760,31 @@ class DemoSeedService:
             removed_knowledge_bases=self._delete_ids(
                 db, KnowledgeBase, KnowledgeBase.id, plan.base_ids
             ),
-            removed_users=self._delete_ids(db, User, User.id, plan.user_ids),
+        )
+        if plan.user_ids:
+            org_ids = tuple(
+                db.scalars(
+                    select(Organization.id).where(
+                        Organization.owner_user_id.in_(plan.user_ids)
+                    )
+                )
+            )
+            if org_ids:
+                member_ids = tuple(
+                    db.scalars(
+                        select(OrganizationMember.id).where(
+                            OrganizationMember.org_id.in_(org_ids)
+                        )
+                    )
+                )
+                counts["removed_members"] = self._delete_ids(
+                    db, OrganizationMember, OrganizationMember.id, member_ids
+                )
+                counts["removed_organizations"] = self._delete_ids(
+                    db, Organization, Organization.id, org_ids
+                )
+        counts["removed_users"] = self._delete_ids(
+            db, User, User.id, plan.user_ids
         )
         db.flush()
         return counts
@@ -976,6 +1003,68 @@ class DemoSeedService:
         user.is_demo = True
         db.commit()
         return user, True
+
+    def _upsert_organization(
+        self, db: Session, owner_user: User, password: str
+    ) -> None:
+        """创建演示商家组织，并准备各角色演示账号与明确成员关系。
+
+        账号密码与演示商家账号一致；成员关系替代旧的"管理员自动代理"魔法：
+        support-admin / demo-supervisor 等只有作为组织成员时才可访问商家数据。
+        support-admin 是非 demo 的平台管理员账号（与 cli create-admin 一致），
+        seed 仅负责把它绑定进演示组织；demo-* 账号随 seed 创建、clear 清理。
+        """
+        org = db.scalar(
+            select(Organization).where(
+                Organization.owner_user_id == owner_user.id
+            )
+        )
+        if org is None:
+            org = Organization(
+                name="邻里鲜选演示商家",
+                owner_user_id=owner_user.id,
+                is_demo=True,
+            )
+            db.add(org)
+            db.flush()
+        accounts = {
+            "support-admin": ("admin", "admin", False),
+            "demo-supervisor": ("supervisor", "supervisor", True),
+            "demo-operator": ("operator", "operator", True),
+            "demo-agent": ("user", "user", True),
+        }
+        # 商家 owner 本人也以成员身份绑定组织（角色 admin）
+        accounts = {"merchant-demo": ("admin", "admin", True), **accounts}
+        for username, (member_role, global_role, demo) in accounts.items():
+            account = self.container.user_repository.get_by_username(db, username)
+            if account is None:
+                account = self.container.user_repository.create(
+                    db,
+                    username=username,
+                    password_hash=self.container.auth.passwords.hash(password),
+                )
+                account.is_demo = demo
+                account.role = global_role
+                db.flush()
+            elif demo and not account.is_demo:
+                raise DemoOwnershipError(
+                    f"ownership violation: {username} belongs to a non-demo user"
+                )
+            if demo and account.role != global_role:
+                account.role = global_role
+            member = db.scalar(
+                select(OrganizationMember).where(
+                    OrganizationMember.org_id == org.id,
+                    OrganizationMember.user_id == account.id,
+                )
+            )
+            if member is None:
+                db.add(
+                    OrganizationMember(
+                        org_id=org.id, user_id=account.id, role=member_role
+                    )
+                )
+        db.commit()
 
     def _upsert_knowledge_base(
         self,

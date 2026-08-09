@@ -30,6 +30,7 @@ from app.modules.knowledge.models import (
 )
 from app.modules.orders.models import Order, OutboundMessage
 from app.modules.orders.service import OrderService
+from app.modules.optimization.models import OptimizationTask
 from app.modules.support.outbound import OutboundService, build_customer_channel
 from app.modules.support.models import (
     KnowledgeGap,
@@ -84,24 +85,28 @@ def _json(value: str | None, fallback):
         return fallback
 
 
+def _without_frontmatter(content: str) -> str:
+    """Remove a leading Markdown/YAML frontmatter block from display excerpts."""
+    normalized = content.lstrip("\ufeff \t\r\n")
+    lines = normalized.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return content.strip()
+    for index, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            return "\n".join(lines[index + 1 :]).strip()
+    return content.strip()
+
+
 class SupportService:
-    def owner_for(self, db: Session, user: User) -> int:
-        if user.role == "admin":
-            owner = db.scalar(
-                select(SupportCase.owner_id)
-                .join(User, User.id == SupportCase.owner_id)
-                .where(User.is_demo.is_(True))
-                .order_by(SupportCase.id.desc())
-                .limit(1)
-            )
-            if owner is not None:
-                return int(owner)
-            demo_owner = db.scalar(
-                select(User.id).where(User.is_demo.is_(True)).order_by(User.id).limit(1)
-            )
-            if demo_owner is not None:
-                return int(demo_owner)
-        return int(user.id)
+    def owner_for(self, db: Session, user: User) -> int | None:
+        """商家数据归属：仅当用户是某商家组织成员时返回该组织 owner_user_id。
+
+        不再隐式代理"最新 demo 商家"；无成员关系的用户（包括未绑定的
+        平台管理员）返回 None，由调用方按读返回空 / 写拒绝处理。
+        """
+        from app.modules.users.access import resolve_owner
+
+        return resolve_owner(db, user)
 
     def list_cases(
         self,
@@ -1103,6 +1108,7 @@ class SupportService:
             entries.append(evidence)
             gap.evidence_json = json.dumps(entries[-20:], ensure_ascii=False)
             gap.updated_at = datetime.utcnow()
+            self._create_task_from_gap(db, owner_id, gap)
         db.commit()
         return {
             "id": label.id,
@@ -1112,6 +1118,45 @@ class SupportService:
             "severity": label.severity,
             "note": label.note,
         }
+
+    def _create_task_from_gap(
+        self, db: Session, owner_id: int, gap: KnowledgeGap
+    ) -> None:
+        """客服质检失败（知识缺口）→ 自动创建优化任务（幂等去重）。"""
+        existing = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.owner_id == owner_id,
+                OptimizationTask.source_type == "knowledge_gap",
+                OptimizationTask.source_id == str(gap.id),
+            )
+        )
+        if existing:
+            return
+        case_id = None
+        for entry in _json(gap.evidence_json, []):
+            if isinstance(entry, dict) and entry.get("caseId"):
+                case_id = int(entry["caseId"])
+                break
+        db.add(
+            OptimizationTask(
+                owner_id=owner_id,
+                source_type="knowledge_gap",
+                source_id=str(gap.id),
+                title=f"补齐知识缺口：{gap.title}",
+                status="new",
+                target_metric="知识命中率",
+                before_evidence_json=json.dumps(
+                    {
+                        "origin": "quality_label",
+                        "gapId": gap.id,
+                        "category": gap.category,
+                    },
+                    ensure_ascii=False,
+                ),
+                support_case_id=case_id,
+                is_demo=gap.is_demo,
+            )
+        )
 
     def resolve_gap(
         self, db: Session, owner_id: int, gap_id: int, actor_id: int, release_id: int
@@ -1296,24 +1341,40 @@ class SupportService:
         item, case = self._require_escalation(db, owner_id, escalation_id)
         if item.status not in {"pending", "accepted"}:
             raise AppError("ESCALATION_NOT_ACTIVE", "升级不在处理中", 409)
-        item.status = "resolved"
         item.resolution = resolution
         item.resolution_note = resolution_note
-        item.resolved_at = datetime.utcnow()
-        item.updated_at = datetime.utcnow()
-        if resolution == "return_to_agent":
-            case.status = "in_progress"
-        elif resolution in {"request_more_evidence", "transfer_specialist"}:
-            # 等待补充材料 / 转交专员：工单保持升级处理中，不视为已解决
+        now = datetime.utcnow()
+        if resolution == "request_more_evidence":
+            item.status = "accepted"
+            item.assigned_to = item.assigned_to or actor_id
+            item.accepted_at = item.accepted_at or now
+            item.resolved_at = None
             case.status = "escalated"
+            event_type = "escalation_evidence_requested"
+        elif resolution == "transfer_specialist":
+            item.status = "transferred"
+            item.assigned_to = item.assigned_to or actor_id
+            item.accepted_at = item.accepted_at or now
+            item.resolved_at = now
+            case.status = "escalated"
+            event_type = "escalation_transferred"
+        elif resolution == "return_to_agent":
+            item.status = "returned"
+            item.resolved_at = now
+            case.status = "in_progress"
+            event_type = "escalation_returned"
         else:
+            item.status = "resolved"
+            item.resolved_at = now
             case.status = "resolved"
-        case.updated_at = datetime.utcnow()
+            event_type = "escalation_resolved"
+        item.updated_at = now
+        case.updated_at = now
         self._event(
             db,
             case,
             actor_id,
-            "escalation_resolved",
+            event_type,
             {
                 "escalationId": item.id,
                 "resolution": resolution,
@@ -1843,7 +1904,7 @@ class SupportService:
         index: int,
     ) -> dict:
         """Return one citation contract shared by support UI and source preview."""
-        content = chunk.content[:260]
+        content = _without_frontmatter(chunk.content)[:260]
         return {
             "index": index,
             "chunkId": chunk.id,
@@ -1872,7 +1933,7 @@ class SupportService:
     def _evidence_citation(item, index: int) -> dict:
         """把 Agent Runtime 返回的 policy 证据转成与旧版一致的 citation 契约。"""
         meta = item.metadata or {}
-        content = item.content[:260]
+        content = _without_frontmatter(item.content)[:260]
         doc_id = meta.get("document_id") or meta.get("chunk_id")
         doc_name = (
             meta.get("document_name")
@@ -1910,30 +1971,16 @@ class SupportService:
 
     @staticmethod
     def _compose_draft(run, question: str, order_no: str | None) -> str:
-        """基于证据审查通过的 AgenticRun 生成给客服的建议草稿。"""
-        facts = [
-            f"· {item.content}"
-            for item in run.results
-            if item.metadata.get("factType") not in (None, "policy")
-        ]
-        policies = [
-            f"· {item.content}"
-            for item in run.results
-            if item.metadata.get("factType") in (None, "policy")
-        ]
-        lines = []
-        if order_no:
-            lines.append(f"关联订单：{order_no}")
-        if facts:
-            lines.append("已核实事实：")
-            lines.extend(facts[:5])
-        if policies:
-            lines.append("政策依据：")
-            lines.extend(policies[:4])
-        lines.append(
-            "回复建议：请结合上述事实与政策，向顾客说明当前状态与后续处理方案；涉及退款、赔付、食品安全时提示需人工复核后发送。"
+        """生成简短、可直接发送给顾客的草稿，不混入内部证据原文。"""
+        intent = run.review_details.intent.lower()
+        topic = "退款" if "refund" in intent else "售后"
+        order_context = f"关于订单 {order_no}，" if order_no else ""
+        draft = (
+            f"您好，{order_context}您反馈的{topic}问题我们已收到并完成初步核实。"
+            "我们会依据实际情况和适用规则继续处理，并尽快向您同步结果。"
+            "如还需补充凭证或信息，我们会及时联系您，感谢您的理解与配合。"
         )
-        return "\n".join(lines)
+        return draft[:320]
 
     @staticmethod
     def _build_resolution(

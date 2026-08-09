@@ -25,14 +25,20 @@ def login(payload: LoginRequest, db: DbSession, request: Request) -> ApiResponse
 
 
 @router.get("/me", response_model=ApiResponse)
-def current_user(user: CurrentUser) -> ApiResponse:
-    """以数据库实时角色为准，避免前端长期信任过期的本地用户快照。"""
+def current_user(user: CurrentUser, db: DbSession) -> ApiResponse:
+    """以数据库实时角色/组织/权限为准，避免前端长期信任过期的本地用户快照。"""
+    from app.modules.users.access import permissions_for, resolve_owner
+
+    permissions = sorted(permissions_for(db, user))
+    owner_id = resolve_owner(db, user)
     return ApiResponse(
         data={
             "userId": str(user.id),
             "username": user.username,
             "role": user.role,
             "avatar": None,
+            "permissions": permissions,
+            "merchantOwnerId": owner_id,
         },
         traceId=current_trace_id(),
     )

@@ -117,6 +117,12 @@ class Campaign(Base):
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # 方案生命周期扩展（0009 迁移追加列，顺序与迁移保持一致）
+    lock_version: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1"
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class CampaignVersion(Base):

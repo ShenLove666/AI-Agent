@@ -17,6 +17,7 @@ from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.users.models import User
+from app.modules.users.permissions import VALID_ROLES
 from app.modules.users.service import AuthService
 
 
@@ -43,12 +44,12 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=128)
     email: str | None = None
-    role: str = Field(default="user", pattern="^(user|admin)$")
+    role: str = Field(default="user", pattern="^(" + "|".join(sorted(VALID_ROLES)) + ")$")
 
 
 class UserUpdateRequest(BaseModel):
     email: str | None = None
-    role: str | None = Field(default=None, pattern="^(user|admin)$")
+    role: str | None = Field(default=None, pattern="^(" + "|".join(sorted(VALID_ROLES)) + ")$")
     enabled: bool | None = None
 
 
@@ -164,44 +165,7 @@ def change_password(
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
-# ---------------------------------------------------------------------------
-# 系统设置
-# ---------------------------------------------------------------------------
 
-@router.get("/rag/settings", response_model=ApiResponse)
-def rag_settings(db: DbSession, user: CurrentUser, request: Request) -> ApiResponse:
-    container = request.app.state.container
-    settings = container.settings
-    return ApiResponse(
-        data={
-            "environment": settings.environment,
-            "apiPrefix": settings.api_prefix,
-            "retrieval": {
-                "candidateLimit": settings.retrieval_candidate_limit,
-                "contextLimit": settings.retrieval_context_limit,
-                "timeoutSeconds": settings.retrieval_timeout_seconds,
-            },
-            "chat": {"timeoutSeconds": settings.chat_timeout_seconds},
-            "circuit": {
-                "failureThreshold": settings.circuit_failure_threshold,
-                "recoverySeconds": settings.circuit_recovery_seconds,
-            },
-            "providers": [
-                {
-                    "name": provider.model.name,
-                    "model": getattr(provider.model, "model", ""),
-                    "priority": provider.priority,
-                }
-                for provider in (container.model_router.providers if container.model_router else [])
-            ],
-            "features": {
-                "queryRewrite": True,
-                "ragTrace": True,
-                "rerank": False,
-            },
-        },
-        traceId=current_trace_id(),
-    )
 
 
 # ---------------------------------------------------------------------------

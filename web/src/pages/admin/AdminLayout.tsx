@@ -11,7 +11,6 @@ import {
   ClipboardList,
   Database,
   GitBranch,
-  Github,
   Inbox,
   FlaskConical,
   FileBarChart,
@@ -80,6 +79,8 @@ type MenuItem = {
   hidden?: boolean;
   /** 仅对指定角色可见；缺省表示所有登录用户可见 */
   roles?: string[];
+  /** 按权限能力过滤（与 roles 同时满足才显示） */
+  permission?: string;
 };
 
 type MenuGroup = {
@@ -94,13 +95,14 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/support",
         label: "客服工作台",
-        icon: Inbox
+        icon: Inbox,
+        permission: "support.case.read"
       },
       {
         path: "/admin/support-supervisor",
         label: "主管队列",
         icon: ShieldAlert,
-        roles: ["supervisor", "admin"]
+        permission: "support.escalation.read"
       },
       {
         path: "/admin/support-knowledge",
@@ -130,13 +132,13 @@ const menuGroups: MenuGroup[] = [
         path: "/admin/retail",
         label: "商品组合洞察",
         icon: LayoutDashboard,
-        roles: ["admin"]
+        permission: "retail.view"
       },
       {
         path: "/admin/operations",
         label: "商家运营洞察",
         icon: BarChart3,
-        roles: ["admin"]
+        permission: "user.manage"
       },
       {
         path: "/admin/agents",
@@ -148,7 +150,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/knowledge",
         label: "知识库管理",
-        icon: Database
+        icon: Database,
+        permission: "knowledge.manage"
       },
       {
         path: "/admin/knowledge-graph",
@@ -205,7 +208,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/traces",
         label: "链路追踪",
-        icon: Workflow
+        icon: Workflow,
+        permission: "user.manage"
       },
       {
         path: "/admin/change-logs",
@@ -221,7 +225,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/users",
         label: "用户管理",
-        icon: Users
+        icon: Users,
+        permission: "user.manage"
       },
       {
         path: "/admin/sample-questions",
@@ -232,7 +237,8 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/settings",
         label: "系统设置",
-        icon: Settings
+        icon: Settings,
+        permission: "settings.write"
       }
     ]
   }
@@ -288,9 +294,6 @@ export function AdminLayout() {
     await logout();
     navigate("/login");
   };
-
-  // Star 计数：GitHub API 未认证时被限流（403）产生控制台噪音，改为静态显示
-  const [starCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (!searchFocused) return;
@@ -395,13 +398,6 @@ export function AdminLayout() {
   const avatarUrl = user?.avatar?.trim();
   const showAvatar = Boolean(avatarUrl);
   const roleLabel = user?.role === "admin" ? "管理员" : "成员";
-  const starLabel = useMemo(() => {
-    if (starCount === null) return "--";
-    if (starCount < 1000) return String(starCount);
-    const rounded = Math.round((starCount / 1000) * 10) / 10;
-    const text = String(rounded).replace(/\.0$/, "");
-    return `${text}k`;
-  }, [starCount]);
   const isIngestionActive = location.pathname.startsWith("/admin/ingestion");
   const isIntentActive =
     location.pathname.startsWith("/admin/intent-tree") ||
@@ -518,30 +514,46 @@ export function AdminLayout() {
         <div className="admin-sidebar__brand">
           <div className={cn("flex items-center gap-3", collapsed && "justify-center")}>
             <div className="admin-sidebar__logo">
-              <Bot className="h-[22px] w-[22px]" />
+              <Bot className="h-4 w-4" />
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <h1 className="admin-sidebar__title">邻里鲜选 AI 客服台</h1>
-                <p className="admin-sidebar__subtitle">Support Quality Ops</p>
+                <h1 className="admin-sidebar__title truncate">邻里鲜选 AI 客服台</h1>
+                <p className="admin-sidebar__subtitle truncate">Support Quality Ops</p>
               </div>
             )}
           </div>
         </div>
 
-        <nav className="flex-1 space-y-4 px-2 pb-4">
-          {menuGroups.map((group) => (
-            <div key={group.title} className="space-y-2">
-              {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
-              <div className="space-y-1">
-                {group.items
-                  .filter((item) => !item.hidden)
-                  .filter((item) => {
-                    // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
-                    if (!item.roles || item.roles.length === 0) return true;
-                    const role = user?.role || "user";
-                    return item.roles.includes(role);
-                  })
+        <nav className="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-4">
+          {menuGroups.map((group) => {
+            const visibleItems = group.items
+              .filter((item) => !item.hidden)
+              .filter((item) => {
+                // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
+                const role = user?.role || "user";
+                const roleOk =
+                  !item.roles || item.roles.length === 0 || item.roles.includes(role);
+                // 权限能力：permission 缺省不限制；指定时按当前用户权限集合过滤
+                const permissionOk =
+                  !item.permission || (user?.permissions ?? []).includes(item.permission);
+                return roleOk && permissionOk;
+              });
+            // 分组内所有项都被过滤时整组隐藏（避免出现空的"设置"标题）
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={group.title} className="space-y-2">
+                {/* 分组标题始终占位（折叠时不可见），避免展开/收起时图标上下跳动 */}
+                <p
+                  className={cn(
+                    "admin-sidebar__group-title",
+                    collapsed && "invisible"
+                  )}
+                >
+                  {group.title}
+                </p>
+                <div className="space-y-1">
+                  {visibleItems
                   .flatMap((item) => {
                     if (!item.children || item.children.length === 0) {
                       const Icon = item.icon;
@@ -553,8 +565,7 @@ export function AdminLayout() {
                           title={collapsed ? item.label : undefined}
                           className={cn(
                             "admin-sidebar__item",
-                            isActive && "admin-sidebar__item--active",
-                            collapsed && "justify-center"
+                            isActive && "admin-sidebar__item--active"
                           )}
                         >
                           <span
@@ -564,7 +575,7 @@ export function AdminLayout() {
                           {collapsed ? (
                             <span className="sr-only">{item.label}</span>
                           ) : (
-                            <span>{item.label}</span>
+                            <span className="whitespace-nowrap">{item.label}</span>
                           )}
                         </Link>
                       );
@@ -612,8 +623,8 @@ export function AdminLayout() {
                             setOpenGroups((prev) => ({ ...prev, [groupId]: !prev[groupId] }))
                           }
                           className={cn(
-                            "admin-sidebar__item admin-sidebar__item--group w-full text-white/60",
-                            isGroupActive && "admin-sidebar__item--group-active text-white"
+                            "admin-sidebar__item admin-sidebar__item--group w-full",
+                            isGroupActive && "admin-sidebar__item--group-active"
                           )}
                         >
                           <span
@@ -625,9 +636,9 @@ export function AdminLayout() {
                           <item.icon className={cn("admin-sidebar__item-icon", item.iconClass)} />
                           <span className="flex-1 text-left">{item.label}</span>
                           {isOpen ? (
-                            <ChevronDown className="h-4 w-4 text-white/60" />
+                            <ChevronDown className="h-4 w-4 text-slate-400" />
                           ) : (
-                            <ChevronRight className="h-4 w-4 text-white/60" />
+                            <ChevronRight className="h-4 w-4 text-slate-400" />
                           )}
                         </button>
                         {isOpen ? (
@@ -651,7 +662,7 @@ export function AdminLayout() {
                                     )}
                                   />
                                   <ChildIcon className="admin-sidebar__item-icon" />
-                                  <span>{child.label}</span>
+                                  <span className="whitespace-nowrap">{child.label}</span>
                                 </Link>
                               );
                             })}
@@ -660,12 +671,13 @@ export function AdminLayout() {
                       </div>
                     );
                   })}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
 
-        <div className="admin-sidebar__footer space-y-2">
+        <div className="admin-sidebar__footer shrink-0 space-y-2">
           <button
             type="button"
             className="admin-sidebar__collapse"
@@ -683,13 +695,13 @@ export function AdminLayout() {
 
       <div
         className={cn(
-          "admin-main flex min-h-screen flex-1 flex-col overflow-auto",
+          "admin-main flex min-h-screen min-w-0 flex-1 flex-col overflow-auto",
           isDashboardRoute && "dashboard-scroll-shell"
         )}
       >
         <header className="admin-topbar">
-          <div className="admin-topbar-inner">
-            <div className="flex items-center gap-3">
+          <div className="admin-topbar-inner min-w-0">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               <Button
                 variant="ghost"
                 size="icon"
@@ -699,7 +711,7 @@ export function AdminLayout() {
               >
                 <Menu className="h-5 w-5" />
               </Button>
-              <div className="admin-topbar-search">
+              <div className="admin-topbar-search min-w-0">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <Input
                   ref={searchInputRef}
@@ -776,7 +788,7 @@ export function AdminLayout() {
                 ) : null}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <Button
                 variant="outline"
                 className="hidden items-center gap-2 sm:inline-flex"
@@ -785,24 +797,11 @@ export function AdminLayout() {
                 <MessageSquare className="h-4 w-4" />
                 返回聊天
               </Button>
-              <a
-                href="https://github.com/nageoffer/ragent"
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
-                aria-label="打开 GitHub 仓库"
-              >
-                <Github className="h-4 w-4" />
-                <span className="font-medium">Star</span>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                  {starLabel}
-                </span>
-              </a>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-600 shadow-sm"
+                    className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-600"
                     aria-label="用户菜单"
                   >
                     <Avatar
@@ -926,4 +925,3 @@ export function AdminLayout() {
     </div>
   );
 }
-

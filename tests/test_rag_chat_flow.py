@@ -47,6 +47,13 @@ def test_rag_chat_returns_citations_and_persists_messages():
                         "/api/v1/auth/register",
                         json={"username": "raguser", "password": "password123"},
                     )
+                    from app.modules.users.models import User as _User
+                    from app.modules.users.repository import UserRepository as _UserRepo
+                    with app.state.container.database.session_factory() as _db:
+                        for _uname in ("raguser",):
+                            _u = _UserRepo().get_by_username(_db, _uname)
+                            _u.role = "admin"
+                        _db.commit()
                     login = await client.post(
                         "/api/v1/auth/login",
                         json={"username": "raguser", "password": "password123"},

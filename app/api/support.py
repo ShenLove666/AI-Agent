@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from app.api.dependencies import CurrentSupervisor, CurrentUser, DbSession
+from app.api.dependencies import (
+    CurrentUser,
+    DbSession,
+    make_permission_requirement,
+)
+from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.support.service import SupportService
@@ -96,10 +101,11 @@ class OutboundRequest(BaseModel):
 
 
 def _owner(db, user) -> int:
+    """商家数据归属：组织成员解析到组织 owner；否则限用户自己的数据。"""
     return service.owner_for(db, user)
 
 
-@router.get("/cases")
+@router.get("/cases", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def list_cases(
     db: DbSession,
     user: CurrentUser,
@@ -125,14 +131,14 @@ def list_cases(
     )
 
 
-@router.get("/cases/{case_id}")
+@router.get("/cases/{case_id}", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def case_detail(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.detail(db, _owner(db, user), case_id), traceId=current_trace_id()
     )
 
 
-@router.get("/cases/{case_id}/workspace")
+@router.get("/cases/{case_id}/workspace", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def case_workspace(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.workspace(db, _owner(db, user), case_id),
@@ -140,7 +146,7 @@ def case_workspace(case_id: int, db: DbSession, user: CurrentUser) -> ApiRespons
     )
 
 
-@router.get("/cases/{case_id}/provenance")
+@router.get("/cases/{case_id}/provenance", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def case_provenance(case_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.case_provenance(db, _owner(db, user), case_id),
@@ -148,14 +154,14 @@ def case_provenance(case_id: int, db: DbSession, user: CurrentUser) -> ApiRespon
     )
 
 
-@router.get("/coverage")
+@router.get("/coverage", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def support_coverage(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.coverage(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.post("/cases/{case_id}/transition")
+@router.post("/cases/{case_id}/transition", dependencies=[Depends(make_permission_requirement("support.case.resolve"))])
 def transition(
     case_id: int, payload: TransitionRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -175,7 +181,7 @@ def transition(
     )
 
 
-@router.post("/cases/{case_id}/assign")
+@router.post("/cases/{case_id}/assign", dependencies=[Depends(make_permission_requirement("support.case.resolve"))])
 def assign(
     case_id: int, payload: AssignRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -192,7 +198,7 @@ def assign(
     )
 
 
-@router.put("/cases/{case_id}/labels")
+@router.put("/cases/{case_id}/labels", dependencies=[Depends(make_permission_requirement("support.case.resolve"))])
 def labels(
     case_id: int, payload: LabelsRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -209,7 +215,7 @@ def labels(
     )
 
 
-@router.post("/cases/{case_id}/replies")
+@router.post("/cases/{case_id}/replies", dependencies=[Depends(make_permission_requirement("support.case.reply"))])
 def manual_reply(
     case_id: int, payload: ReplyRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -221,7 +227,7 @@ def manual_reply(
     )
 
 
-@router.post("/cases/{case_id}/outbound")
+@router.post("/cases/{case_id}/outbound", dependencies=[Depends(make_permission_requirement("support.case.reply"))])
 def confirm_outbound(
     case_id: int,
     payload: OutboundRequest,
@@ -243,7 +249,7 @@ def confirm_outbound(
     )
 
 
-@router.post("/cases/{case_id}/suggestions")
+@router.post("/cases/{case_id}/suggestions", dependencies=[Depends(make_permission_requirement("support.case.reply"))])
 async def generate_suggestion(
     case_id: int, request: Request, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -260,7 +266,7 @@ async def generate_suggestion(
     )
 
 
-@router.post("/cases/{case_id}/suggestions/{suggestion_id}/decision")
+@router.post("/cases/{case_id}/suggestions/{suggestion_id}/decision", dependencies=[Depends(make_permission_requirement("support.case.reply"))])
 def decide(
     case_id: int,
     suggestion_id: int,
@@ -283,29 +289,29 @@ def decide(
     )
 
 
-@router.get("/metrics")
+@router.get("/metrics", dependencies=[Depends(make_permission_requirement("support.case.read"))])
 def metrics(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.metrics(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.get("/escalations")
-def escalation_queue(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
+@router.get("/escalations", dependencies=[Depends(make_permission_requirement("support.escalation.read"))])
+def escalation_queue(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_queue(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.get("/escalations/overview")
-def escalation_overview(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
+@router.get("/escalations/overview", dependencies=[Depends(make_permission_requirement("support.escalation.read"))])
+def escalation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_overview(db, _owner(db, user)),
         traceId=current_trace_id(),
     )
 
 
-@router.post("/cases/{case_id}/escalations")
+@router.post("/cases/{case_id}/escalations", dependencies=[Depends(make_permission_requirement("support.case.escalate"))])
 def raise_escalation(
     case_id: int, payload: EscalationRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -324,9 +330,9 @@ def raise_escalation(
     )
 
 
-@router.post("/escalations/{escalation_id}/accept")
+@router.post("/escalations/{escalation_id}/accept", dependencies=[Depends(make_permission_requirement("support.escalation.accept"))])
 def accept_escalation(
-    escalation_id: int, db: DbSession, user: CurrentSupervisor
+    escalation_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
     return ApiResponse(
         data=service.accept_escalation(
@@ -336,12 +342,12 @@ def accept_escalation(
     )
 
 
-@router.post("/escalations/{escalation_id}/resolve")
+@router.post("/escalations/{escalation_id}/resolve", dependencies=[Depends(make_permission_requirement("support.escalation.resolve"))])
 def resolve_escalation(
     escalation_id: int,
     payload: EscalationResolveRequest,
     db: DbSession,
-    user: CurrentSupervisor,
+    user: CurrentUser,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.resolve_escalation(
@@ -356,12 +362,12 @@ def resolve_escalation(
     )
 
 
-@router.post("/escalations/{escalation_id}/return")
+@router.post("/escalations/{escalation_id}/return", dependencies=[Depends(make_permission_requirement("support.escalation.return"))])
 def return_escalation(
     escalation_id: int,
     payload: EscalationActionRequest,
     db: DbSession,
-    user: CurrentSupervisor,
+    user: CurrentUser,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.return_escalation(
@@ -371,21 +377,21 @@ def return_escalation(
     )
 
 
-@router.get("/knowledge/releases")
+@router.get("/knowledge/releases", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def knowledge_releases(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.list_releases(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.get("/knowledge/sources")
+@router.get("/knowledge/sources", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def knowledge_sources(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.knowledge_sources(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.post("/knowledge/releases")
+@router.post("/knowledge/releases", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def create_knowledge_release(
     payload: KnowledgeReleaseRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -402,7 +408,7 @@ def create_knowledge_release(
     )
 
 
-@router.post("/knowledge/releases/{release_id}/publish")
+@router.post("/knowledge/releases/{release_id}/publish", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def publish_knowledge_release(
     release_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -412,7 +418,7 @@ def publish_knowledge_release(
     )
 
 
-@router.post("/knowledge/releases/{release_id}/activate")
+@router.post("/knowledge/releases/{release_id}/activate", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def activate_knowledge_release(
     release_id: int, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -422,14 +428,14 @@ def activate_knowledge_release(
     )
 
 
-@router.get("/quality")
+@router.get("/quality", dependencies=[Depends(make_permission_requirement("support.quality.read"))])
 def quality_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.quality_overview(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
-@router.post("/quality/cases/{case_id}/labels")
+@router.post("/quality/cases/{case_id}/labels", dependencies=[Depends(make_permission_requirement("support.quality.label"))])
 def add_quality_label(
     case_id: int, payload: QualityLabelRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -449,7 +455,7 @@ def add_quality_label(
     )
 
 
-@router.post("/quality/gaps/{gap_id}/resolve")
+@router.post("/quality/gaps/{gap_id}/resolve", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def resolve_gap(
     gap_id: int, payload: GapResolutionRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -461,7 +467,7 @@ def resolve_gap(
     )
 
 
-@router.get("/evaluations")
+@router.get("/evaluations", dependencies=[Depends(make_permission_requirement("evaluation.read"))])
 def evaluation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.evaluation_overview(db, _owner(db, user)),
@@ -469,7 +475,7 @@ def evaluation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
     )
 
 
-@router.get("/evaluations/{run_id}")
+@router.get("/evaluations/{run_id}", dependencies=[Depends(make_permission_requirement("evaluation.read"))])
 def evaluation_detail(run_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
     return ApiResponse(
         data=service.evaluation_detail(db, _owner(db, user), run_id),
@@ -477,7 +483,7 @@ def evaluation_detail(run_id: int, db: DbSession, user: CurrentUser) -> ApiRespo
     )
 
 
-@router.post("/evaluations")
+@router.post("/evaluations", dependencies=[Depends(make_permission_requirement("evaluation.run"))])
 async def run_evaluation(
     payload: EvaluationRunRequest, request: Request, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
@@ -493,7 +499,7 @@ async def run_evaluation(
     )
 
 
-@router.post("/release-decisions")
+@router.post("/release-decisions", dependencies=[Depends(make_permission_requirement("evaluation.run"))])
 def decide_release(
     payload: ReleaseDecisionRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:

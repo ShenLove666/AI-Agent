@@ -24,9 +24,7 @@ describe("LoginPage", () => {
       </MemoryRouter>
     );
 
-    expect(
-      screen.getByRole("heading", { name: "邻里鲜选 AI 运营台" })
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "邻里鲜选 AI 运营台" })).toBeInTheDocument();
     expect(screen.getByLabelText("用户名")).toBeInTheDocument();
     expect(screen.getByLabelText("密码")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "登录运营台" })).toBeInTheDocument();

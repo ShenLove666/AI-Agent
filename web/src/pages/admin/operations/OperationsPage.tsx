@@ -84,11 +84,11 @@ function MetricCard({
     amber: "bg-amber-50 text-amber-600"
   };
   return (
-    <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <article className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-slate-500">{label}</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">
+          <p className="mt-1.5 text-xl font-semibold tracking-tight text-slate-900">
             {suffix ? value.toFixed(1) : formatNumber(value)}
             {suffix && <span className="ml-1 text-base font-medium text-slate-500">{suffix}</span>}
           </p>
@@ -142,10 +142,10 @@ export function OperationsPage() {
   if (loading && !data) {
     return (
       <div className="space-y-5 p-1">
-        <div className="h-28 animate-pulse rounded-2xl bg-slate-100" />
+        <div className="h-28 animate-pulse rounded-lg bg-slate-100" />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {Array.from({ length: 4 }).map((_, index) => (
-            <div key={index} className="h-36 animate-pulse rounded-2xl bg-slate-100" />
+            <div key={index} className="h-36 animate-pulse rounded-lg bg-slate-100" />
           ))}
         </div>
       </div>
@@ -154,54 +154,54 @@ export function OperationsPage() {
 
   return (
     <div className="space-y-6 pb-8">
-      <section className="overflow-hidden rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-950 via-indigo-900 to-violet-900 p-6 text-white shadow-sm">
-        <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-center">
-          <div>
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium text-indigo-200">
+      <section className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+        <div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="rounded-md border border-indigo-100 bg-indigo-50 p-1 text-indigo-600">
               <Activity className="h-4 w-4" />
+            </span>
+            <span className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
               商家 AI 产品运营工作台
-            </div>
-            <h1 className="text-2xl font-semibold tracking-tight">从工具使用到 Agent 优化的业务闭环</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-indigo-100/80">
-              追踪商家渗透、回答质量和问题瓶颈，用真实反馈与运行链路支持知识库、提示词和模型路由迭代。
-            </p>
+            </span>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex rounded-lg bg-white/10 p-1 backdrop-blur">
-              {WINDOWS.map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  onClick={() => setWindowValue(item.value)}
-                  className={cn(
-                    "rounded-md px-3 py-1.5 text-xs font-medium transition",
-                    windowValue === item.value ? "bg-white text-indigo-950" : "text-indigo-100 hover:bg-white/10"
-                  )}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <Button
-              variant="outline"
-              className="border-white/20 bg-white/10 text-white hover:bg-white/20 hover:text-white"
-              onClick={() => void load()}
-              disabled={loading}
-            >
-              <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />刷新
-            </Button>
-            <Button
-              className="bg-white text-indigo-950 hover:bg-indigo-50"
-              onClick={() => {
-                if (!data) return;
-                exportReport(data);
-                toast.success("运营洞察报告已导出");
-              }}
-              disabled={!data}
-            >
-              <Download className="mr-2 h-4 w-4" />导出报告
-            </Button>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+            从工具使用到 Agent 优化的业务闭环
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-500">
+            追踪商家渗透、回答质量和问题瓶颈，用真实反馈与运行链路支持知识库、提示词和模型路由迭代。
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-md border border-slate-200 bg-white p-0.5">
+            {WINDOWS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setWindowValue(item.value)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-medium transition",
+                  windowValue === item.value
+                    ? "bg-indigo-50 text-indigo-700"
+                    : "text-slate-500 hover:bg-slate-50"
+                )}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
+          <Button variant="outline" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />刷新
+          </Button>
+          <Button
+            onClick={() => {
+              if (!data) return;
+              exportReport(data);
+              toast.success("运营洞察报告已导出");
+            }}
+            disabled={!data}
+          >
+            <Download className="mr-2 h-4 w-4" />导出报告
+          </Button>
         </div>
       </section>
 
@@ -223,7 +223,7 @@ export function OperationsPage() {
           </section>
 
           <section className="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-5 flex items-start justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-900">商家需求意图分布</h2>
@@ -243,7 +243,7 @@ export function OperationsPage() {
                       </div>
                       <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
                         <div
-                          className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all"
+                          className="h-full rounded-full bg-indigo-500 transition-all"
                           style={{ width: `${Math.max((item.count / maxIntent) * 100, 3)}%` }}
                         />
                       </div>
@@ -253,7 +253,7 @@ export function OperationsPage() {
               )}
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
               <h2 className="font-semibold text-slate-900">Agent 质量评测漏斗</h2>
               <p className="mt-1 text-xs text-slate-500">把线上反馈转化为可持续优化的标注资产</p>
               <div className="mt-6 space-y-3">
@@ -277,7 +277,7 @@ export function OperationsPage() {
             </div>
           </section>
 
-          <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <section className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-5 py-4">
               <h2 className="font-semibold text-slate-900">问题诊断与运营动作</h2>
               <p className="mt-1 text-xs text-slate-500">从数据发现瓶颈，并明确下一步负责人可执行的优化方向</p>

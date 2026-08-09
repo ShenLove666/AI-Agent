@@ -2,16 +2,50 @@ import { useEffect, useState } from "react";
 import { Pencil, Plus, RefreshCw, Trash2, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar } from "@/components/common/Avatar";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { PageResult, UserItem, UserCreatePayload, UserUpdatePayload } from "@/services/userService";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "@/components/ui/table";
+import type {
+  PageResult,
+  UserItem,
+  UserCreatePayload,
+  UserUpdatePayload
+} from "@/services/userService";
 import { createUser, deleteUser, getUsersPage, updateUser } from "@/services/userService";
 import { getErrorMessage } from "@/utils/error";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -19,9 +53,10 @@ import { RelativeTime } from "@/components/RelativeTime";
 const PAGE_SIZE = 10;
 
 const roleOptions = [
-  { value: "admin", label: "管理员" },
+  { value: "admin", label: "商家负责人 / 管理员" },
+  { value: "operator", label: "商家运营" },
   { value: "supervisor", label: "客服主管" },
-  { value: "user", label: "客服/成员" }
+  { value: "user", label: "客服" }
 ];
 
 const buildEmptyForm = () => ({
@@ -38,7 +73,11 @@ export function UserListPage() {
   const [keyword, setKeyword] = useState("");
   const [pageNo, setPageNo] = useState(1);
   const [deleteTarget, setDeleteTarget] = useState<UserItem | null>(null);
-  const [dialogState, setDialogState] = useState<{ open: boolean; mode: "create" | "edit"; user: UserItem | null }>({
+  const [dialogState, setDialogState] = useState<{
+    open: boolean;
+    mode: "create" | "edit";
+    user: UserItem | null;
+  }>({
     open: false,
     mode: "create",
     user: null
@@ -216,10 +255,16 @@ export function UserListPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={user.role === "admin" ? "default" : "secondary"}>{roleLabel}</Badge>
+                        <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                          {roleLabel}
+                        </Badge>
                       </TableCell>
-                      <TableCell><RelativeTime value={user.createTime} /></TableCell>
-                      <TableCell><RelativeTime value={user.updateTime} /></TableCell>
+                      <TableCell>
+                        <RelativeTime value={user.createTime} />
+                      </TableCell>
+                      <TableCell>
+                        <RelativeTime value={user.updateTime} />
+                      </TableCell>
                       <TableCell>
                         <div className="flex gap-2">
                           <Button
@@ -262,19 +307,27 @@ export function UserListPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground">
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive text-destructive-foreground"
+            >
               删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={dialogState.open} onOpenChange={(open) => setDialogState((prev) => ({ ...prev, open }))}>
+      <Dialog
+        open={dialogState.open}
+        onOpenChange={(open) => setDialogState((prev) => ({ ...prev, open }))}
+      >
         <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>{dialogState.mode === "create" ? "新增用户" : "编辑用户"}</DialogTitle>
             <DialogDescription>
-              {dialogState.mode === "create" ? "配置账号基本信息" : "更新账号信息，密码留空则不修改"}
+              {dialogState.mode === "create"
+                ? "配置账号基本信息"
+                : "更新账号信息，密码留空则不修改"}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -297,7 +350,10 @@ export function UserListPage() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">角色</label>
-              <Select value={form.role} onValueChange={(value) => setForm((prev) => ({ ...prev, role: value }))}>
+              <Select
+                value={form.role}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, role: value }))}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="请选择角色" />
                 </SelectTrigger>
@@ -320,7 +376,10 @@ export function UserListPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogState({ open: false, mode: "create", user: null })}>
+            <Button
+              variant="outline"
+              onClick={() => setDialogState({ open: false, mode: "create", user: null })}
+            >
               取消
             </Button>
             <Button onClick={handleSave}>
