@@ -543,7 +543,15 @@ export function AdminLayout() {
             if (visibleItems.length === 0) return null;
             return (
               <div key={group.title} className="space-y-2">
-                {!collapsed && <p className="admin-sidebar__group-title">{group.title}</p>}
+                {/* 分组标题始终占位（折叠时不可见），避免展开/收起时图标上下跳动 */}
+                <p
+                  className={cn(
+                    "admin-sidebar__group-title",
+                    collapsed && "invisible"
+                  )}
+                >
+                  {group.title}
+                </p>
                 <div className="space-y-1">
                   {visibleItems
                   .flatMap((item) => {
