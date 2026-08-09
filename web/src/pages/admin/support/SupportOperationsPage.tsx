@@ -12,6 +12,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { useAuthStore } from "@/stores/authStore";
 import { KnowledgeSourcesView } from "./KnowledgeSourcesView";
 import {
   activateKnowledgeRelease,
@@ -62,6 +63,7 @@ const fmt = (value: number | null | undefined, suffix = "") =>
   value == null ? "暂无数据" : `${value}${suffix}`;
 
 export function SupportOperationsPage({ view = "reports" }: { view?: SupportOperationsView }) {
+  const permissions = useAuthStore((state) => state.user?.permissions ?? []);
   const [releases, setReleases] = useState<KnowledgeRelease[]>([]);
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [quality, setQuality] = useState<QualityOverview | null>(null);
@@ -80,24 +82,43 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [releaseRows, sourceRows, qualityData, evaluationData, coverageData] = await Promise.all([
-        getKnowledgeReleases(),
-        getKnowledgeSources(),
-        getQualityOverview(),
-        getEvaluationOverview(),
-        getSupportCoverage()
-      ]);
-      setReleases(releaseRows);
-      setSources(sourceRows);
-      setQuality(qualityData);
-      setEvaluation(evaluationData);
-      setCoverage(coverageData);
+      // 按视图只请求本视图需要的数据：避免无权限的请求触发 403 报错
+      // （如主管在质量视图不再请求 knowledge.manage 接口）
+      const requests: Array<Promise<unknown>> = [];
+      if (view === "knowledge") {
+        requests.push(
+          getKnowledgeReleases().then(setReleases),
+          getKnowledgeSources().then(setSources)
+        );
+      } else if (view === "quality") {
+        requests.push(
+          getQualityOverview().then(setQuality),
+          getSupportCoverage().then(setCoverage)
+        );
+        // 解决缺口需绑定知识版本（knowledge.manage）：只有该权限的用户才加载版本列表
+        if (permissions.includes("knowledge.manage")) {
+          requests.push(getKnowledgeReleases().then(setReleases));
+        }
+      } else if (view === "evaluation") {
+        requests.push(getEvaluationOverview().then(setEvaluation));
+        // 上线决策需绑定候选版本（该视图仅 admin 可进入）
+        requests.push(getKnowledgeReleases().then(setReleases));
+      } else {
+        // reports：聚合全部只读数据（单项失败不阻断整体展示）
+        const safe = <T,>(promise: Promise<T>) => promise.catch(() => null);
+        requests.push(
+          safe(getQualityOverview()).then((value) => setQuality(value)),
+          safe(getEvaluationOverview()).then((value) => setEvaluation(value)),
+          safe(getSupportCoverage()).then((value) => setCoverage(value))
+        );
+      }
+      await Promise.all(requests);
     } catch {
       toast.error("运营闭环数据加载失败，请确认后端已启动并完成迁移");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [view]);
   useEffect(() => {
     void load();
   }, [load]);

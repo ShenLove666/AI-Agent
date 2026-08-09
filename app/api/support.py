@@ -456,7 +456,7 @@ def add_quality_label(
     )
 
 
-@router.post("/quality/gaps/{gap_id}/resolve", dependencies=[Depends(make_permission_requirement("support.quality.read"))])
+@router.post("/quality/gaps/{gap_id}/resolve", dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def resolve_gap(
     gap_id: int, payload: GapResolutionRequest, db: DbSession, user: CurrentUser
 ) -> ApiResponse:
