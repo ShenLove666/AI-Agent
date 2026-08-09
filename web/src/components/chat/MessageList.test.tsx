@@ -40,6 +40,55 @@ function fireScroll(top: number, total: number, client: number) {
 
 afterEach(cleanup);
 
+describe("MessageList streaming follow behavior", () => {
+  it("keeps following the output while streaming when the user stays near the bottom", async () => {
+    const messages = [
+      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+    ];
+    // 先以非流式渲染让会话加载贴底标记过期
+    const { rerender } = render(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} />
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
+    const scroller = findScroller()!;
+    Object.defineProperty(scroller, "scrollHeight", { value: 800, configurable: true, writable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true, writable: true });
+    Object.defineProperty(scroller, "scrollTop", { value: 500, configurable: true, writable: true });
+
+    // 内容增长（模拟 token 流）：200ms 轮询应把视口推到最新底部
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(scroller.scrollTop).toBe(800);
+  });
+
+  it("pauses following while streaming once the user scrolls away", async () => {
+    const messages = [
+      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+    ];
+    const { rerender } = render(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} />
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
+    // 等发送时的强制贴底（120ms）完成
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const scroller = findScroller()!;
+    Object.defineProperty(scroller, "scrollHeight", { value: 800, configurable: true, writable: true });
+    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true, writable: true });
+    Object.defineProperty(scroller, "scrollTop", { value: 100, configurable: true, writable: true });
+    // 用户滚离底部（距底 400 > 160）
+    fireScroll(100, 800, 300);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    // 流式中滚离后不跟随，位置保持
+    expect(scroller.scrollTop).toBe(100);
+  });
+});
+
 describe("MessageList stream-end scroll behavior", () => {
   it("force-scrolls to the bottom when the stream ends if the user never scrolled away", () => {
     const messages = [

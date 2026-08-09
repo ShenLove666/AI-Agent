@@ -25,7 +25,6 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
   const lastSessionRef = React.useRef<string | null>(null);
   const pendingScrollRef = React.useRef(true);
   const settleTimerRef = React.useRef<number | null>(null);
-  const heightScrollRafRef = React.useRef<number | null>(null);
   const prevStreamingRef = React.useRef(false);
   const recommendReveal = useChatStore((state) => state.recommendReveal);
   const initialTopMostItemIndex = React.useMemo(
@@ -84,7 +83,9 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
   );
 
   const scrollToBottom = React.useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "auto" });
+    // 只用直接赋值：scrollToIndex（Virtuoso 内部异步状态机）与 scrollTop 赋值同时驱动
+    // 会互相竞争，在 200ms 轮询下表现为视口上下闪动。scrollHeight 已含底部 padding/footer，
+    // 直接赋值即可精确贴底。
     const scroller = scrollerRef.current;
     if (scroller) {
       scroller.scrollTop = scroller.scrollHeight;
@@ -106,15 +107,19 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     [isNearBottom]
   );
 
-  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮；同时记录"用户是否主动滚离"
-  // scrollerRef 回调中直接挂载（Virtuoso 不暴露 onScroll prop），dataset 去重防止重复挂载
+  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮
+  // 滚离标记只在流式期间更新——输出结束后（Timeline 折叠等）的布局滚动不污染标记
   const userScrolledAwayRef = React.useRef(false);
+  const isStreamingRef = React.useRef(isStreaming);
+  isStreamingRef.current = isStreaming;
   const handleScrollerScrollRef = React.useRef<((event: Event) => void) | null>(null);
   if (handleScrollerScrollRef.current === null) {
     handleScrollerScrollRef.current = () => {
       const near = isNearBottomRef.current();
       setShowScrollDown((prev) => (prev === !near ? prev : !near));
-      userScrolledAwayRef.current = !near;
+      if (isStreamingRef.current) {
+        userScrolledAwayRef.current = !near;
+      }
     };
   }
   const isNearBottomRef = React.useRef(isNearBottom);
@@ -146,28 +151,41 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       stickToBottom({ force: true });
       const timer = window.setTimeout(() => stickToBottom({ force: true }), 120);
       return () => window.clearTimeout(timer);
-    }
-    if (wasStreaming && !isStreaming) {
-      // 流式结束：若此刻用户仍接近底部则贴底展示完整回答。
-      // 用多阶段重试覆盖 Timeline 折叠等后续布局变化（折叠会改变消息高度与滚动位置），
-      // 用户主动滚离（不接近底部）时保持位置不抢。
-      const tryStick = () => {
-        if (isNearBottomRef.current()) {
-          scrollToBottom();
-        }
-      };
-      tryStick();
-      const timer = window.setTimeout(tryStick, 120);
-      const lateTimer = window.setTimeout(tryStick, 360);
-      const settleTimer = window.setTimeout(tryStick, 900);
-      return () => {
-        window.clearTimeout(timer);
-        window.clearTimeout(lateTimer);
-        window.clearTimeout(settleTimer);
-      };
+    }    if (wasStreaming && !isStreaming) {
+      // 流式结束：流式期间用户未滚离 → 无条件贴底展示完整回答。
+      // 多阶段重试覆盖 Timeline 折叠等后续布局变化；流式期间滚离过则不抢。
+      if (!userScrolledAwayRef.current) {
+        scrollToBottom();
+        const timer = window.setTimeout(scrollToBottom, 120);
+        const lateTimer = window.setTimeout(scrollToBottom, 360);
+        const settleTimer = window.setTimeout(scrollToBottom, 900);
+        return () => {
+          window.clearTimeout(timer);
+          window.clearTimeout(lateTimer);
+          window.clearTimeout(settleTimer);
+        };
+      }
+      return;
     }
     return;
   }, [isStreaming, stickToBottom, scrollToBottom]);
+
+  // 流式期间跟随兜底：Virtuoso 的 followOutput 在 token 流中可能只触发一次，
+  // 这里每 200ms 检查一次；仅当明显偏离底部（gap > 30px）才拉回，避免与
+  // Virtuoso 内部布局/平滑动画互相拉扯造成闪动
+  React.useEffect(() => {
+    if (!isStreaming) return;
+    const interval = window.setInterval(() => {
+      if (userScrolledAwayRef.current) return;
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (gap > 30) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    }, 200);
+    return () => window.clearInterval(interval);
+  }, [isStreaming]);
 
   React.useLayoutEffect(() => {
     if (!pendingScrollRef.current || isStreaming || isLoading || messages.length === 0) {
@@ -214,10 +232,6 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
 
   React.useEffect(() => {
     return () => {
-      if (heightScrollRafRef.current) {
-        window.cancelAnimationFrame(heightScrollRafRef.current);
-        heightScrollRafRef.current = null;
-      }
       if (settleTimerRef.current) {
         window.clearTimeout(settleTimerRef.current);
         settleTimerRef.current = null;
@@ -250,22 +264,6 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       window.clearTimeout(snapTimer);
     };
   }, [recommendReveal]);
-
-  const handleTotalListHeightChanged = React.useCallback(() => {
-    if (isLoading) {
-      return;
-    }
-    const shouldStick = isStreaming || pendingScrollRef.current;
-    if (!shouldStick) return;
-    if (heightScrollRafRef.current) {
-      return;
-    }
-    heightScrollRafRef.current = window.requestAnimationFrame(() => {
-      heightScrollRafRef.current = null;
-      // 流式增长与非流式高度变化都只在接近底部时跟随，避免抢用户滚动
-      stickToBottom();
-    });
-  }, [isStreaming, isLoading, stickToBottom]);
 
   // Intercept triple-click at mousedown phase to prevent browser from
   // extending paragraph selection across sibling message boundaries.
@@ -320,10 +318,10 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
         ref={virtuosoRef}
         data={messages}
         initialTopMostItemIndex={initialTopMostItemIndex}
-        // 不启用 followOutput 自动贴底：发送/流式贴底由 streaming effect 与 totalListHeightChanged 负责，
-        // 会话加载贴底由布局 effect 负责。若开启，展开推荐/来源等“已到底后条目变高”会被当作新内容触发贴底，
-        // 把变高的最后一条（回答+面板）顶得超出视口、回答被推到可视区上方
-        followOutput={false}
+        // 原生平滑跟随：仅当用户位于底部时，内容增长（token/timeline）由 Virtuoso 平滑推入视口，
+        // 避免手动赋值与内部布局互相拉扯导致的闪动；用户滚离后 isAtBottom=false 不再跟随。
+        // 会话加载贴底由布局 effect 负责；发送/完成贴底由 streaming effect 负责。
+        followOutput={(isAtBottom) => (isAtBottom ? "smooth" : false)}
         scrollerRef={(node) => {
           scrollerRef.current = node as HTMLElement | null;
           if (node && !node.dataset.scrollListenerAttached) {
@@ -333,7 +331,6 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
             });
           }
         }}
-        totalListHeightChanged={handleTotalListHeightChanged}
         rangeChanged={handleRangeChanged}
         className="h-full"
         components={{ List, Footer }}
