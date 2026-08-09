@@ -29,31 +29,61 @@ interface AgentExecutionTimelineProps {
 }
 
 function StepStatusIcon({ step }: { step: AgentExecutionStep }) {
+  // 时间线节点：按状态着色的圆点 + 图标
+  const base = "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border";
   if (step.phase === "replan") {
-    return <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />;
+    return (
+      <span className={cn(base, "border-amber-200 bg-amber-50 text-amber-500")}>
+        <RefreshCw className="h-3 w-3" />
+      </span>
+    );
   }
   switch (step.status) {
     case "completed":
-      return <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />;
+      return (
+        <span className={cn(base, "border-emerald-200 bg-emerald-50 text-emerald-600")}>
+          <CheckCircle2 className="h-3 w-3" />
+        </span>
+      );
     case "running":
-      return <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-indigo-500" />;
+      return (
+        <span className={cn(base, "border-indigo-200 bg-indigo-50 text-indigo-500")}>
+          <Loader2 className="h-3 w-3 animate-spin" />
+        </span>
+      );
     case "warning":
-      return <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />;
+      return (
+        <span className={cn(base, "border-amber-200 bg-amber-50 text-amber-500")}>
+          <AlertCircle className="h-3 w-3" />
+        </span>
+      );
     case "failed":
-      return <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" />;
+      return (
+        <span className={cn(base, "border-rose-200 bg-rose-50 text-rose-500")}>
+          <XCircle className="h-3 w-3" />
+        </span>
+      );
     case "cancelled":
-      return <Square className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />;
+      return (
+        <span className={cn(base, "border-slate-200 bg-slate-100 text-slate-400")}>
+          <Square className="h-3 w-3" />
+        </span>
+      );
     default:
-      return <Circle className="mt-0.5 h-4 w-4 shrink-0 text-slate-300" />;
+      return (
+        <span className={cn(base, "border-slate-200 bg-slate-50 text-slate-300")}>
+          <Circle className="h-3 w-3" />
+        </span>
+      );
   }
 }
 
 function ToolCallLine({ tool }: { tool: AgentToolProgress }) {
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-slate-100 bg-slate-50 px-2.5 py-1.5">
-      <span className="text-xs font-medium text-slate-600">{tool.label}</span>
+    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-indigo-100 bg-indigo-50/40 px-2 py-1">
+      <span className="text-xs font-medium text-indigo-700">{tool.label}</span>
       {tool.argumentsSummary ? (
-        <span className="truncate text-[11px] text-slate-400">{tool.argumentsSummary}</span>
+        <span className="truncate text-[11px] text-slate-500">{tool.argumentsSummary}</span>
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-2 text-[11px] text-slate-400">
         {typeof tool.durationMs === "number" ? <span>{tool.durationMs}ms</span> : null}
@@ -195,27 +225,45 @@ export function AgentExecutionTimeline({
               </div>
             </div>
           ) : null}
-          <div className="mt-2.5 space-y-2.5">
-            {planGroups.map(({ plan, steps: planSteps }) => (
+          {/* 纵向时间线：节点 + 连接线，展开区域可滚动 */}
+          <div className="mt-2.5 max-h-80 overflow-y-auto pr-1">
+            {planGroups.map(({ plan, steps: planSteps }, groupIndex) => (
               <div key={plan}>
                 {showPlanTitles ? (
-                  <p className="mb-1.5 text-[11px] font-medium tracking-wide text-slate-400">
-                    计划 {plan}
-                  </p>
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="rounded-full border border-indigo-100 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-600">
+                      计划 {plan}
+                    </span>
+                    {groupIndex > 0 ? (
+                      <span className="h-px flex-1 bg-slate-200" />
+                    ) : null}
+                  </div>
                 ) : null}
-                <ul className="space-y-1.5">
-                  {planSteps.map((step) => (
-                    <li
-                      key={step.stepId}
-                      data-status={step.status}
-                      className="rounded-lg border border-indigo-100 bg-white px-3 py-2.5"
-                    >
-                      <div className="flex items-start gap-2.5">
-                        <StepStatusIcon step={step} />
-                        <div className="min-w-0 flex-1">
+                <ul>
+                  {planSteps.map((step, index) => {
+                    const isLast = index === planSteps.length - 1;
+                    return (
+                      <li
+                        key={step.stepId}
+                        data-status={step.status}
+                        className="relative flex gap-2.5"
+                      >
+                        {/* 节点 + 连接线轨道 */}
+                        <div className="flex w-5 shrink-0 flex-col items-center">
+                          <span className="mt-0.5">
+                            <StepStatusIcon step={step} />
+                          </span>
+                          {!isLast ? (
+                            <span className="my-0.5 w-px flex-1 bg-indigo-100" />
+                          ) : (
+                            <span className="flex-1" />
+                          )}
+                        </div>
+                        {/* 内容 */}
+                        <div className={cn("min-w-0 flex-1", isLast ? "pb-1" : "pb-3")}>
                           <p
                             className={cn(
-                              "text-[13px] leading-relaxed",
+                              "pt-0.5 text-[13px] leading-relaxed",
                               step.status === "completed"
                                 ? "text-slate-600"
                                 : "font-medium text-slate-700"
@@ -230,9 +278,9 @@ export function AgentExecutionTimeline({
                           ) : null}
                           {step.tool ? <ToolCallLine tool={step.tool} /> : null}
                         </div>
-                      </div>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}

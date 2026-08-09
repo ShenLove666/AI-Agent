@@ -117,11 +117,14 @@ function isAgentProgressStatus(value: unknown): value is AgentProgressStatus {
 function buildAgentStepId(payload: AgentProgressPayload, steps: AgentExecutionStep[]): string {
   const plan = payload.plan ?? 1;
   const toolName = payload.tool?.name ?? "";
-  const key = (step: AgentExecutionStep) =>
+  const key = `${plan}|${payload.phase}|${toolName}`;
+  const keyOf = (step: AgentExecutionStep) =>
     `${step.plan}|${step.phase}|${step.tool?.name ?? ""}`;
-  const occurrence =
-    steps.filter((step) => key(step) === `${plan}|${payload.phase}|${toolName}`).length + 1;
-  return `plan-${plan}-${payload.phase}-${toolName}-${occurrence}`;
+  // 同 key 步骤已存在时复用其 stepId（running→completed 原地更新），
+  // 否则按已出现次数 +1 编号（同一 plan 内同工具多次调用仍可区分）
+  const sameKey = steps.filter((step) => keyOf(step) === key);
+  if (sameKey.length > 0) return sameKey[0].stepId;
+  return `plan-${plan}-${payload.phase}-${toolName}-${sameKey.length + 1}`;
 }
 
 /** finish 时计算汇总：tool 步骤完成/失败数、工具证据之和、replan 数、最大 plan 编号 */
