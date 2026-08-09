@@ -45,7 +45,15 @@ def get_current_admin(user: Annotated[Any, Depends(get_current_user)]) -> User:
     return user
 
 
+def get_current_supervisor(user: Annotated[Any, Depends(get_current_user)]) -> User:
+    """客服主管或管理员：可访问主管队列与升级处理。"""
+    if user.role not in {"supervisor", "admin"}:
+        raise AppError("FORBIDDEN", "需要客服主管或管理员权限", 403)
+    return user
+
+
 DbSession = Annotated[Session, Depends(get_db)]
 CurrentUserId = Annotated[int, Depends(get_current_user_id)]
 CurrentUser = Annotated[Any, Depends(get_current_user)]
 CurrentAdmin = Annotated[Any, Depends(get_current_admin)]
+CurrentSupervisor = Annotated[Any, Depends(get_current_supervisor)]

@@ -77,9 +77,7 @@ def list_change_logs(
                 [key for key, (_, o) in _EVENT_MAP.items() if o == operationType]
             )
         )
-    total = db.scalar(
-        select(func.count()).select_from(statement.subquery())
-    ) or 0
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     rows = list(
         db.execute(
             statement.order_by(SupportEvent.occurred_at.desc())
@@ -89,19 +87,14 @@ def list_change_logs(
     )
     records = []
     for event, operator_name in rows:
-        biz_type, op_type = _EVENT_MAP.get(
-            event.event_type, ("SUPPORT_CASE", "RUN")
-        )
+        biz_type, op_type = _EVENT_MAP.get(event.event_type, ("SUPPORT_CASE", "RUN"))
         payload = _parse_payload(event.payload_json)
         action_desc = str(
-            payload.get("reason")
-            or payload.get("note")
-            or event.event_type
+            payload.get("reason") or payload.get("note") or event.event_type
         )[:200]
         after_snapshot = (
-            f"caseId={event.case_id} " + " ".join(
-                f"{k}={v}" for k, v in list(payload.items())[:4]
-            )
+            f"caseId={event.case_id} "
+            + " ".join(f"{k}={v}" for k, v in list(payload.items())[:4])
         ).strip()
         records.append(
             {

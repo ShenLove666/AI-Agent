@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import CurrentSupervisor, CurrentUser, DbSession
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.support.service import SupportService
@@ -291,14 +291,14 @@ def metrics(db: DbSession, user: CurrentUser) -> ApiResponse:
 
 
 @router.get("/escalations")
-def escalation_queue(db: DbSession, user: CurrentUser) -> ApiResponse:
+def escalation_queue(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_queue(db, _owner(db, user)), traceId=current_trace_id()
     )
 
 
 @router.get("/escalations/overview")
-def escalation_overview(db: DbSession, user: CurrentUser) -> ApiResponse:
+def escalation_overview(db: DbSession, user: CurrentSupervisor) -> ApiResponse:
     return ApiResponse(
         data=service.escalation_overview(db, _owner(db, user)),
         traceId=current_trace_id(),
@@ -326,7 +326,7 @@ def raise_escalation(
 
 @router.post("/escalations/{escalation_id}/accept")
 def accept_escalation(
-    escalation_id: int, db: DbSession, user: CurrentUser
+    escalation_id: int, db: DbSession, user: CurrentSupervisor
 ) -> ApiResponse:
     return ApiResponse(
         data=service.accept_escalation(
@@ -341,7 +341,7 @@ def resolve_escalation(
     escalation_id: int,
     payload: EscalationResolveRequest,
     db: DbSession,
-    user: CurrentUser,
+    user: CurrentSupervisor,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.resolve_escalation(
@@ -361,7 +361,7 @@ def return_escalation(
     escalation_id: int,
     payload: EscalationActionRequest,
     db: DbSession,
-    user: CurrentUser,
+    user: CurrentSupervisor,
 ) -> ApiResponse:
     return ApiResponse(
         data=service.return_escalation(

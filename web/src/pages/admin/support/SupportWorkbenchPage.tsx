@@ -257,8 +257,8 @@ export function SupportWorkbenchPage() {
           <Metric key={a} label={a} value={b} caption={c} tone={d} />
         ))}
       </section>
-      <section className="grid min-h-[680px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-xl shadow-slate-200/40 xl:grid-cols-[330px_minmax(420px,1fr)_390px]">
-        <aside className="border-r border-slate-200 bg-white">
+      <section className="grid h-[calc(100dvh-240px)] min-h-[560px] overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-xl shadow-slate-200/40 xl:grid-cols-[330px_minmax(420px,1fr)_390px]">
+        <aside className="min-h-0 overflow-y-auto border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 p-4">
             <div className="flex items-center gap-2">
               <Inbox className="h-5 w-5 text-blue-600" />
@@ -308,7 +308,7 @@ export function SupportWorkbenchPage() {
             )}
           </div>
         </aside>
-        <main className="flex min-w-0 flex-col bg-slate-50/40">
+        <main className="flex min-h-0 min-w-0 flex-col bg-slate-50/40">
           {detail ? (
             <>
               <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 bg-white p-5">
@@ -447,7 +447,7 @@ export function SupportWorkbenchPage() {
             </div>
           )}
         </main>
-        <aside className="border-l border-slate-200 bg-white">
+        <aside className="min-h-0 overflow-y-auto border-l border-slate-200 bg-white">
           <section className="border-b border-slate-200 p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">

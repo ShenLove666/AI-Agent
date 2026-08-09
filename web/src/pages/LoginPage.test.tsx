@@ -17,9 +17,7 @@ beforeAll(() => {
 });
 
 describe("LoginPage", () => {
-  it("fills the merchant demo credentials without exposing the password", async () => {
-    const user = userEvent.setup();
-
+  it("renders the login form with username and password fields", () => {
     render(
       <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LoginPage />
@@ -29,11 +27,37 @@ describe("LoginPage", () => {
     expect(
       screen.getByRole("heading", { name: "邻里鲜选 AI 运营台" })
     ).toBeInTheDocument();
+    expect(screen.getByLabelText("用户名")).toBeInTheDocument();
+    expect(screen.getByLabelText("密码")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "登录运营台" })).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole("button", { name: "填入演示账号" }));
+  it("switches to register mode with confirm password field", async () => {
+    const user = userEvent.setup();
 
-    expect(screen.getByLabelText("用户名")).toHaveValue("demo-admin");
-    expect(screen.getByLabelText("密码")).toHaveValue("AdminDemo@2026");
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LoginPage />
+      </MemoryRouter>
+    );
+
+    await user.click(screen.getAllByRole("button", { name: "注册商家账号" })[0]);
+
+    expect(screen.getByLabelText("确认密码")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建账号并登录" })).toBeInTheDocument();
+
+    // 切回登录
+    await user.click(screen.getByRole("button", { name: "返回登录" }));
+    expect(screen.queryByLabelText("确认密码")).not.toBeInTheDocument();
+  });
+
+  it("keeps the password input type as password by default", () => {
+    render(
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <LoginPage />
+      </MemoryRouter>
+    );
+
     expect(screen.getByLabelText("密码")).toHaveAttribute("type", "password");
   });
 });

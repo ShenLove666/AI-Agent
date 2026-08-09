@@ -20,7 +20,8 @@ const PAGE_SIZE = 10;
 
 const roleOptions = [
   { value: "admin", label: "管理员" },
-  { value: "user", label: "成员" }
+  { value: "supervisor", label: "客服主管" },
+  { value: "user", label: "客服/成员" }
 ];
 
 const buildEmptyForm = () => ({

@@ -1,0 +1,32 @@
+---
+id: unchecked-throwing-call-python
+language: Python
+severity: error
+message: "Call without try/except — throws on invalid input or missing file"
+note: |
+  Project override of the built-in rule: the built-in flagged EVERY bare
+  `int()`/`float()` call (e.g. `int(user.id)` from FastAPI deps), which is
+  safe because SQLAlchemy Integer columns are already int. This version
+  drops int()/float() and keeps the genuinely risky I/O and parse calls.
+rule:
+  any:
+    - pattern: open($$$)
+    - pattern: json.loads($$$)
+    - pattern: json.load($$$)
+    - pattern: os.stat($$$)
+    - pattern: os.lstat($$$)
+    - pattern: os.remove($$$)
+    - pattern: os.unlink($$$)
+    - pattern: os.rename($$$)
+    - pattern: os.mkdir($$$)
+    - pattern: os.makedirs($$$)
+    - pattern: os.rmdir($$$)
+    - pattern: os.listdir($$$)
+    - pattern: os.access($$$)
+    - pattern: shutil.copy($$$)
+    - pattern: shutil.move($$$)
+    - pattern: shutil.rmtree($$$)
+  not:
+    inside:
+      stopBy: end
+      kind: try_statement

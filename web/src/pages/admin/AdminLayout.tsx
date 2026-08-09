@@ -78,6 +78,8 @@ type MenuItem = {
   search?: string;
   children?: MenuChild[];
   hidden?: boolean;
+  /** 仅对指定角色可见；缺省表示所有登录用户可见 */
+  roles?: string[];
 };
 
 type MenuGroup = {
@@ -97,37 +99,44 @@ const menuGroups: MenuGroup[] = [
       {
         path: "/admin/support-supervisor",
         label: "主管队列",
-        icon: ShieldAlert
+        icon: ShieldAlert,
+        roles: ["supervisor", "admin"]
       },
       {
         path: "/admin/support-knowledge",
         label: "知识发布",
-        icon: BookOpenCheck
+        icon: BookOpenCheck,
+        roles: ["admin"]
       },
       {
         path: "/admin/support-quality",
         label: "质量与缺口",
-        icon: ShieldCheck
+        icon: ShieldCheck,
+        roles: ["supervisor", "admin"]
       },
       {
         path: "/admin/support-evaluation",
         label: "上线前评测",
-        icon: FlaskConical
+        icon: FlaskConical,
+        roles: ["admin"]
       },
       {
         path: "/admin/support-reports",
         label: "客服运营报告",
-        icon: FileBarChart
+        icon: FileBarChart,
+        roles: ["supervisor", "admin"]
       },
       {
         path: "/admin/retail",
         label: "商品组合洞察",
-        icon: LayoutDashboard
+        icon: LayoutDashboard,
+        roles: ["admin"]
       },
       {
         path: "/admin/operations",
         label: "商家运营洞察",
-        icon: BarChart3
+        icon: BarChart3,
+        roles: ["admin"]
       },
       {
         path: "/admin/agents",
@@ -527,6 +536,12 @@ export function AdminLayout() {
               <div className="space-y-1">
                 {group.items
                   .filter((item) => !item.hidden)
+                  .filter((item) => {
+                    // 角色可见性：roles 缺省时所有登录用户可见；指定时按当前角色过滤
+                    if (!item.roles || item.roles.length === 0) return true;
+                    const role = user?.role || "user";
+                    return item.roles.includes(role);
+                  })
                   .flatMap((item) => {
                     if (!item.children || item.children.length === 0) {
                       const Icon = item.icon;
@@ -911,3 +926,4 @@ export function AdminLayout() {
     </div>
   );
 }
+

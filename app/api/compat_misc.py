@@ -27,6 +27,7 @@ router = APIRouter(prefix="", tags=["misc-compat"])
 # 用户管理 (P0-4: 管理员创建/修改用户)
 # ---------------------------------------------------------------------------
 
+
 def user_vo(user: User) -> dict:
     return {
         "id": user.id,
@@ -43,12 +44,12 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=128)
     email: str | None = None
-    role: str = Field(default="user", pattern="^(user|admin)$")
+    role: str = Field(default="user", pattern="^(user|supervisor|admin)$")
 
 
 class UserUpdateRequest(BaseModel):
     email: str | None = None
-    role: str | None = Field(default=None, pattern="^(user|admin)$")
+    role: str | None = Field(default=None, pattern="^(user|supervisor|admin)$")
     enabled: bool | None = None
 
 
@@ -168,6 +169,7 @@ def change_password(
 # 系统设置
 # ---------------------------------------------------------------------------
 
+
 @router.get("/rag/settings", response_model=ApiResponse)
 def rag_settings(db: DbSession, user: CurrentUser, request: Request) -> ApiResponse:
     container = request.app.state.container
@@ -192,7 +194,9 @@ def rag_settings(db: DbSession, user: CurrentUser, request: Request) -> ApiRespo
                     "model": getattr(provider.model, "model", ""),
                     "priority": provider.priority,
                 }
-                for provider in (container.model_router.providers if container.model_router else [])
+                for provider in (
+                    container.model_router.providers if container.model_router else []
+                )
             ],
             "features": {
                 "queryRewrite": True,
@@ -207,6 +211,7 @@ def rag_settings(db: DbSession, user: CurrentUser, request: Request) -> ApiRespo
 # ---------------------------------------------------------------------------
 # 未实现模块: 结构化 501 (禁止静态假数据)
 # ---------------------------------------------------------------------------
+
 
 def _not_implemented(module: str) -> ApiResponse:
     return ApiResponse(

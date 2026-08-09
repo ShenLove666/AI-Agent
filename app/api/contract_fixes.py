@@ -48,12 +48,18 @@ def rag_settings(user: CurrentUser, request: Request) -> ApiResponse:
     return ApiResponse(
         data={
             "upload": {
-                "maxFileSize": int(os.getenv("MAX_UPLOAD_FILE_SIZE", str(50 * 1024 * 1024))),
-                "maxRequestSize": int(os.getenv("MAX_UPLOAD_REQUEST_SIZE", str(60 * 1024 * 1024))),
+                "maxFileSize": int(
+                    os.getenv("MAX_UPLOAD_FILE_SIZE", str(50 * 1024 * 1024))
+                ),
+                "maxRequestSize": int(
+                    os.getenv("MAX_UPLOAD_REQUEST_SIZE", str(60 * 1024 * 1024))
+                ),
             },
             "rag": {
                 "default": {
-                    "collectionName": os.getenv("MILVUS_COLLECTION", "ragent_chunks_v2"),
+                    "collectionName": os.getenv(
+                        "MILVUS_COLLECTION", "ragent_chunks_v2"
+                    ),
                     "dimension": int(os.getenv("EMBED_DIMENSION", "512")),
                     "metricType": os.getenv("MILVUS_METRIC_TYPE", "COSINE"),
                 },
@@ -91,7 +97,9 @@ def rag_settings(user: CurrentUser, request: Request) -> ApiResponse:
                         "default": {"candidates": [item["id"] for item in candidates]},
                         "thinking": {
                             "candidates": [
-                                item["id"] for item in candidates if item["supportsThinking"]
+                                item["id"]
+                                for item in candidates
+                                if item["supportsThinking"]
                             ]
                         },
                     },
@@ -99,13 +107,15 @@ def rag_settings(user: CurrentUser, request: Request) -> ApiResponse:
                 "embedding": {
                     "defaultModel": "local-embedding" if embedding_path else None,
                     "candidates": (
-                        [{
-                            "id": "local-embedding",
-                            "provider": "local",
-                            "model": embedding_path,
-                            "dimension": int(os.getenv("EMBED_DIMENSION", "512")),
-                            "enabled": True,
-                        }]
+                        [
+                            {
+                                "id": "local-embedding",
+                                "provider": "local",
+                                "model": embedding_path,
+                                "dimension": int(os.getenv("EMBED_DIMENSION", "512")),
+                                "enabled": True,
+                            }
+                        ]
                         if embedding_path
                         else []
                     ),
@@ -116,12 +126,14 @@ def rag_settings(user: CurrentUser, request: Request) -> ApiResponse:
                 "rerank": {
                     "defaultModel": "local-rerank" if rerank_path else None,
                     "candidates": (
-                        [{
-                            "id": "local-rerank",
-                            "provider": "local",
-                            "model": rerank_path,
-                            "enabled": True,
-                        }]
+                        [
+                            {
+                                "id": "local-rerank",
+                                "provider": "local",
+                                "model": rerank_path,
+                                "enabled": True,
+                            }
+                        ]
                         if rerank_path
                         else []
                     ),

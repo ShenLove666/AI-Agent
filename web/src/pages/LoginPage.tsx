@@ -1,12 +1,12 @@
 import * as React from "react";
-import { ArrowRight, CheckCircle2, Eye, EyeOff, Lock, ShieldCheck, User } from "lucide-react";
+import { CheckCircle2, Eye, EyeOff, Lock, ShieldCheck, User } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { BrandMark } from "@/components/brand/BrandMark";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { BRAND_NAME, BRAND_SHORT_NAME, DEMO_CREDENTIALS } from "@/config/brand";
+import { BRAND_NAME, BRAND_SHORT_NAME } from "@/config/brand";
 import { useAuthStore } from "@/stores/authStore";
 
 export function LoginPage() {
@@ -58,16 +58,6 @@ export function LoginPage() {
     setMode(next);
     setError(null);
     setForm({ username: "", password: "", confirm: "" });
-  };
-
-  const fillDemoCredentials = () => {
-    setError(null);
-    setShowPassword(false);
-    setForm({
-      username: DEMO_CREDENTIALS.username,
-      password: DEMO_CREDENTIALS.password,
-      confirm: ""
-    });
   };
 
   return (
@@ -126,26 +116,6 @@ export function LoginPage() {
             <p className="mt-3 text-sm leading-6 text-[var(--merchant-text-muted)]">
               登录后进入即时零售运营总览、AI 客服与效果优化工作区。
             </p>
-
-            <button
-              type="button"
-              onClick={fillDemoCredentials}
-              aria-label="填入演示账号"
-              className="mt-7 flex w-full items-center justify-between rounded-[var(--merchant-radius-md)] border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-4 py-3 text-left text-sm transition-colors hover:border-[var(--merchant-cyan)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--merchant-focus)] focus-visible:ring-offset-2"
-            >
-              <span>
-                <span className="block font-semibold text-[var(--merchant-navy)]">
-                  使用商家演示环境
-                </span>
-                <span className="mt-0.5 block text-xs text-[var(--merchant-text-muted)]">
-                  账号仅填入当前表单
-                </span>
-              </span>
-              <span className="inline-flex items-center gap-1 font-semibold text-[var(--merchant-cyan-strong)]">
-                填入演示账号
-                <ArrowRight className="h-4 w-4" />
-              </span>
-            </button>
 
             <form className="mt-7 space-y-5" onSubmit={handleSubmit}>
               <div className="space-y-2">

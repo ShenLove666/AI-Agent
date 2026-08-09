@@ -1,0 +1,30 @@
+---
+id: no-nested-links
+language: TSX
+message: "Nested <a> tags are invalid HTML and cause unexpected behavior"
+severity: error
+note: |
+  HTML does not allow anchor tags nested inside other anchor tags.
+  This causes rendering issues and unpredictable click behavior.
+
+  Project override of the built-in rule: the built-in matched ANY element
+  that contains an <a> descendant (flagging every ancestor of a link).
+  This version only flags a real <a> that contains another <a>.
+rule:
+  all:
+    - kind: jsx_element
+    - has:
+        field: open_tag
+        kind: jsx_opening_element
+        has:
+          field: name
+          regex: "^a$"
+    - has:
+        kind: jsx_element
+        stopBy: end
+        has:
+          field: open_tag
+          kind: jsx_opening_element
+          has:
+            field: name
+            regex: "^a$"
