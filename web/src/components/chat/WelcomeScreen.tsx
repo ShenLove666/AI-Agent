@@ -59,7 +59,10 @@ export function WelcomeScreen() {
   const hasContent = value.trim().length > 0;
 
   return (
-    <div className="flex min-h-full w-full items-start justify-center overflow-y-auto bg-[var(--merchant-surface-subtle)] px-3 py-6 sm:px-6 sm:py-10">
+    // 必须用 h-full（非 min-h-full）：父容器高度由 flex 撑开，min-height 百分比
+    // 在该链路中不解析（回退 auto → 高度=内容高度），内容超出可视区会被外层
+    // overflow-hidden 裁剪且自身无法滚动；h-full 与 MessageList 同模式可正确撑满
+    <div className="flex h-full w-full items-start justify-center overflow-y-auto bg-[var(--merchant-surface-subtle)] px-3 py-6 sm:px-6 sm:py-10">
       <div className="w-full max-w-[900px]">
         <div className="flex flex-col gap-5 border-b border-[var(--merchant-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
