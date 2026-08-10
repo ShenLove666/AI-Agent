@@ -63,7 +63,11 @@ export const MessageItem = React.memo(function MessageItem({
     (renderedMessage.messageStatus ?? "NORMAL") === "NORMAL" &&
     renderedMessage.id &&
     !renderedMessage.id.startsWith("assistant-");
-  const isThinking = Boolean(renderedMessage.isThinking);
+  // 运行中的「正在深度思考」卡片只在 isThinking 且 thinking 有真实内容时显示；
+  // 防御性收紧：即使未来有代码误写 isThinking=true + thinking 为空，也不凭空出现面板
+  const isThinking =
+    Boolean(renderedMessage.isThinking) &&
+    Boolean(renderedMessage.thinking?.trim());
   const hasSources =
     renderedMessage.role === "assistant" &&
     renderedMessage.status !== "streaming" &&

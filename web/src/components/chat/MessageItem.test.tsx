@@ -314,3 +314,43 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     expect(screen.getByText("生成失败")).toBeInTheDocument();
   });
 });
+
+describe("MessageItem 深度思考防御", () => {
+  beforeEach(() => {
+    useChatStore.setState({ isLoading: false });
+  });
+
+  afterEach(cleanup);
+
+  it("isThinking=true 但 thinking 无真实内容：不渲染「正在深度思考」卡片", () => {
+    const message: Message = {
+      id: "m-thinking-empty",
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      thinking: "",
+      isDeepThinking: true,
+      isThinking: true
+    };
+    const { container } = render(<MessageItem message={message} />);
+    // 未收到真实 thinking 内容前，即使 isThinking 被误置 true 也不出现深度思考面板
+    // （此时 isThinking 收紧为 false → 显示常规等待点，属正确行为）
+    expect(screen.queryByText(/正在深度思考/)).not.toBeInTheDocument();
+    expect(container.querySelector(".ai-wait")).not.toBeNull();
+  });
+
+  it("isThinking=true 且 thinking 有真实内容：显示「正在深度思考」", () => {
+    const message: Message = {
+      id: "m-thinking-real",
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      thinking: "正在核对购物篮关联规则……",
+      isDeepThinking: true,
+      isThinking: true
+    };
+    render(<MessageItem message={message} />);
+    expect(screen.getByText(/正在深度思考/)).toBeInTheDocument();
+    expect(screen.getByText(/正在核对购物篮关联规则/)).toBeInTheDocument();
+  });
+});

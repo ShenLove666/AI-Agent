@@ -655,9 +655,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       id: assistantId,
       role: "assistant",
       content: "",
-      thinking: deepThinkingEnabled ? "" : undefined,
+      // isDeepThinking 表示「用户本次开启了深度思考模式」；
+      // isThinking 表示「后端现在真的正在返回 thinking 流」——两者不能同值。
+      // 未收到第一条真实 thinking chunk 前，不制造空的 thinking 状态。
+      thinking: undefined,
       isDeepThinking: deepThinkingEnabled,
-      isThinking: deepThinkingEnabled,
+      isThinking: false,
       status: "streaming",
       feedback: null,
       agentSteps: [],
@@ -901,9 +904,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       id: assistantId,
       role: "assistant",
       content: "",
-      thinking: deepThinkingEnabled ? "" : undefined,
+      // 与 sendMessage 占位一致：isThinking 只在收到真实 thinking 流后置 true
+      thinking: undefined,
       isDeepThinking: deepThinkingEnabled,
-      isThinking: deepThinkingEnabled,
+      isThinking: false,
       status: "streaming",
       feedback: null,
       agentSteps: [],

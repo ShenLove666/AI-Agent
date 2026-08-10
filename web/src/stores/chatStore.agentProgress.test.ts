@@ -264,3 +264,70 @@ describe("chatStore agent_progress（经 Presentation Scheduler）", () => {
     expect(message.agentTerminalState).toBeUndefined();
   });
 });
+
+describe("深度思考 isThinking 与真实 thinking 流分离", () => {
+  beforeEach(() => {
+    createStreamResponseMock.mockReset();
+    useChatStore.setState({
+      messages: [],
+      isStreaming: false,
+      streamingMessageId: null,
+      currentSessionId: null,
+      isCreatingNew: false,
+      thinkingStartAt: null,
+      streamTaskId: null,
+      streamAbort: null,
+      cancelRequested: false,
+      deepThinkingEnabled: false,
+      knowledgeBaseIds: []
+    });
+    vi.useFakeTimers();
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    const streamingMessageId = useChatStore.getState().streamingMessageId;
+    if (streamingMessageId) disposeAgentProgressScheduler(streamingMessageId);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    useChatStore.setState({ deepThinkingEnabled: false });
+  });
+
+  it("deepThinkingEnabled=true 发送后占位 isThinking=false、thinking=undefined（未收到真实 thinking 前不显示深度思考）", () => {
+    const getHandlers = setupCapturedHandlers();
+    useChatStore.setState({ deepThinkingEnabled: true });
+    useChatStore.getState().sendMessage("牛肉适合搭配哪些商品？");
+    const handlers = getHandlers();
+
+    // 未注入任何 thinking SSE：占位状态保持
+    const message = useChatStore.getState().messages[1];
+    expect(message.role).toBe("assistant");
+    expect(message.isDeepThinking).toBe(true);
+    expect(message.isThinking).toBe(false);
+    expect(message.thinking).toBeUndefined();
+    void handlers;
+  });
+
+  it("收到第一条 thinking SSE 才 isThinking=true；收到第一个 response token 后收起并记录时长", () => {
+    const getHandlers = setupCapturedHandlers();
+    useChatStore.setState({ deepThinkingEnabled: true });
+    useChatStore.getState().sendMessage("牛肉适合搭配哪些商品？");
+    const handlers = getHandlers();
+
+    handlers.onThinking?.({ type: "think", delta: "先分析购物篮关联" });
+    let message = useChatStore.getState().messages[1];
+    expect(message.isThinking).toBe(true);
+    expect(message.thinking).toBe("先分析购物篮关联");
+
+    handlers.onThinking?.({ type: "think", delta: "，再核对证据" });
+    message = useChatStore.getState().messages[1];
+    expect(message.thinking).toBe("先分析购物篮关联，再核对证据");
+
+    // 第一个 response token：thinking 收起、保留历史内容与时长
+    handlers.onMessage?.({ type: "response", delta: "根据购物篮数据" });
+    message = useChatStore.getState().messages[1];
+    expect(message.isThinking).toBe(false);
+    expect(message.thinking).toBe("先分析购物篮关联，再核对证据");
+    expect(message.thinkingDuration).toBeGreaterThanOrEqual(1);
+  });
+});
