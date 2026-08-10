@@ -40,12 +40,12 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
         feedback: selectedVersion.feedback,
         sources: selectedVersion.sources,
         messageStatus: selectedVersion.messageStatus,
-        // 版本切换时同步携带该版本持久化的 Agent 执行记录，Timeline 随版本展示
-        agentSteps: selectedVersion.agentSteps ?? message.agentSteps,
-        agentExecutionStatus:
-          selectedVersion.agentExecutionStatus ?? message.agentExecutionStatus,
-        agentExecutionSummary:
-          selectedVersion.agentExecutionSummary ?? message.agentExecutionSummary
+        // 版本切换时严格使用该版本持久化的 Agent 执行记录，Timeline 随版本展示；
+        // 不做 ?? message.* 兜底：老版本无 Timeline 数据时若回退到 message，
+        // 会把当前版本的执行过程串显示到旧版本上
+        agentSteps: selectedVersion.agentSteps,
+        agentExecutionStatus: selectedVersion.agentExecutionStatus,
+        agentExecutionSummary: selectedVersion.agentExecutionSummary
       }
     : message;
   const isUser = message.role === "user";

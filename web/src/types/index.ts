@@ -24,6 +24,8 @@ export interface AgentToolProgress {
   name: string;
   label: string;
   status: AgentProgressStatus;
+  /** 工具调用唯一标识（跨 plan 全局递增，如 "call-1"；同一调用的 running→completed 共享同一 callId） */
+  callId?: string;
   argumentsSummary?: string;
   durationMs?: number | null;
   evidenceCount?: number | null;

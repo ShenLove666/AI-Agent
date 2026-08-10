@@ -163,3 +163,32 @@ describe("MessageList scroll-follow behavior", () => {
     expect(screen.queryByRole("button", { name: "滚动到底部" })).not.toBeInTheDocument();
   });
 });
+
+describe("MessageList stable viewKey", () => {
+  it("sessionKey 从 null 变为会话 id（新会话首答落库）时不重建 Virtuoso；已存在 id → 另一 id 才重建", () => {
+    const messages = [
+      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+    ];
+    useChatStore.setState({ recommendReveal: null });
+    const { rerender } = render(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} />
+    );
+    const scrollerBefore = findScroller();
+    expect(scrollerBefore).not.toBeNull();
+
+    // null → uuid（新会话首答落库）：Virtuoso 不重建，scroller 仍是同一 DOM 节点
+    rerender(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} sessionKey="uuid-1" />
+    );
+    expect(findScroller()).toBe(scrollerBefore);
+
+    // 已存在会话 id → 另一个 id（用户切换历史会话）：Virtuoso 重建，scroller 被替换
+    rerender(
+      <MessageList messages={messages} isLoading={false} isStreaming={false} sessionKey="uuid-2" />
+    );
+    const scrollerAfter = findScroller();
+    expect(scrollerAfter).not.toBeNull();
+    expect(scrollerAfter).not.toBe(scrollerBefore);
+  });
+});

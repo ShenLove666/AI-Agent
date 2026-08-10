@@ -23,7 +23,12 @@ from app.framework.database import Database
 from app.framework.migrations import upgrade_database
 from app.infra_ai.contracts import ModelStreamChunk
 from app.modules.commerce.models import AssociationRule, Basket, BasketItem, Product
-from app.modules.rag.agentic import AgenticRagCoordinator
+from app.modules.rag.agentic import (
+    AgentDecision,
+    AgenticRagCoordinator,
+    AgenticRun,
+    EvidenceReview,
+)
 from app.modules.rag.progress import build_execution_summary
 from app.modules.users.models import User
 
@@ -46,6 +51,56 @@ class _StreamRouter:
 
     async def stream(self, request, cancel_event=None):
         yield ModelStreamChunk("response", "这是根据证据生成的测试回答。")
+
+
+class _SlowCoordinator:
+    """先发一条 planning running 事件、再挂起 sleep 秒的假协调器。
+
+    用于取消闭环测试：客户端在 prepare 阶段断开时，服务端仍停留在这
+    个 run() 里（sleep 中），从而触发 stream() 的 GeneratorExit 路径。
+    """
+
+    def __init__(self, sleep: float = 1.0):
+        self.sleep = sleep
+
+    async def run(
+        self,
+        db,
+        *,
+        user_id,
+        question,
+        knowledge_base_ids=(),
+        progress_sink=None,
+    ):
+        if progress_sink is not None:
+            await progress_sink(
+                {
+                    "phase": "planning",
+                    "status": "running",
+                    "agent": "planner",
+                    "plan": 1,
+                    "title": "正在制定查询计划",
+                    "detail": "正在判断需要查询哪些业务数据",
+                }
+            )
+        await asyncio.sleep(self.sleep)
+        return AgenticRun(
+            AgentDecision("direct", (), "测试规划", "deterministic_fallback"),
+            (),
+            "ready: 测试",
+            EvidenceReview(
+                intent="general",
+                relevance=1,
+                coverage=1,
+                authority_sufficient=True,
+                risk="low",
+                decision="ready",
+                summary="无需证据审查",
+            ),
+            (),
+            "direct",
+            "deterministic_fallback",
+        )
 
 
 def _seed_commerce(db, owner_id: int) -> None:
@@ -258,6 +313,19 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                     assert parsed.index(planning_completed) < parsed.index(
                         tool_running
                     )
+                    # 2b) 工具事件携带 callId：running/completed 成对共享、跨调用唯一
+                    tool_events = [
+                        item["data"]
+                        for item in progress
+                        if item["data"]["phase"] == "tool"
+                    ]
+                    assert tool_events
+                    assert all(
+                        isinstance(event["tool"].get("callId"), str)
+                        and event["tool"]["callId"].startswith("call-")
+                        for event in tool_events
+                    )
+                    assert len({event["tool"]["callId"] for event in tool_events}) == 2
                     # 3) seq 全流唯一递增（prepare 与 generation 共享计数器）
                     seqs = [item["data"]["seq"] for item in progress]
                     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
@@ -293,6 +361,9 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                         generation_completed
                     ) < parsed.index(complete_event)
                     assert generation_completed["data"]["title"] == "回答生成完成"
+                    # 4c) generation 事件携带最终 plan 编号（本例 1 个 plan → 1）
+                    assert generation_running["data"]["plan"] == 1
+                    assert generation_completed["data"]["plan"] == 1
 
                     # 5) assistant 消息持久化了 sanitized 执行摘要（reducer 合并语义）
                     from sqlalchemy import select
@@ -335,6 +406,9 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                             assert "argumentsSummary" not in tool
                             assert "name" not in tool
                             assert "arguments" not in step
+                            # 持久化 tool 保留 callId（存在时才写）
+                            assert "callId" in tool
+                            assert tool["callId"].startswith("call-")
                         # generation 两次 running + completed 合并为一条 completed
                         generation_steps = [
                             step
@@ -344,6 +418,7 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                         assert len(generation_steps) == 1
                         assert generation_steps[0]["status"] == "completed"
                         assert generation_steps[0]["title"] == "回答生成完成"
+                        assert generation_steps[0]["plan"] == 1
                         for step in payload["steps"]:
                             tool = step.get("tool") or {}
                             assert "argumentsSummary" not in tool
@@ -664,3 +739,184 @@ def test_build_execution_summary_reducer_semantics():
     assert cancelled["summary"]["planCount"] == 1
     # 无执行事件时返回 None
     assert build_execution_summary([]) is None
+
+
+def test_build_execution_summary_splits_repeated_tool_calls_by_call_id():
+    """同 Plan 内同一工具两次调用（不同 callId）保留两条 tool 步骤；
+    同 callId 的 running+completed 合并为一条；无 callId 的旧事件回退 toolKey 合并。"""
+    events: list[dict] = [
+        # 第一次调用：running + completed（同 callId=call-1）→ 合并一条
+        {
+            "seq": 1, "phase": "tool", "status": "running", "plan": 1,
+            "title": "知识库检索", "detail": "退货",
+            "tool": {
+                "name": "knowledge.search", "label": "知识库检索", "status": "running",
+                "callId": "call-1", "argumentsSummary": "退货",
+            },
+            "timestamp": 1000,
+        },
+        {
+            "seq": 2, "phase": "tool", "status": "completed", "plan": 1,
+            "title": "知识库检索", "detail": "找到 2 条可用数据",
+            "tool": {
+                "name": "knowledge.search", "label": "知识库检索", "status": "completed",
+                "callId": "call-1", "durationMs": 50, "evidenceCount": 2,
+            },
+            "timestamp": 2000,
+        },
+        # 第二次调用：同 Plan 同工具、不同 callId → 独立步骤
+        {
+            "seq": 3, "phase": "tool", "status": "running", "plan": 1,
+            "title": "知识库检索", "detail": "无理由退货",
+            "tool": {
+                "name": "knowledge.search", "label": "知识库检索", "status": "running",
+                "callId": "call-2", "argumentsSummary": "无理由退货",
+            },
+            "timestamp": 3000,
+        },
+        {
+            "seq": 4, "phase": "tool", "status": "completed", "plan": 1,
+            "title": "知识库检索", "detail": "找到 3 条可用数据",
+            "tool": {
+                "name": "knowledge.search", "label": "知识库检索", "status": "completed",
+                "callId": "call-2", "durationMs": 70, "evidenceCount": 3,
+            },
+            "timestamp": 4000,
+        },
+        # 旧事件（无 callId）：同 plan 同 toolKey 的两条仍合并为一条
+        {
+            "seq": 5, "phase": "tool", "status": "running", "plan": 1,
+            "title": "订单信息查询", "detail": "订单 A1",
+            "tool": {
+                "name": "commerce.get_order", "label": "订单信息查询", "status": "running",
+            },
+            "timestamp": 5000,
+        },
+        {
+            "seq": 6, "phase": "tool", "status": "completed", "plan": 1,
+            "title": "订单信息查询", "detail": "找到 1 条可用数据",
+            "tool": {
+                "name": "commerce.get_order", "label": "订单信息查询",
+                "status": "completed", "durationMs": 10, "evidenceCount": 1,
+            },
+            "timestamp": 6000,
+        },
+    ]
+    payload = build_execution_summary(events)
+    assert payload is not None
+    tool_steps = [step for step in payload["steps"] if step["phase"] == "tool"]
+    assert len(tool_steps) == 3
+    # 同工具两次调用（不同 callId）保留两条，各自合并 running/completed
+    knowledge_steps = [
+        step
+        for step in tool_steps
+        if step["tool"]["toolKey"] == "knowledge_search"
+    ]
+    assert len(knowledge_steps) == 2
+    assert knowledge_steps[0]["status"] == "completed"
+    assert knowledge_steps[0]["tool"]["callId"] == "call-1"
+    assert knowledge_steps[0]["tool"]["evidenceCount"] == 2
+    assert knowledge_steps[1]["tool"]["callId"] == "call-2"
+    assert knowledge_steps[1]["tool"]["evidenceCount"] == 3
+    assert "name" not in knowledge_steps[0]["tool"]
+    assert "argumentsSummary" not in knowledge_steps[0]["tool"]
+    # 无 callId 的旧事件回退 toolKey 合并为一条，且不写 callId
+    order_steps = [
+        step
+        for step in tool_steps
+        if step["tool"]["toolKey"] == "commerce_get_order"
+    ]
+    assert len(order_steps) == 1
+    assert "callId" not in order_steps[0]["tool"]
+    assert order_steps[0]["tool"]["evidenceCount"] == 1
+    # 摘要计数按步骤统计：两次调用各算一次
+    assert payload["summary"]["toolCallCount"] == 3
+    assert payload["summary"]["planCount"] == 1
+
+
+def test_stream_cancel_during_prepare_finishes_request_run():
+    """客户端在 prepare 阶段断开：ChatRequestRun 收尾为 cancelled（不再停留
+    processing），同 requestId 可立即重试（不被 REQUEST_IN_PROGRESS 拦截），
+    trace 也完成收尾。
+
+    说明：httpx ASGITransport 会缓冲完整响应体，客户端提前断开无法在服务端
+    触发 GeneratorExit，因此直接驱动 service.stream(...) 异步生成器并在拿到
+    第一条 planning 事件后 aclose() 模拟客户端断开。
+    """
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/progress-cancel.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from sqlalchemy import select
+
+            from app.application import create_app
+            from app.modules.conversations.models import ChatRequestRun
+            from app.modules.rag.schemas import ChatRequest
+            from app.modules.users.repository import UserRepository
+
+            app = create_app()
+            app.state.container.chat.model_router = _StreamRouter()
+            app.state.container.chat.agentic = _SlowCoordinator()
+            transport = httpx.ASGITransport(app=app)
+            async with app.router.lifespan_context(app):
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://test"
+                ) as client:
+                    await client.post(
+                        "/api/v1/auth/register",
+                        json={
+                            "username": "cancel-user",
+                            "password": "password123",
+                        },
+                    )
+                    await client.post(
+                        "/api/v1/auth/login",
+                        json={"username": "cancel-user", "password": "password123"},
+                    )
+
+                service = app.state.container.chat
+                request = ChatRequest(
+                    question="牛肉和什么商品适合搭配推荐？",
+                    request_id="request-cancel-during-prepare-01",
+                )
+                with app.state.container.database.session_factory() as db:
+                    user = UserRepository().get_by_username(db, "cancel-user")
+                    stream_gen = service.stream(db, user.id, request, cancel_event=None)
+                    # 第一条事件：planning running（假协调器先发事件再 sleep）
+                    first = await anext(stream_gen)
+                    assert first["type"] == "agent_progress"
+                    assert first["data"]["phase"] == "planning"
+                    # 模拟客户端断开：关闭生成器 → 服务端 GeneratorExit 路径
+                    await stream_gen.aclose()
+                    # 请求记录已收尾为 cancelled
+                    run = db.scalar(
+                        select(ChatRequestRun).where(
+                            ChatRequestRun.user_id == user.id,
+                            ChatRequestRun.request_id == request.request_id,
+                        )
+                    )
+                    assert run is not None
+                    assert run.status == "cancelled"
+                    # trace 也完成收尾
+                    from app.modules.rag.trace_models import RagTraceRun
+
+                    trace_run = db.scalar(
+                        select(RagTraceRun)
+                        .where(RagTraceRun.user_id == user.id)
+                        .order_by(RagTraceRun.created_at.desc())
+                    )
+                    assert trace_run is not None
+                    assert trace_run.status == "cancelled"
+                    # 同一 requestId 重新 prepare：不再抛 REQUEST_IN_PROGRESS
+                    trace = service.traces.start(
+                        db, user_id=user.id, query=request.question
+                    )
+                    prepared = await service.prepare(
+                        db, user_id=user.id, request=request, trace=trace
+                    )
+                    assert prepared.request_run_id is not None
+                    service._finish_request(
+                        db, prepared.request_run_id, status="completed"
+                    )
+
+    asyncio.run(scenario())

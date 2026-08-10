@@ -64,7 +64,7 @@ export function ChatPage() {
 
   return (
     <MainLayout>
-      <div className="merchant-chat-shell relative flex h-full min-h-0 min-w-0 overflow-hidden bg-white lg:rounded-[22px] lg:border lg:border-[#dce5e9] lg:shadow-[0_18px_45px_rgba(8,43,69,0.08)]">
+      <div className="merchant-chat-shell relative flex h-full min-h-0 min-w-0 overflow-hidden bg-white lg:rounded-xl lg:border lg:border-[#dce5e9]">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[#f8fafb]">
           <div className="min-h-0 flex-1">
             {showEmptyLoading ? (

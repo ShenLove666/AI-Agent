@@ -34,6 +34,21 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
   const [visibleEnd, setVisibleEnd] = React.useState(0);
   const [showScrollDown, setShowScrollDown] = React.useState(false);
 
+  // 稳定 viewKey：只有「已存在的会话 id → 另一个会话 id」（用户切换历史会话）时才更新。
+  // null→UUID（新会话首答落库）与初次加载（null→id）都不重建 Virtuoso，
+  // 避免「Timeline 完成、正文开始输出」的瞬间整树 remount 造成跳动。
+  const [virtuosoKey, setVirtuosoKey] = React.useState<string>(() => sessionKey ?? "empty");
+  const prevSessionKeyRef = React.useRef<string | null>(sessionKey ?? null);
+  React.useEffect(() => {
+    const prev = prevSessionKeyRef.current;
+    prevSessionKeyRef.current = sessionKey ?? null;
+    // 仅「已存在的会话 id → 另一个会话 id」才重建 Virtuoso；
+    // null→UUID（新会话首答落库）不重建，避免 Timeline 完成瞬间跳一下
+    if (sessionKey && prev && sessionKey !== prev) {
+      setVirtuosoKey(sessionKey);
+    }
+  }, [sessionKey]);
+
   const isNearBottom = React.useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return true;
@@ -297,7 +312,7 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
   return (
     <div className="relative h-full">
       <Virtuoso
-        key={sessionKey ?? "empty"}
+        key={virtuosoKey}
         ref={virtuosoRef}
         data={messages}
         initialTopMostItemIndex={initialTopMostItemIndex}

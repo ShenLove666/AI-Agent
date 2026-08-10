@@ -132,6 +132,7 @@ class _State(TypedDict, total=False):
     results: Required[list[SearchResult]]
     plan_count: Required[int]
     tool_calls: Required[int]
+    tool_call_seq: Required[int]
     plan_history: Required[list[dict[str, Any]]]
     tool_errors: Required[list[dict[str, Any]]]
     steps: Required[list[dict[str, Any]]]
@@ -214,6 +215,7 @@ class AgenticRagCoordinator:
                 "results": [],
                 "plan_count": 0,
                 "tool_calls": 0,
+                "tool_call_seq": 0,
                 "plan_history": [],
                 "tool_errors": [],
                 "steps": [],
@@ -532,6 +534,8 @@ class AgenticRagCoordinator:
         errors = list(state.get("tool_errors", []))
         executions: list[dict[str, Any]] = []
         used = state.get("tool_calls", 0)
+        # tool_call_seq 是全流全局递增的 callId 编号（区别于 tool_calls 预算计数器）
+        call_seq = state.get("tool_call_seq", 0)
         decision = state.get("decision")
         plan = state.get("plan_count", 1)
         context = ToolContext(
@@ -541,6 +545,8 @@ class AgenticRagCoordinator:
             if used >= self.max_tool_calls:
                 errors.append({"tool": call.name, "code": "TOOL_BUDGET_EXCEEDED"})
                 break
+            call_seq += 1
+            call_id = f"call-{call_seq}"
             label = tool_label(call.name)
             arguments_summary = summarize_arguments(call.name, call.arguments)
             await sink(
@@ -555,6 +561,7 @@ class AgenticRagCoordinator:
                         "name": call.name,
                         "label": label,
                         "status": "running",
+                        "callId": call_id,
                         "argumentsSummary": arguments_summary,
                     },
                 }
@@ -586,6 +593,7 @@ class AgenticRagCoordinator:
                         "name": call.name,
                         "label": label,
                         "status": status,
+                        "callId": call_id,
                         "durationMs": outcome.duration_ms,
                         "evidenceCount": evidence_count,
                     },
@@ -594,6 +602,7 @@ class AgenticRagCoordinator:
         return {
             "results": results,
             "tool_calls": used,
+            "tool_call_seq": call_seq,
             "tool_errors": errors,
             "steps": [
                 *state.get("steps", []),

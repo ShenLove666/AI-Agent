@@ -5,8 +5,9 @@
 Planner rationale 或工具参数的完整 JSON 原文。
 
 build_execution_summary 采用 reducer 语义：同一逻辑步骤（合并键
-(plan, phase, toolKey)）的多个事件合并为最终一条，与前端 live 合并语义一致，
-确保实时展示与历史 restore 看到的步骤一致。
+(plan, phase, callId 或 toolKey)）的多个事件合并为最终一条，与前端 live
+合并语义一致，确保实时展示与历史 restore 看到的步骤一致。同 Plan 内同一工具
+的重复调用（不同 callId）保留为独立步骤，running→completed（同 callId）仍合并。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ class ToolProgress(TypedDict, total=False):
     name: str
     label: str
     status: str
+    callId: str
     argumentsSummary: str
     durationMs: int
     evidenceCount: int
@@ -178,10 +180,12 @@ def build_execution_summary(
 ) -> dict[str, Any] | None:
     """从收集的 progress 事件派生持久化用的精简执行摘要（reducer 语义）。
 
-    同一逻辑步骤（合并键 (plan, phase, toolKey)）的多个事件合并为最终一条：
+    同一逻辑步骤（合并键 (plan, phase, callId 或 toolKey)，callId 取自事件
+    tool.callId）的多个事件合并为最终一条：同 Plan 内同一工具重复调用（不同
+    callId）保留为独立步骤，同 callId 的 running→completed 仍合并为一条；
     后续事件覆盖 status/title/detail/tool（保留最新 evidenceCount/durationMs，
     只保留工具最后状态）；step["seq"] 保留该 key 首个事件的 seq。
-    steps 只保留 seq/phase/status/plan/title/detail/tool.label/toolKey/
+    steps 只保留 seq/phase/status/plan/title/detail/tool.label/toolKey/callId/
     evidenceCount/durationMs，不含 arguments 原文、rationale 与内部英文工具名；
     final_status 提供时（"failed"/"cancelled"）把合并后仍为 running 的步骤
     强制改为该状态。无执行事件时返回 None。
@@ -194,15 +198,16 @@ def build_execution_summary(
         phase = event.get("phase")
         if phase not in _EXECUTION_PHASES:
             continue
+        tool = event.get("tool") or {}
         tool_key = _event_tool_key(event)
-        key = (event.get("plan"), phase, tool_key)
+        call_id = tool.get("callId")
+        key = (event.get("plan"), phase, call_id if call_id is not None else tool_key)
         ts = event.get("timestamp")
         if isinstance(ts, (int, float)):
             if first_ts is None or ts < first_ts:
                 first_ts = ts
             if last_ts is None or ts > last_ts:
                 last_ts = ts
-        tool = event.get("tool") or {}
         if key not in merged:
             merged[key] = {
                 "seq": event.get("seq"),
@@ -213,6 +218,8 @@ def build_execution_summary(
             }
             if tool_key is not None:
                 merged[key]["tool"] = {"label": tool.get("label"), "toolKey": tool_key}
+                if call_id is not None:
+                    merged[key]["tool"]["callId"] = call_id
             order.append(key)
         step = merged[key]
         # 后续事件覆盖 status/title/detail/tool；无 detail 的新事件清掉旧 detail
@@ -228,6 +235,8 @@ def build_execution_summary(
             )
             tool_step["label"] = tool.get("label")
             tool_step["toolKey"] = tool_key
+            if call_id is not None:
+                tool_step["callId"] = call_id
             if tool.get("evidenceCount") is not None:
                 tool_step["evidenceCount"] = tool["evidenceCount"]
             if tool.get("durationMs") is not None:

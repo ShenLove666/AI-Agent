@@ -541,6 +541,15 @@ class RagChatService:
             with self.traces.node(db, prepared.trace, "generation") as attributes:
                 answer = await self.require_router().complete(prepared.model_request)
                 attributes["answer_chars"] = len(answer)
+            # generation 事件携带最终 plan 编号（multi-plan 顺序修复的数据端）
+            final_plan = max(
+                (
+                    event.get("plan") or 1
+                    for event in prepared.agent_execution_events
+                    if event.get("phase") == "planning"
+                ),
+                default=1,
+            )
             # generation 阶段事件：running → completed（seq 接续 prepare 编号）
             for generation_status, generation_title in (
                 ("running", phase_text("generation", "running")),
@@ -552,8 +561,9 @@ class RagChatService:
                         "phase": "generation",
                         "status": generation_status,
                         "agent": "generator",
+                        "plan": final_plan,
                         "title": generation_title,
-                        "timestamp": time.time(),
+                        "timestamp": round(time.time() * 1000, 3),
                     }
                 )
             message = self.conversations.add_assistant_version(
@@ -668,11 +678,34 @@ class RagChatService:
                     break
                 yield {"type": "agent_progress", "data": event}
             prepared = await prepare_task
+            # generation 事件携带最终 plan 编号（multi-plan 顺序修复的数据端）
+            final_plan = max(
+                (
+                    event.get("plan") or 1
+                    for event in prepared.agent_execution_events
+                    if event.get("phase") == "planning"
+                ),
+                default=1,
+            )
         except (GeneratorExit, asyncio.CancelledError):
             # 客户端断开/任务取消：取消 prepare 任务，防止 dangling task
             if not prepare_task.done():
                 prepare_task.cancel()
                 await asyncio.gather(prepare_task, return_exceptions=True)
+            # 取消发生在 prepare 期间：请求记录与 trace 也要收尾，
+            # 否则 ChatRequestRun 停留 processing（5 分钟内同 requestId 被 REQUEST_IN_PROGRESS 拦截）
+            if request.request_id:
+                run = self._request_run(db, user_id, request.request_id)
+                if run is not None and run.status == "processing":
+                    self._finish_request(db, run.id, status="cancelled")
+            self.traces.finish(
+                db,
+                trace,
+                conversation_id=trace.run.conversation_id or request.conversation_id,
+                rewritten_query=request.question,
+                turn_id=trace.run.turn_id,
+                status="cancelled",
+            )
             raise
         except BaseException as exc:
             # prepare 失败：清理任务后沿用原有失败处理，异常上抛给 API 转 error 事件
@@ -728,6 +761,7 @@ class RagChatService:
                     "phase": "generation",
                     "status": "running",
                     "agent": "generator",
+                    "plan": final_plan,
                     "title": phase_text("generation", "running"),
                 }
             ):
@@ -751,6 +785,7 @@ class RagChatService:
                                 "phase": "generation",
                                 "status": "running",
                                 "agent": "generator",
+                                "plan": final_plan,
                                 "title": "正在生成回答",
                                 "detail": "回答内容正在生成中",
                             }
@@ -779,6 +814,7 @@ class RagChatService:
                         "phase": "generation",
                         "status": "completed",
                         "agent": "generator",
+                        "plan": final_plan,
                         "title": phase_text("generation", "completed"),
                     }
                 ):

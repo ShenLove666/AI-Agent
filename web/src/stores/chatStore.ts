@@ -84,18 +84,29 @@ function mapPersistedMessageStatus(status?: Message["messageStatus"] | null): Me
 }
 
 /**
- * 构造稳定 stepId：`plan-${plan}-${phase}-${toolName}-${occurrence}`，
- * occurrence 为该 plan+phase+tool 组合在已有步骤中出现的次数。
- * running→completed 的同一逻辑步骤得到相同 stepId，可原地更新。
+ * 构造稳定 stepId：
+ * - 新后端带 callId：优先用 callId 构造 `plan-${plan}-${phase}-${callId}`，
+ *   同一工具调用的 running→completed 共享 callId 可原地更新，
+ *   同一 plan 内同工具的不同调用（不同 callId）各自成步，不再互相覆盖。
+ * - 旧后端无 callId：保持原有按 (plan, phase, toolName) 合并的兼容行为，
+ *   同 key 步骤已存在时复用其 stepId，否则按出现次数 +1 编号。
  */
 function buildAgentStepId(payload: AgentProgressPayload, steps: AgentExecutionStep[]): string {
   const plan = payload.plan ?? 1;
+  const callId = payload.tool?.callId;
+  if (callId) {
+    // 同一工具调用的 running→completed 共享 callId，原地更新；不同调用（不同 callId）各自成步
+    const existing = steps.find(
+      (step) => step.tool?.callId === callId && step.plan === plan
+    );
+    if (existing) return existing.stepId;
+    return `plan-${plan}-${payload.phase}-${callId}`;
+  }
+  // 旧后端无 callId：保持原有按 (plan, phase, toolName) 合并的行为
   const toolName = payload.tool?.name ?? "";
   const key = `${plan}|${payload.phase}|${toolName}`;
   const keyOf = (step: AgentExecutionStep) =>
     `${step.plan}|${step.phase}|${step.tool?.name ?? ""}`;
-  // 同 key 步骤已存在时复用其 stepId（running→completed 原地更新），
-  // 否则按已出现次数 +1 编号（同一 plan 内同工具多次调用仍可区分）
   const sameKey = steps.filter((step) => keyOf(step) === key);
   if (sameKey.length > 0) return sameKey[0].stepId;
   return `plan-${plan}-${payload.phase}-${toolName}-${sameKey.length + 1}`;

@@ -19,7 +19,7 @@ import type {
   AgentToolProgress
 } from "@/types";
 
-/** 执行中（running 且展开）最多平铺展示的最近步骤数，更早的折叠为一行提示 */
+/** 执行中（running 且展开）最多平铺展示的最近计划步骤数，更早的折叠为一行提示 */
 const MAX_RUNNING_VISIBLE_STEPS = 5;
 
 interface AgentExecutionTimelineProps {
@@ -98,6 +98,47 @@ function ToolCallLine({ tool }: { tool: AgentToolProgress }) {
   );
 }
 
+/** 时间线单行：节点 + 连接线轨道 + 内容（计划组与全局阶段共用） */
+function TimelineStepRow({ step, isLast }: { step: AgentExecutionStep; isLast: boolean }) {
+  return (
+    <li
+      data-status={step.status}
+      className="relative flex gap-2.5"
+    >
+      {/* 节点 + 连接线轨道 */}
+      <div className="flex w-5 shrink-0 flex-col items-center">
+        <span className="mt-0.5">
+          <StepStatusIcon step={step} />
+        </span>
+        {!isLast ? (
+          <span className="my-0.5 w-px flex-1 bg-indigo-100" />
+        ) : (
+          <span className="flex-1" />
+        )}
+      </div>
+      {/* 内容 */}
+      <div className={cn("min-w-0 flex-1", isLast ? "pb-1" : "pb-3")}>
+        <p
+          className={cn(
+            "pt-0.5 text-[13px] leading-relaxed",
+            step.status === "completed"
+              ? "text-slate-600"
+              : "font-medium text-slate-700"
+          )}
+        >
+          {step.title}
+        </p>
+        {step.detail ? (
+          <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+            {step.detail}
+          </p>
+        ) : null}
+        {step.tool ? <ToolCallLine tool={step.tool} /> : null}
+      </div>
+    </li>
+  );
+}
+
 export function AgentExecutionTimeline({
   steps,
   status = "completed",
@@ -126,15 +167,20 @@ export function AgentExecutionTimeline({
   }, [status]);
 
   const stepsList = steps ?? [];
-  // 空 steps（旧消息/旧后端无 agent_progress）时不渲染任何内容
+  // 空 steps（旧消息/旧后端无进度事件）时不渲染任何内容
   if (stepsList.length === 0) return null;
 
-  // 执行中展开：只平铺最近 MAX_RUNNING_VISIBLE_STEPS 步，更早步骤折叠为一行提示；
-  // 非 running（用户主动展开）或点击「展开全部」后展示全部步骤
+  // generation 是全局阶段：不挂在任何计划组内，统一渲染在所有计划组之后，
+  // 避免 multi-plan 时顺序错乱（计划1→…→计划2→回答生成完成）
+  const planSteps = stepsList.filter((step) => step.phase !== "generation");
+  const globalSteps = stepsList.filter((step) => step.phase === "generation");
+
+  // 执行中展开：只平铺最近 MAX_RUNNING_VISIBLE_STEPS 步计划步骤，更早的折叠为一行提示；
+  // 全局 generation 步骤不受截断影响，始终完整渲染
   const truncateRunning =
-    isRunning && expanded && !showAllRunningSteps && stepsList.length > MAX_RUNNING_VISIBLE_STEPS;
-  const omittedCount = truncateRunning ? stepsList.length - MAX_RUNNING_VISIBLE_STEPS : 0;
-  const displaySteps = truncateRunning ? stepsList.slice(-MAX_RUNNING_VISIBLE_STEPS) : stepsList;
+    isRunning && expanded && !showAllRunningSteps && planSteps.length > MAX_RUNNING_VISIBLE_STEPS;
+  const omittedCount = truncateRunning ? planSteps.length - MAX_RUNNING_VISIBLE_STEPS : 0;
+  const displaySteps = truncateRunning ? planSteps.slice(-MAX_RUNNING_VISIBLE_STEPS) : planSteps;
 
   const runningSteps = stepsList.filter((step) => step.status === "running");
   const lastRunning = runningSteps.length > 0 ? runningSteps[runningSteps.length - 1] : undefined;
@@ -161,16 +207,16 @@ export function AgentExecutionTimeline({
   const showPlanTitles = planGroups.length > 1;
 
   const summaryText = (() => {
-    if (isRunning) return "正在执行 Agent 分析…";
+    if (isRunning) return "正在分析并查询相关数据…";
     if (status === "failed") return "处理失败";
     if (status === "cancelled") return "已停止处理";
     if (summary) {
-      const parts = ["已完成 Agent 分析"];
+      const parts = ["已完成分析"];
       if (summary.toolCallCount > 0) parts.push(`${summary.toolCallCount} 次查询`);
-      if (summary.evidenceCount > 0) parts.push(`${summary.evidenceCount} 条证据`);
+      if (summary.evidenceCount > 0) parts.push(`核验 ${summary.evidenceCount} 条证据`);
       return parts.join(" · ");
     }
-    return "已完成 Agent 分析";
+    return "已完成分析";
   })();
 
   const collapsedIcon = isRunning ? (
@@ -183,9 +229,12 @@ export function AgentExecutionTimeline({
     <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
   );
 
+  // 运行中展开时头部标题 = 最后 running 步骤标题（去句尾标点 + 省略号），不重复展示状态卡
+  const runningHeaderTitle = `${lastRunning?.title.replace(/[。.…\s]+$/, "") ?? "正在分析并查询相关数据"}…`;
+
   return (
     <section
-      aria-label="Agent 执行过程"
+      aria-label="AI 处理过程"
       className={cn(
         "overflow-hidden rounded-lg border border-indigo-100/70 bg-indigo-50/40",
         className
@@ -202,7 +251,9 @@ export function AgentExecutionTimeline({
           <>
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
-              <span className="text-[13px] font-semibold text-slate-700">Agent 执行过程</span>
+              <span className="truncate text-[13px] font-semibold text-slate-700">
+                {isRunning ? runningHeaderTitle : "AI 处理过程"}
+              </span>
             </span>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-indigo-100 bg-white px-2 py-0.5 text-[11px] font-medium text-indigo-600">
               <Sparkles className="h-3 w-3" />
@@ -227,19 +278,6 @@ export function AgentExecutionTimeline({
       </button>
       {expanded ? (
         <div id={bodyId} className="px-3 pb-3">
-          {isRunning ? (
-            <div className="mt-1 flex items-start gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2.5">
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-indigo-500" />
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium text-indigo-700">
-                  {lastRunning
-                    ? `${lastRunning.title.replace(/[。.…\s]+$/, "")}…`
-                    : "正在分析问题…"}
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">Agent 正在调用业务工具并核验证据</p>
-              </div>
-            </div>
-          ) : null}
           {/* 纵向时间线：节点 + 连接线；不设独立滚动容器，整个页面只保留 Virtuoso 一个滚动权威 */}
           <div className="mt-2.5">
             {omittedCount > 0 ? (
@@ -251,7 +289,7 @@ export function AgentExecutionTimeline({
                 已省略更早 {omittedCount} 步
               </button>
             ) : null}
-            {planGroups.map(({ plan, steps: planSteps }, groupIndex) => (
+            {planGroups.map(({ plan, steps: groupSteps }, groupIndex) => (
               <div key={plan}>
                 {showPlanTitles ? (
                   <div className="mb-1 flex items-center gap-2">
@@ -264,50 +302,33 @@ export function AgentExecutionTimeline({
                   </div>
                 ) : null}
                 <ul>
-                  {planSteps.map((step, index) => {
-                    const isLast = index === planSteps.length - 1;
-                    return (
-                      <li
-                        key={step.stepId}
-                        data-status={step.status}
-                        className="relative flex gap-2.5"
-                      >
-                        {/* 节点 + 连接线轨道 */}
-                        <div className="flex w-5 shrink-0 flex-col items-center">
-                          <span className="mt-0.5">
-                            <StepStatusIcon step={step} />
-                          </span>
-                          {!isLast ? (
-                            <span className="my-0.5 w-px flex-1 bg-indigo-100" />
-                          ) : (
-                            <span className="flex-1" />
-                          )}
-                        </div>
-                        {/* 内容 */}
-                        <div className={cn("min-w-0 flex-1", isLast ? "pb-1" : "pb-3")}>
-                          <p
-                            className={cn(
-                              "pt-0.5 text-[13px] leading-relaxed",
-                              step.status === "completed"
-                                ? "text-slate-600"
-                                : "font-medium text-slate-700"
-                            )}
-                          >
-                            {step.title}
-                          </p>
-                          {step.detail ? (
-                            <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
-                              {step.detail}
-                            </p>
-                          ) : null}
-                          {step.tool ? <ToolCallLine tool={step.tool} /> : null}
-                        </div>
-                      </li>
-                    );
-                  })}
+                  {groupSteps.map((step, index) => (
+                    <TimelineStepRow
+                      key={step.stepId}
+                      step={step}
+                      isLast={index === groupSteps.length - 1}
+                    />
+                  ))}
                 </ul>
               </div>
             ))}
+            {globalSteps.length > 0 ? (
+              <div className="mt-2.5">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="text-[11px] text-slate-400">回答生成</span>
+                  <span className="h-px flex-1 bg-slate-200" />
+                </div>
+                <ul>
+                  {globalSteps.map((step, index) => (
+                    <TimelineStepRow
+                      key={step.stepId}
+                      step={step}
+                      isLast={index === globalSteps.length - 1}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}
