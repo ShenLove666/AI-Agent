@@ -32,12 +32,13 @@ export function Header({ onToggleSidebar }: HeaderProps) {
           </Button>
           <div className="flex items-center gap-2 lg:hidden">
             <BrandMark className="h-8 w-8 rounded-[9px]" />
-            <span className="hidden text-sm font-semibold text-[var(--merchant-navy)] min-[390px]:inline">
+            {/* 移动端只保留图标，避免「邻里鲜选」与会话标题挤在一起截断 */}
+            <span className="hidden text-sm font-semibold text-[var(--merchant-navy)] sm:inline">
               {BRAND_SHORT_NAME}
             </span>
           </div>
           <div className="min-w-0 border-l border-[var(--merchant-border)] pl-3 lg:border-l-0 lg:pl-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--merchant-text-muted)]">
+            <p className="hidden text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--merchant-text-muted)] sm:block">
               商家 AI 工作区
             </p>
             <p className="truncate text-sm font-semibold text-[var(--merchant-text)] sm:text-base">
