@@ -96,7 +96,9 @@ flowchart TD
 ```text
 Question
    ↓
-Planner ── 决定是否调用工具、调用哪个工具
+Intent Router ── 意图前置门：直接作答 / 引用历史 / 拒答 / 研究检索
+   ├─ direct / history_reference → 无需检索，直答或复用上轮答案
+   └─ research → 问题改写 → Planner ── 决定是否调用工具、调用哪个工具
    ↓
 Tools ──── knowledge / commerce / order / support
    ↓
@@ -112,9 +114,16 @@ SSE Answer ── thinking / response / sources / finish
 <details>
 <summary><b>为什么同时使用 LangGraph 与自研业务模块？</b></summary>
 
-LangGraph 负责有状态编排：`Planner → Tools → Reviewer → Re-plan`。检索、模型路由、熔断、会话一致性、数据权限和业务 SQL 仍由项目自己的模块实现。
+LangGraph 负责有状态编排：`Planner → Tools → Reviewer → Re-plan`。意图路由、检索、模型路由、熔断、会话一致性、数据权限和业务 SQL 仍由项目自己的模块实现。
 
 这种边界避免把所有逻辑堆进一个 Agent Prompt，也避免为了“用了框架”而牺牲可测试性。Planner 不可用时存在确定性 fallback；工具参数由 Pydantic 校验；运行受 `max_steps` 和 `max_tool_calls` 约束，不允许无限循环。
+
+</details>
+
+<details>
+<summary><b>意图路由前置层为什么单独成模块？</b></summary>
+
+`ConversationIntentRouter` 在 Planner 之前先判定四类意图：`direct`（如「1+1」直接作答，不污染检索）、`history_reference`（如「那土豆呢」继承上轮语境，不重复检索）、`refuse`（伪造/越权问题明确拒答）与 `research`（业务关键词强制走检索）。快速路径（琐碎直答、短指代、拒答词表、业务关键词）确定性拦截，避免真实模型把「那土豆呢」误分类为历史指代或把「1+1」误送检索；模型路径带 few-shot 并容错解析。
 
 </details>
 
@@ -150,11 +159,13 @@ Vector  ─┘
 
 ### 1. Agent 与可追溯问答
 
-- LangGraph ReAct 查询规划与工具自主路由。
+- 意图前置路由：直接作答 / 引用历史语境 / 拒答 / 研究检索，快速路径确定性拦截。
+- LangGraph ReAct 查询规划与工具自主路由，执行全程 Timeline 实时进度（规划→工具→审查→生成）。
 - 知识、交易、订单、履约、退款、顾客快照和客服案例工具。
 - Evidence Reviewer 检查证据相关性、覆盖度、冲突、权威性和高风险字段。
 - SSE 流式思考、正文、来源与结束事件；刷新后可恢复完整状态。
 - 来源区分知识文档、内部经营数据、观测数据、衍生指标和演示数据。
+- 对话导航 rail（Minimap）：每轮一根线，当前轮加深，hover 摘要，点击跳转（长对话采样 40 槽）。
 - 点赞、点踩、重新生成、推荐追问与对话版本持久化。
 
 ### 2. 知识与检索工程
@@ -177,6 +188,9 @@ Vector  ─┘
 
 - 工单队列、会话区、订单上下文和 AI Copilot 三栏工作台。
 - AI 只生成建议草稿；人工确认后才能模拟或真实外发。
+- Copilot 检索严格限定已发布知识版本（无发布版本时只依据订单/履约/退款事实作答）。
+- 草稿由已核实事实驱动：核对订单/履约/退款状态，无送达时点不承诺具体时间，不引用证据原文。
+- 风险门禁：高风险建议禁止直发（必须升级主管），中风险需人工勾选确认事实与规则。
 - 负反馈、知识未命中、慢响应和失败运行聚合为知识缺口。
 - 固定评测集覆盖 retrieval、reasoning、refusal、multi-tool 与高风险场景。
 - 高风险用例失败会阻止候选知识版本上线。
@@ -216,8 +230,8 @@ Vector  ─┘
 
 | 页面 | 主要用途 |
 |:---|:---|
-| AI 对话 | Agent 自主选工具、流式回答、证据侧栏、反馈与追问 |
-| 客服工作台 | 工单、会话、订单/顾客上下文、AI 建议与人工确认（三栏工作区） |
+| AI 对话 | Agent 自主选工具、意图路由、流式回答、执行 Timeline、证据侧栏、对话导航 rail、反馈与追问 |
+| 客服工作台 | 工单、会话、订单/顾客上下文、AI 处理建议（事实/规则/风险）、人工确认（三栏工作区） |
 | 主管队列 | 升级单接管、风险决策（批准/要求证据/转专员/退回） |
 | 商品组合洞察 | 关联规则、运营方案（草稿→确认→发布）、优化任务闭环 |
 | 知识发布 | 来源管理、候选版本、发布记录和回滚依据 |
@@ -375,7 +389,7 @@ $env:DB_URL = "sqlite:///./data/ragent-v4-flash.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-当前迁移 head 为 `0009_runtime_settings_and_orgs`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
+当前迁移 head 为 `0012_repair_knowledge_owner_and_source_kind`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
 
 ### 服务器部署
 
@@ -438,9 +452,11 @@ npm run build
 | 文件 | 覆盖 |
 |:---|:---|
 | `tests/test_rbac_matrix.py` | 完整越权矩阵：11 个代表性 API × 4 角色（200/403）+ 跨组织资源 404 |
+| `tests/test_intent_router.py` | 意图路由：直答/历史指代/拒答/研究，配对回归（Case A「1+1」不被牛肉污染、Case B「那土豆呢」继承语境） |
 | `tests/test_support_escalation.py` | 升级生命周期状态机（接管/决议/退回/转交） |
 | `tests/test_reply_review.py` | AI 回复审核闭环（采纳/修订/升级） |
-| `tests/test_migrations.py` | 迁移链一致性（0001 → 0009） |
+| `tests/test_support_copilot_gates.py` | Copilot 风险门禁：高/中/低风险发送控制、release 限定检索 |
+| `tests/test_migrations.py` | 迁移链一致性（0001 → 0012） |
 
 ## ⚠️ 当前能力边界
 
