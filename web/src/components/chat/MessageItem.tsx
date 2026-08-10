@@ -181,7 +181,10 @@ export const MessageItem = React.memo(function MessageItem({
             <p className="text-xs font-medium text-rose-500">生成失败</p>
           ) : null}
           {renderedMessage.messageStatus === "REJECTED" ? (
-            <p className="text-xs font-medium text-rose-500">请求被拒绝</p>
+            <p className="text-xs font-medium text-amber-600">该请求无法协助执行</p>
+          ) : null}
+          {renderedMessage.messageStatus === "ESCALATED" ? (
+            <p className="text-xs font-medium text-amber-600">当前资料不足，暂无法可靠确认</p>
           ) : null}
           {showFeedback || hasSources || canRecommend || Boolean(message.turnId) ? (
             <div className="flex flex-wrap items-center gap-2 border-t border-[#edf1f3] pt-3">

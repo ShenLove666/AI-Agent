@@ -4,7 +4,12 @@ export type FeedbackValue = "like" | "dislike" | null;
 
 export type MessageStatus = "streaming" | "done" | "cancelled" | "error";
 
-export type PersistedMessageStatus = "NORMAL" | "INTERRUPTED" | "REJECTED" | "ERROR";
+export type PersistedMessageStatus =
+  | "NORMAL"
+  | "INTERRUPTED"
+  | "REJECTED"
+  | "ESCALATED"
+  | "ERROR";
 
 /** Agent 执行阶段（来自 SSE agent_progress 事件） */
 export type AgentProgressPhase =

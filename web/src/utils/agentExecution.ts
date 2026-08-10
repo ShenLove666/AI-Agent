@@ -90,13 +90,16 @@ export function cancelAgentSteps(steps?: AgentExecutionStep[]): AgentExecutionSt
 
 /**
  * 由持久化 messageStatus 推导整体执行状态：
- * INTERRUPTED → cancelled；ERROR/REJECTED → failed；其余 → completed
+ * INTERRUPTED → cancelled；ERROR → failed；
+ * REJECTED/ESCALATED（受限结果，非失败）→ completed；其余 → completed。
+ * 受限消息的 Timeline 文案由 mode/terminalState 驱动（refused/escalated
+ * 显示固定用户文案），整体状态仅用于 restore 无 terminalState 的旧数据。
  */
 export function deriveAgentExecutionStatus(
   messageStatus?: PersistedMessageStatus | null
 ): AgentExecutionStatus {
   if (messageStatus === "INTERRUPTED") return "cancelled";
-  if (messageStatus === "ERROR" || messageStatus === "REJECTED") return "failed";
+  if (messageStatus === "ERROR") return "failed";
   return "completed";
 }
 

@@ -258,6 +258,38 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     const { container } = render(<MessageItem message={message} />);
 
     expect(queryTimelineSection(container)).not.toBeNull();
+    // Timeline 头部文案与 REJECTED badge 都显示同一受限结果文案
+    expect(screen.getAllByText("该请求无法协助执行").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("messageStatus=REJECTED：显示「该请求无法协助执行」badge（无 Timeline 数据时唯一命中）", () => {
+    const message: Message = {
+      id: "rejected-msg",
+      role: "assistant",
+      content: "",
+      status: "done",
+      messageStatus: "REJECTED"
+    };
+    render(<MessageItem message={message} />);
+
     expect(screen.getByText("该请求无法协助执行")).toBeInTheDocument();
+  });
+
+  it("messageStatus=ESCALATED：显示「当前资料不足，暂无法可靠确认」badge", () => {
+    const message: Message = {
+      id: "escalated-msg",
+      role: "assistant",
+      content: "",
+      status: "done",
+      messageStatus: "ESCALATED"
+    };
+    render(<MessageItem message={message} />);
+
+    expect(screen.getByText("当前资料不足，暂无法可靠确认")).toBeInTheDocument();
+  });
+
+  it("messageStatus=ERROR 与 INTERRUPTED 文案保持既有语义", () => {
+    render(<MessageItem message={{ id: "err-msg", role: "assistant", content: "", status: "done", messageStatus: "ERROR" }} />);
+    expect(screen.getByText("生成失败")).toBeInTheDocument();
   });
 });

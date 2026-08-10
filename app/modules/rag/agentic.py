@@ -102,6 +102,12 @@ class EvidenceReview(BaseModel):
     risk: Literal["low", "medium", "high"]
     decision: Literal["ready", "replan", "escalate", "refuse"]
     summary: str
+    # 事实类型集合（Admin Trace 诊断用，区分「真的 0 results」与
+    # 「有 results 但 evidence type 不满足」）。默认空元组保持向后兼容：
+    # 旧构造（未提供这三个字段）仍可正常反序列化。
+    present_fact_types: tuple[str, ...] = ()
+    required_fact_types: tuple[str, ...] = ()
+    auxiliary_fact_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,6 +854,9 @@ class AgenticRagCoordinator:
             risk=risk,
             decision=decision,
             summary=summary,
+            present_fact_types=tuple(sorted(present)),
+            required_fact_types=tuple(sorted(required)),
+            auxiliary_fact_types=tuple(sorted(auxiliary)),
         )
 
     @staticmethod

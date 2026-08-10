@@ -20,29 +20,33 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.users.access import resolve_owner
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
 
 
-def _base(db, base_id: int, user) -> KnowledgeBase:
+# 归属校验统一用商家数据 owner（resolve_owner(db, user) → data_owner_id），
+# 不再按登录 user.id / admin 角色旁路：组织成员 → 组织 owner_user_id，
+# 无组织（含平台管理员）→ 本人，与 app/api/knowledge.py 语义一致。
+def _base(db, base_id: int, data_owner_id: int) -> KnowledgeBase:
     item = db.get(KnowledgeBase, base_id)
     if item is None:
         raise AppError("KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在", 404)
-    if user.role != "admin" and item.owner_id != user.id:
+    if item.owner_id != data_owner_id:
         raise AppError("FORBIDDEN", "无权访问该知识库", 403)
     return item
 
 
-def _document(db, document_id: int, user) -> KnowledgeDocument:
+def _document(db, document_id: int, data_owner_id: int) -> KnowledgeDocument:
     item = db.get(KnowledgeDocument, document_id)
     if item is None:
         raise AppError("DOCUMENT_NOT_FOUND", "文档不存在", 404)
-    _base(db, item.knowledge_base_id, user)
+    _base(db, item.knowledge_base_id, data_owner_id)
     return item
 
 
-def _chunk(db, document_id: int, chunk_id: int, user) -> KnowledgeChunk:
-    _document(db, document_id, user)
+def _chunk(db, document_id: int, chunk_id: int, data_owner_id: int) -> KnowledgeChunk:
+    _document(db, document_id, data_owner_id)
     item = db.get(KnowledgeChunk, chunk_id)
     if item is None or item.document_id != document_id:
         raise AppError("CHUNK_NOT_FOUND", "分块不存在", 404)
@@ -126,7 +130,9 @@ def _chunk_vo(item: KnowledgeChunk) -> dict:
     }
 
 
-async def _reindex(db, request: Request, document: KnowledgeDocument) -> None:
+async def _reindex(
+    db, request: Request, document: KnowledgeDocument, data_owner_id: int
+) -> None:
     indexer = request.app.state.container.knowledge.vector_indexer
     if indexer is None:
         return
@@ -144,8 +150,9 @@ async def _reindex(db, request: Request, document: KnowledgeDocument) -> None:
         )
     )
     if chunks:
+        # 向量索引按商家数据 owner（data_owner_id）归档，而非操作者 actor
         await indexer.index(
-            owner_id=document.uploader_id,
+            owner_id=data_owner_id,
             knowledge_base_id=document.knowledge_base_id,
             document_id=document.id,
             source=document.filename,
@@ -161,9 +168,12 @@ def list_bases(
     size: int = 10,
     name: str | None = None,
 ) -> ApiResponse:
-    statement = select(KnowledgeBase)
-    if user.role != "admin":
-        statement = statement.where(KnowledgeBase.owner_id == user.id)
+    # owner 过滤统一按商家数据 owner（resolve_owner），不再按 user.id /
+    # admin 旁路（与 knowledge.py list_bases 的 data_owner 语义一致）
+    data_owner_id = resolve_owner(db, user)
+    statement = select(KnowledgeBase).where(
+        KnowledgeBase.owner_id == data_owner_id
+    )
     if name:
         statement = statement.where(KnowledgeBase.name.contains(name))
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
@@ -190,7 +200,7 @@ def list_documents(
     status: str | None = None,
     keyword: str | None = None,
 ) -> ApiResponse:
-    _base(db, base_id, user)
+    _base(db, base_id, resolve_owner(db, user))
     statement = select(KnowledgeDocument).where(
         KnowledgeDocument.knowledge_base_id == base_id
     )
@@ -263,7 +273,7 @@ def list_chunks(
     size: int = 10,
     enabled: int | None = None,
 ) -> ApiResponse:
-    _document(db, document_id, user)
+    _document(db, document_id, resolve_owner(db, user))
     statement = select(KnowledgeChunk).where(KnowledgeChunk.document_id == document_id)
     if enabled is not None:
         statement = statement.where(KnowledgeChunk.enabled.is_(bool(enabled)))
@@ -293,10 +303,11 @@ async def set_document_enabled(
     user: CurrentUser,
     value: bool = True,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
     document.enabled = value
     db.commit()
-    await _reindex(db, request, document)
+    await _reindex(db, request, document, data_owner_id)
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
@@ -309,10 +320,11 @@ async def set_chunk_enabled(
     user: CurrentUser,
     value: bool = True,
 ) -> ApiResponse:
-    item = _chunk(db, document_id, chunk_id, user)
+    data_owner_id = resolve_owner(db, user)
+    item = _chunk(db, document_id, chunk_id, data_owner_id)
     item.enabled = value
     db.commit()
-    await _reindex(db, request, _document(db, document_id, user))
+    await _reindex(db, request, _document(db, document_id, data_owner_id), data_owner_id)
     return ApiResponse(data=True, traceId=current_trace_id())
 
 
@@ -325,7 +337,8 @@ async def batch_set_chunks_enabled(
     user: CurrentUser,
     value: bool = True,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
     ids: set[int] = set()
     for item in payload.chunkIds:
         try:
@@ -343,7 +356,7 @@ async def batch_set_chunks_enabled(
     for item in chunks:
         item.enabled = value
     db.commit()
-    await _reindex(db, request, document)
+    await _reindex(db, request, document, data_owner_id)
     return ApiResponse(data={"updated": len(chunks)}, traceId=current_trace_id())
 
 
@@ -354,7 +367,8 @@ async def delete_document(
     db: DbSession,
     user: CurrentUser,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
     indexer = request.app.state.container.knowledge.vector_indexer
     if indexer is not None:
         await indexer.store.delete_document(document.id)
@@ -373,7 +387,7 @@ async def delete_base(
     db: DbSession,
     user: CurrentUser,
 ) -> ApiResponse:
-    base = _base(db, base_id, user)
+    base = _base(db, base_id, resolve_owner(db, user))
     documents = list(
         db.scalars(
             select(KnowledgeDocument).where(

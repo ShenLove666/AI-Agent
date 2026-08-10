@@ -306,11 +306,12 @@ def test_ingest_vector_failure_keeps_keyword_searchable(tmp_path: Path):
 
         # 1) vector 索引失败 → status=indexed + vector_indexed=False + 可搜索
         failing = KnowledgeService(vector_indexer=_FailingVectorIndexer())
-        base = failing.create_base(db, owner.id, "牛肉搭配知识库")
+        base = failing.create_base(db, owner_id=owner.id, name="牛肉搭配知识库")
         document = failing.create_document(
             db,
             base_id=base.id,
             uploader_id=owner.id,
+            owner_id=owner.id,
             filename="牛肉搭配指南.txt",
             storage_path=str(source),
             file_size=source.stat().st_size,
@@ -346,6 +347,7 @@ def test_ingest_vector_failure_keeps_keyword_searchable(tmp_path: Path):
             db,
             base_id=base.id,
             uploader_id=owner.id,
+            owner_id=owner.id,
             filename="商品说明.txt",
             storage_path=str(source),
             file_size=source.stat().st_size,
@@ -361,6 +363,7 @@ def test_ingest_vector_failure_keeps_keyword_searchable(tmp_path: Path):
             db,
             base_id=base.id,
             uploader_id=owner.id,
+            owner_id=owner.id,
             filename="神秘文件.xyz",
             storage_path=str(directory / "mystery.xyz"),
             file_size=1,

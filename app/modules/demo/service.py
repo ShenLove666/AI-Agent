@@ -1085,9 +1085,11 @@ class DemoSeedService:
             item.description = description
             db.commit()
             return item, False
+        # 演示账号即组织 owner（_upsert_organization 设置 owner_user_id=user.id），
+        # 因此 owner_id（商家数据 owner）与 user.id 一致。
         return (
             self.container.knowledge.create_base(
-                db, user.id, stable_name, description
+                db, owner_id=user.id, name=stable_name, description=description
             ),
             True,
         )
@@ -1131,10 +1133,12 @@ class DemoSeedService:
                 "ownership violation: refusing to overwrite shared managed file"
             )
         if item is None:
+            # 演示账号即组织 owner：owner_id（商家数据 owner）与 uploader 一致
             item = self.container.knowledge.create_document(
                 db,
                 base_id=base.id,
                 uploader_id=user.id,
+                owner_id=user.id,
                 filename=filename,
                 storage_path=str(destination),
                 file_size=source_path.stat().st_size,

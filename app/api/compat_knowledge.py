@@ -31,6 +31,7 @@ from app.modules.knowledge.models import (
 )
 from app.modules.users.models import User
 from app.modules.knowledge.uploads import save_upload, validate_upload
+from app.modules.users.access import resolve_owner
 
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
@@ -41,12 +42,17 @@ router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
 # ---------------------------------------------------------------------------
 
 
+def _data_owner(db, user: User) -> int:
+    """当前用户可见的商家数据 owner（组织成员 → 组织 owner，否则自身）。"""
+    return resolve_owner(db, user)
+
+
 def _resolve_base(db, base_id: int, user: User) -> KnowledgeBase:
-    """管理员可访问全部知识库, 普通用户仅限本人; 两者都拿不到则 404/403"""
+    """管理员可访问全部知识库, 普通用户仅限其商家数据域(组织 owner); 否则 404/403"""
     item = db.get(KnowledgeBase, base_id)
     if not item:
         raise AppError("KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在", 404)
-    if user.role != "admin" and item.owner_id != user.id:
+    if user.role != "admin" and item.owner_id != _data_owner(db, user):
         raise AppError("FORBIDDEN", "无权访问该知识库", 403)
     return item
 
@@ -178,7 +184,7 @@ def list_bases(
 ) -> ApiResponse:
     statement = select(KnowledgeBase)
     if user.role != "admin":
-        statement = statement.where(KnowledgeBase.owner_id == user.id)
+        statement = statement.where(KnowledgeBase.owner_id == _data_owner(db, user))
     if name:
         statement = statement.where(KnowledgeBase.name.like(f"%{name}%"))
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
@@ -203,7 +209,10 @@ def create_base(
     request: Request,
 ) -> ApiResponse:
     item = request.app.state.container.knowledge.create_base(
-        db, user.id, payload.name, payload.description
+        db,
+        owner_id=_data_owner(db, user),
+        name=payload.name,
+        description=payload.description,
     )
     return ApiResponse(data=str(item.id), traceId=current_trace_id())
 
@@ -323,6 +332,7 @@ async def upload_document(
         db,
         base_id=kb_id,
         uploader_id=user.id,
+        owner_id=_data_owner(db, user),
         filename=safe_name,
         storage_path=str(target),
         file_size=size,
@@ -348,7 +358,7 @@ def search_documents(
         KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id
     )
     if user.role != "admin":
-        statement = statement.where(KnowledgeBase.owner_id == user.id)
+        statement = statement.where(KnowledgeBase.owner_id == _data_owner(db, user))
     if keyword:
         statement = statement.where(KnowledgeDocument.filename.like(f"%{keyword}%"))
     rows = list(db.execute(statement.limit(min(max(limit, 1), 50))))

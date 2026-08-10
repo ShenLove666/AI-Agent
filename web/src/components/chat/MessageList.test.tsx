@@ -24,9 +24,9 @@ if (typeof Element.prototype.scrollBy !== "function") {
 // ChatTurnItem.test 直接覆盖）。本文件把 react-virtuoso 替换为可控 mock：
 // 渲染全部条目（复用 itemContent，Latest Turn ResizeObserver 因此能拿到
 // 真实 DOM 节点）、提供 data-testid="virtuoso-scroller"、可 spy 的
-// VirtuosoHandle（scrollToIndex / autoscrollToBottom）以及 atBottomStateChange
-// 回调（scroll 事件 + 50ms 节流，与真实行为一致）。滚动度量仍通过
-// mockScrollMetrics 在 scroller 实例上注入。
+// VirtuosoHandle（scrollToIndex / autoscrollToBottom / scrollIntoView）以及
+// atBottomStateChange / followOutput 回调（scroll 事件 + 50ms 节流，
+// 与真实行为一致）。滚动度量仍通过 mockScrollMetrics 在 scroller 实例上注入。
 
 // ---- 可手动触发的 ResizeObserver stub ----
 // jsdom 无真实 ResizeObserver 回调：stub 记录 observe/disconnect 并暴露 trigger()
@@ -60,6 +60,8 @@ globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserv
 const virtuosoMock = vi.hoisted(() => {
   class VirtuosoHandleStub {
     scroller: HTMLElement | null = null;
+    /** 最近一次 followOutput 的返回值（供断言「只看 detached、不依赖数学底部」） */
+    lastFollowOutput: false | "auto" | undefined = undefined;
     /** 与真实 Virtuoso 一致：jsdom 中 offsetHeight 为 0 时 scrollToIndex 直接返回 */
     scrollToIndex(opts: { index: number; align?: string; behavior?: ScrollBehavior }) {
       const el = this.scroller;
@@ -70,6 +72,12 @@ const virtuosoMock = vi.hoisted(() => {
       const el = this.scroller;
       if (!el || el.offsetHeight === 0) return;
       el.scrollTo({ top: el.scrollHeight });
+    }
+    /** 推荐面板展开滚动：与 scrollToIndex 同构，测试只断言「被调用 + 参数」 */
+    scrollIntoView(opts: { index: number; align?: string; behavior?: ScrollBehavior }) {
+      const el = this.scroller;
+      if (!el || el.offsetHeight === 0) return;
+      el.scrollTo({ top: el.scrollHeight, behavior: opts.behavior });
     }
   }
   const instances: InstanceType<typeof VirtuosoHandleStub>[] = [];
@@ -136,7 +144,7 @@ vi.mock("react-virtuoso", async () => {
             lastAtBottomRef.current = isAtBottom;
             atBottomStateChange?.(isAtBottom);
           }
-          followOutput?.(isAtBottom);
+          handle.lastFollowOutput = followOutput?.(isAtBottom);
         }, 50);
       };
       el.addEventListener("scroll", onScroll);
@@ -621,5 +629,148 @@ describe("MessageList Latest Turn ResizeObserver", () => {
       unmount();
     });
     expect(observer.disconnectCount).toBe(1);
+  });
+});
+
+describe("MessageList followOutput（新语义：只看 detached，不依赖数学底部）", () => {
+  it("未滚离（detached=false）时即使滚动位置不在底部，followOutput 也为 auto", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+
+    // scrollHeight 800 / clientHeight 300：初始 scrollTop 0 已距底 500，数学上不在底部
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    const handle = virtuosoMock.instances[0]!;
+    // 没有 wheel/touch/keydown → detached=false → followOutput="auto"（旧实现此处返回 false）
+    expect(handle.lastFollowOutput).toBe("auto");
+    // 未滚离 → 「回到底部」按钮不出现（按钮条件 detached && !atBottom）
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+  });
+
+  it("滚离（detached=true）后 followOutput 为 false，且「回到底部」按钮出现", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    const handle = virtuosoMock.instances[0]!;
+    expect(handle.lastFollowOutput).toBe(false);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+});
+
+describe("MessageList 间距与 Footer", () => {
+  it("List 容器无 space-y-7（间距改由 item padding 承担），且保留底部呼吸 padding", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二")
+    ]);
+    await settle(50);
+
+    // Footer 已删除后，List 容器是 scroller 的唯一子元素
+    const scroller = findScroller()!;
+    const listEl = scroller.firstElementChild as HTMLElement;
+    expect(listEl.className).not.toContain("space-y-7");
+    expect(listEl.className).toContain("pb-8");
+
+    // Turn 间距由 ChatTurnItem 最外层 pb-7 承担（item padding 而非 margin）
+    const turnBox = document.querySelector('[data-message-id="u1"]')!.parentElement!;
+    expect(turnBox.className).toContain("pb-7");
+  });
+
+  it("Footer 已移除（无 h-8 占位）；「回到底部」后重新附着，followOutput 恢复 auto", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+
+    // 无 h-8 占位 Footer（底部呼吸由 List 容器 padding 承担）
+    expect(scroller.querySelector('[aria-hidden="true"].h-8')).toBeNull();
+    expect(scroller.querySelector(".h-8")).toBeNull();
+
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 回到底部 → 重新附着（按钮消失）；随后滚动位置虽不在数学底部，
+    // followOutput 仍为 auto——对齐的就是真正的列表底，不再被 Footer 架空判定
+    fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
+    await settle(50);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+
+    const handle = virtuosoMock.instances[0]!;
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(handle.lastFollowOutput).toBe("auto");
+  });
+});
+
+describe("MessageList 推荐问题展开（Virtuoso scrollIntoView）", () => {
+  it("recommendReveal 命中消息 → scrollIntoView({index, smooth, end})，且无 100/420ms 补滚 timer", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    const u2 = makeMessage("u2", "user", "问题二");
+    const a2 = makeMessage("a2", "assistant", "回答二");
+    renderList([u1, a1, u2, a2]);
+    await settle(50);
+
+    const spy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollIntoView");
+    const timerSpy = vi.spyOn(window, "setTimeout");
+
+    act(() => {
+      useChatStore.setState({ recommendReveal: { id: "a2" } });
+    });
+
+    // 命中第 2 个 turn（index 1），smooth 滚到末尾对齐
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith({ index: 1, behavior: "smooth", align: "end" });
+
+    // 不再有旧的 100/420ms 补滚 timer
+    const delays = timerSpy.mock.calls.map(([, delay]) =>
+      typeof delay === "number" ? delay : NaN
+    );
+    expect(delays.some((d) => d === 100 || d === 420)).toBe(false);
+    timerSpy.mockRestore();
+  });
+
+  it("recommendReveal 指向不存在的消息 → 不调用 scrollIntoView", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一")
+    ]);
+    await settle(50);
+
+    const spy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollIntoView");
+    act(() => {
+      useChatStore.setState({ recommendReveal: { id: "ghost" } });
+    });
+
+    expect(spy).not.toHaveBeenCalled();
   });
 });

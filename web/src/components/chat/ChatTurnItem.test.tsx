@@ -76,4 +76,29 @@ describe("ChatTurnItem Turn 渲染", () => {
     unmount();
     expect(onRef).toHaveBeenLastCalledWith(null);
   });
+
+  it("className 透传到最外层容器（Turn 间距用 item padding 而非 margin，保证 Virtuoso 测量准确）", () => {
+    const turn: ChatTurn = {
+      key: "local-0",
+      user: makeMessage("u1", "user", "问题"),
+      assistant: makeMessage("a1", "assistant", "回答")
+    };
+    render(<ChatTurnItem turn={turn} isLatestTurn className="pb-7" />);
+
+    const container = document.querySelector('[data-message-id="u1"]')!.parentElement!;
+    expect(container.className).toContain("pb-7");
+    // 与既有 isLatestTurn 动画类共存，互不覆盖
+    expect(container.className).toContain("animate-fade-up");
+  });
+
+  it("不传 className 时最外层容器无多余 class（cn 合并安全）", () => {
+    const turn: ChatTurn = {
+      key: "local-0",
+      user: makeMessage("u1", "user", "问题"),
+      assistant: makeMessage("a1", "assistant", "回答")
+    };
+    render(<ChatTurnItem turn={turn} isLatestTurn={false} />);
+    const container = document.querySelector('[data-message-id="u1"]')!.parentElement!;
+    expect(container.className.trim()).toBe("");
+  });
 });

@@ -88,8 +88,14 @@ class KnowledgeService:
         self.vector_indexer = vector_indexer
 
     def create_base(
-        self, db: Session, owner_id: int, name: str, description: str | None = None
+        self, db: Session, *, owner_id: int, name: str, description: str | None = None
     ) -> KnowledgeBase:
+        """创建知识库。
+
+        owner_id 是「商家数据 owner」（resolve_owner 结果），与操作者
+        （actor）分离：组织成员（operator）创建的知识库归属组织 owner，
+        uploader 类字段才记录操作者本人。
+        """
         item = KnowledgeBase(owner_id=owner_id, name=name, description=description)
         db.add(item)
         db.commit()
@@ -97,6 +103,7 @@ class KnowledgeService:
         return item
 
     def list_bases(self, db: Session, owner_id: int) -> list[KnowledgeBase]:
+        """列出 owner_id（商家数据 owner）名下的知识库。"""
         return list(
             db.scalars(
                 select(KnowledgeBase)
@@ -106,6 +113,11 @@ class KnowledgeService:
         )
 
     def require_owned_base(self, db: Session, base_id: int, owner_id: int) -> KnowledgeBase:
+        """归属校验：base 必须属于 owner_id（商家数据 owner，resolve_owner 结果）。
+
+        跨商家 base 一律抛 404（KNOWLEDGE_BASE_NOT_FOUND），语义与
+        Chat 侧 _assert_knowledge_base_access 的 403 一致：不暴露他人知识库存在性。
+        """
         item = db.get(KnowledgeBase, base_id)
         if not item or item.owner_id != owner_id:
             raise AppError("KNOWLEDGE_BASE_NOT_FOUND", "知识库不存在", 404)
@@ -117,11 +129,19 @@ class KnowledgeService:
         *,
         base_id: int,
         uploader_id: int,
+        owner_id: int,
         filename: str,
         storage_path: str,
         file_size: int,
     ) -> KnowledgeDocument:
-        self.require_owned_base(db, base_id, uploader_id)
+        """创建文档记录（不解析/不摄取，状态 pending）。
+
+        owner_id 是「商家数据 owner」（resolve_owner 结果），仅用于归属校验
+        （require_owned_base）；uploader_id 记录实际操作者（actor），两者
+        可不同：组织成员（operator）上传文档时 owner=组织 owner、
+        uploader=成员自身。
+        """
+        self.require_owned_base(db, base_id, owner_id)
         item = KnowledgeDocument(
             knowledge_base_id=base_id,
             uploader_id=uploader_id,
@@ -179,6 +199,9 @@ class KnowledgeService:
                     # Remove every previous generation before inserting the new DB-backed chunk IDs.
                     # This prevents shorter re-chunks from leaving searchable stale vectors.
                     asyncio.run(self.vector_indexer.store.delete_document(document.id))
+                    # 向量按「文档所属 base 的商家数据 owner」归档（与上传者
+                    # uploader_id 无关）：组织成员上传的文档向量归属组织 owner，
+                    # 保证 Chat 按 data_owner_id 检索时能命中。
                     asyncio.run(
                         self.vector_indexer.index(
                             owner_id=(
@@ -223,6 +246,7 @@ class KnowledgeService:
     def list_documents(
         self, db: Session, base_id: int, owner_id: int
     ) -> list[KnowledgeDocument]:
+        """列出 base 的文档；base 必须属于 owner_id（商家数据 owner）。"""
         self.require_owned_base(db, base_id, owner_id)
         return list(
             db.scalars(

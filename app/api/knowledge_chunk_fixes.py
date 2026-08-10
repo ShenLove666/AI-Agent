@@ -14,6 +14,7 @@ from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.knowledge.models import KnowledgeChunk
+from app.modules.users.access import resolve_owner
 
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
@@ -37,7 +38,8 @@ async def create_chunk(
     db: DbSession,
     user: CurrentUser,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
     content = payload.content.strip()
     if not content:
         raise AppError("INVALID_CHUNK", "分块内容不能为空", 422)
@@ -59,7 +61,7 @@ async def create_chunk(
     db.add(item)
     db.commit()
     db.refresh(item)
-    await _reindex(db, request, document)
+    await _reindex(db, request, document, data_owner_id)
     return ApiResponse(data=_chunk_vo(item), traceId=current_trace_id())
 
 
@@ -72,15 +74,16 @@ async def update_chunk(
     db: DbSession,
     user: CurrentUser,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
-    item = _chunk(db, document_id, chunk_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
+    item = _chunk(db, document_id, chunk_id, data_owner_id)
     content = payload.content.strip()
     if not content:
         raise AppError("INVALID_CHUNK", "分块内容不能为空", 422)
     item.content = content
     db.commit()
     db.refresh(item)
-    await _reindex(db, request, document)
+    await _reindex(db, request, document, data_owner_id)
     return ApiResponse(data=_chunk_vo(item), traceId=current_trace_id())
 
 
@@ -92,9 +95,10 @@ async def delete_chunk(
     db: DbSession,
     user: CurrentUser,
 ) -> ApiResponse:
-    document = _document(db, document_id, user)
-    item = _chunk(db, document_id, chunk_id, user)
+    data_owner_id = resolve_owner(db, user)
+    document = _document(db, document_id, data_owner_id)
+    item = _chunk(db, document_id, chunk_id, data_owner_id)
     db.delete(item)
     db.commit()
-    await _reindex(db, request, document)
+    await _reindex(db, request, document, data_owner_id)
     return ApiResponse(data=True, traceId=current_trace_id())

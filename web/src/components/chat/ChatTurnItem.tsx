@@ -8,6 +8,12 @@ interface ChatTurnItemProps {
   turn: ChatTurn;
   isLatestTurn: boolean;
   /**
+   * 透传到最外层容器（MessageList 传 "pb-7"）。Turn 间距用 item padding
+   * 而非 List 容器上的 margin（space-y-*）：margin 会破坏 Virtuoso 的
+   * item 测量，导致滚到底/跳动。
+   */
+  className?: string;
+  /**
    * 暴露最外层容器 DOM 节点（Latest Turn ResizeObserver 观察目标）。
    * 由 MessageList 仅对最新一轮传入；挂载时收到节点、卸载时收到 null。
    */
@@ -18,7 +24,7 @@ interface ChatTurnItemProps {
  * 一个 Virtuoso Item = 一个完整 Chat Turn（user + assistant）。
  * 内层 div 的 data-message-id 供「推荐面板展开滚入视口」等按消息定位的逻辑使用。
  */
-export function ChatTurnItem({ turn, isLatestTurn, onRef }: ChatTurnItemProps) {
+export function ChatTurnItem({ turn, isLatestTurn, onRef, className }: ChatTurnItemProps) {
   // Intercept triple-click at mousedown phase to prevent browser from
   // extending paragraph selection across sibling message boundaries.
   // preventDefault() stops the default selection, then we manually select
@@ -39,7 +45,11 @@ export function ChatTurnItem({ turn, isLatestTurn, onRef }: ChatTurnItemProps) {
   }, []);
 
   return (
-    <div ref={onRef} className={cn(isLatestTurn && "animate-fade-up")} onMouseDown={handleTripleClickDown}>
+    <div
+      ref={onRef}
+      className={cn(className, isLatestTurn && "animate-fade-up")}
+      onMouseDown={handleTripleClickDown}
+    >
       {turn.user ? (
         <div data-message-id={turn.user.id}>
           <MessageItem message={turn.user} />

@@ -58,6 +58,27 @@ class PreparedChat:
     agent_execution_events: list[AgentProgressEvent] = field(default_factory=list)
 
 
+_TERMINAL_SENTENCE_ENDINGS = "。！？"
+
+
+def _split_terminal_text(text: str) -> list[str]:
+    """把固定终态文案按句子拆分（保留句尾标点），供 SSE 分段输出。
+
+    整段一次输出在浏览器端与普通 token 流的渐进渲染体验不一致，
+    按句子拆 2-3 段保持流式呈现；纯文本函数，无副作用。
+    """
+    parts: list[str] = []
+    buffer: list[str] = []
+    for char in text:
+        buffer.append(char)
+        if char in _TERMINAL_SENTENCE_ENDINGS:
+            parts.append("".join(buffer))
+            buffer = []
+    if buffer:
+        parts.append("".join(buffer))
+    return parts or [text]
+
+
 class RagChatService:
     def __init__(
         self,
@@ -477,20 +498,43 @@ class RagChatService:
                 agent_mode = agent_run.decision.mode
                 agent_terminal_state = agent_run.terminal_state
                 documents = self._budget_documents(list(agent_run.results))
+                # 把 tool 执行诊断平铺，并带上所属 plan 号与 query
+                # （diagnostics 内不含这两项，从 tools step / arguments 补齐），
+                # 供 knowledge.search 多轮（multi-plan）聚合使用。
                 tool_diagnostics = [
-                    {"tool": execution.get("tool"), **execution.get("diagnostics", {})}
+                    {
+                        "tool": execution.get("tool"),
+                        "plan": step.get("plan"),
+                        "query": (execution.get("arguments") or {}).get("query"),
+                        **execution.get("diagnostics", {}),
+                    }
                     for step in agent_run.steps
                     if step.get("agent") == "tools"
                     for execution in step.get("executions", [])
                 ]
-                knowledge_diag = next(
-                    (
-                        item
-                        for item in tool_diagnostics
-                        if item.get("tool") == "knowledge.search"
-                    ),
-                    None,
-                )
+                knowledge_calls = [
+                    item
+                    for item in tool_diagnostics
+                    if item.get("tool") == "knowledge.search"
+                ]
+                # 全部 knowledge.search 调用按 plan 聚合（replan 后 plan 递增）。
+                knowledge_search_calls = [
+                    {
+                        "plan": item.get("plan"),
+                        "query": item.get("query"),
+                        "keywordCount": item.get("keywordCount"),
+                        "vectorCount": item.get("vectorCandidateCount"),
+                        "finalCount": item.get("finalCount"),
+                        "channelErrors": item.get("channelErrors") or {},
+                    }
+                    for item in sorted(
+                        knowledge_calls, key=lambda item: item.get("plan") or 0
+                    )
+                ]
+                # 兼容保留：keywordCandidateCount 等标量取第一次 knowledge.search
+                # 诊断（历史语义），完整多轮信息见 knowledgeSearchCalls 数组。
+                knowledge_diag = next(iter(knowledge_calls), None)
+                review = agent_run.review_details
                 attributes.update(
                     agentic=True,
                     mode=agent_run.decision.mode,
@@ -507,6 +551,22 @@ class RagChatService:
                     indexedKnowledgeDocuments=kb_diagnostics["indexedKnowledgeDocuments"],
                     vectorIndexedDocuments=kb_diagnostics["vectorIndexedDocuments"],
                     failedKnowledgeDocuments=kb_diagnostics["failedKnowledgeDocuments"],
+                    knowledgeSearchCalls=knowledge_search_calls,
+                    lastKnowledgeSearch=(
+                        knowledge_search_calls[-1] if knowledge_search_calls else None
+                    ),
+                    knowledgeSearchTotalCount=len(knowledge_search_calls),
+                    # reviewer 事实类型集合：区分「真的 0 results」与
+                    # 「有 results 但 evidence type 不满足」（目标: Admin Trace）。
+                    presentFactTypes=list(
+                        getattr(review, "present_fact_types", ())
+                    ),
+                    requiredFactTypes=list(
+                        getattr(review, "required_fact_types", ())
+                    ),
+                    auxiliaryFactTypes=list(
+                        getattr(review, "auxiliary_fact_types", ())
+                    ),
                     keywordCandidateCount=(
                         knowledge_diag.get("keywordCount")
                         if knowledge_diag is not None
@@ -696,6 +756,20 @@ class RagChatService:
         )
 
     @staticmethod
+    def _terminal_message_status(terminal: str | None) -> str:
+        """agent 终态 → 持久化 message_status。
+
+        refused → REJECTED（受限结果，不协助执行）；escalated → ESCALATED
+        （资料不足升级人工）；其余（direct/grounded）→ NORMAL。
+        调用方在 interrupted 场景保留 INTERRUPTED 优先。
+        """
+        if terminal == "refused":
+            return "REJECTED"
+        if terminal == "escalated":
+            return "ESCALATED"
+        return "NORMAL"
+
+    @staticmethod
     def _persist_agent_execution(
         db: Session,
         message: Message,
@@ -816,7 +890,7 @@ class RagChatService:
                 user_id=actor_user_id,
                 content=answer,
                 citations=prepared.citations,
-                message_status="NORMAL",
+                message_status=self._terminal_message_status(terminal),
             )
             self._persist_agent_execution(db, message, prepared.agent_execution_events)
             self.traces.finish(
@@ -1014,10 +1088,12 @@ class RagChatService:
                 yield item
             with self.traces.node(db, prepared.trace, "generation") as attributes:
                 if terminal in ("refused", "escalated"):
-                    # terminal 状态：不进入 router.stream 循环（不调用模型），
-                    # 固定文案在 complete 事件之后作为一次 token 输出（见下方
-                    # terminal_token），answer_parts 累计保持一致，SSE 生命周期
-                    # 正常完结。
+                    # terminal 状态：不进入 router.stream 循环（不调用模型）。
+                    # 固定文案在 generation running 之后立即按句子作为 token
+                    # 输出（不变量：conversation < generation running < token
+                    # < generation completed < complete < done，正文不得出现在
+                    # 「回答生成完成」之后），answer_parts 累计保持一致，
+                    # SSE 生命周期正常完结。
                     text = build_terminal_response(terminal)
                     answer_parts.append(text)
                     attributes.update(
@@ -1025,6 +1101,8 @@ class RagChatService:
                         interrupted=False,
                         terminal_mode=terminal,
                     )
+                    for part in _split_terminal_text(text):
+                        yield {"type": "token", "data": part}
                 else:
                     async for chunk in self.require_router().stream(
                         prepared.model_request, cancel_event=cancel_event
@@ -1090,17 +1168,17 @@ class RagChatService:
                     }
                 ):
                     yield item
-            if terminal in ("refused", "escalated") and not interrupted:
-                # terminal 状态：固定文案在 complete 事件之后以单次 token 下发，
-                # 随后 finish（持久化/trace/requestRun 收尾）与 done 正常结束。
-                yield {"type": "token", "data": answer_parts[0]}
             message = self.conversations.add_assistant_version(
                 db,
                 turn=prepared.turn,
                 user_id=actor_user_id,
                 content=answer,
                 citations=prepared.citations,
-                message_status="INTERRUPTED" if interrupted else "NORMAL",
+                message_status=(
+                    "INTERRUPTED"
+                    if interrupted
+                    else self._terminal_message_status(terminal)
+                ),
                 thinking_content="".join(thinking_parts) or None,
                 thinking_duration_ms=(
                     round((thinking_finished_at - thinking_started_at) * 1000)
@@ -1137,6 +1215,9 @@ class RagChatService:
                     "turn_id": prepared.turn.id,
                     "user_message_id": prepared.user_message_id,
                     "version": message.version,
+                    # SSE finish 透传持久化 message_status（NORMAL/REJECTED/
+                    # ESCALATED/INTERRUPTED），前端无需等重载即可展示受限结果文案
+                    "message_status": message.message_status,
                 },
             }
         except BaseException as exc:

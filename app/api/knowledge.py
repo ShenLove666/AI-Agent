@@ -8,13 +8,14 @@ from fastapi import APIRouter, Depends, BackgroundTasks, File, Request, UploadFi
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import (
-    CurrentUserId,
+    CurrentUser,
     DbSession,
     make_permission_requirement,
 )
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.knowledge.uploads import save_upload, validate_upload
+from app.modules.users.access import resolve_owner
 
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
@@ -51,26 +52,30 @@ def serialize_document(item):
 def create_base(
     payload: KnowledgeBaseCreateRequest,
     db: DbSession,
-    user_id: CurrentUserId,
+    user: CurrentUser,
     request: Request,
 ) -> ApiResponse:
+    # 归属：商家数据 owner（组织成员 → 组织 owner），而非登录 user_id
+    data_owner_id = resolve_owner(db, user)
     item = request.app.state.container.knowledge.create_base(
-        db, user_id, payload.name, payload.description
+        db, owner_id=data_owner_id, name=payload.name, description=payload.description
     )
     return ApiResponse(data=serialize_base(item), traceId=current_trace_id())
 
 
 @router.get("", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
-def list_bases(db: DbSession, user_id: CurrentUserId, request: Request) -> ApiResponse:
-    items = request.app.state.container.knowledge.list_bases(db, user_id)
+def list_bases(db: DbSession, user: CurrentUser, request: Request) -> ApiResponse:
+    data_owner_id = resolve_owner(db, user)
+    items = request.app.state.container.knowledge.list_bases(db, data_owner_id)
     return ApiResponse(data=[serialize_base(item) for item in items], traceId=current_trace_id())
 
 
 @router.get("/{base_id}/documents", response_model=ApiResponse, dependencies=[Depends(make_permission_requirement("knowledge.manage"))])
 def list_documents(
-    base_id: int, db: DbSession, user_id: CurrentUserId, request: Request
+    base_id: int, db: DbSession, user: CurrentUser, request: Request
 ) -> ApiResponse:
-    items = request.app.state.container.knowledge.list_documents(db, base_id, user_id)
+    data_owner_id = resolve_owner(db, user)
+    items = request.app.state.container.knowledge.list_documents(db, base_id, data_owner_id)
     return ApiResponse(
         data=[serialize_document(item) for item in items], traceId=current_trace_id()
     )
@@ -81,12 +86,15 @@ async def upload_document(
     base_id: int,
     background_tasks: BackgroundTasks,
     db: DbSession,
-    user_id: CurrentUserId,
+    user: CurrentUser,
     request: Request,
     file: UploadFile = File(...),
 ) -> ApiResponse:
     container = request.app.state.container
-    container.knowledge.require_owned_base(db, base_id, user_id)
+    # 归属校验用商家数据 owner；uploader_id 记录实际操作者（actor）
+    data_owner_id = resolve_owner(db, user)
+    user_id = int(user.id)
+    container.knowledge.require_owned_base(db, base_id, data_owner_id)
     upload_root = Path(os.getenv("UPLOAD_DIR", "./data/uploads")) / str(base_id)
     upload_root.mkdir(parents=True, exist_ok=True)
     safe_name = validate_upload(file)
@@ -97,6 +105,7 @@ async def upload_document(
         db,
         base_id=base_id,
         uploader_id=user_id,
+        owner_id=data_owner_id,
         filename=safe_name,
         storage_path=str(target),
         file_size=size,

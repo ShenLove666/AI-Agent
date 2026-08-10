@@ -5,10 +5,13 @@
 2. _decide 对普通问候在调模型之前确定性短路（direct + deterministic_fallback）
 3. Planner refuse → 生成阶段不调用模型，输出固定拒绝文案（complete 路径）
 4. Planner escalate → 不编造答案，输出固定转人工文案（complete 路径）
-5. stream 路径 refused 终态：SSE 生命周期正常完结（running/completed/complete
-   → token → finish → done），token 内容为固定拒绝文案
-6. direct 终态：生成 model_request 不拼接检索证据上下文，用普通助手 prompt
-7. planning completed 事件携带 mode；持久化 summary 含 terminalState
+5. stream 路径 refused/escalated 终态：SSE 生命周期正常完结，token（固定文案）
+   先于 generation completed / complete（不变量 conversation < generation
+   running < token < generation completed < complete < done），正文不得出现在
+   「回答生成完成」之后
+6. 持久化 message_status 按终态分流：refused → REJECTED、escalated → ESCALATED
+7. direct 终态：生成 model_request 不拼接检索证据上下文，用普通助手 prompt
+8. planning completed 事件携带 mode；持久化 summary 含 terminalState
 """
 
 from __future__ import annotations
@@ -195,6 +198,8 @@ def test_planner_refuse_blocks_normal_generation():
                 payload = json.loads(latest.agent_execution_json)
                 assert payload["summary"]["terminalState"] == "refused"
                 assert response.answer == latest.content
+                # 终态分流：refused → message_status REJECTED
+                assert latest.message_status == "REJECTED"
 
     asyncio.run(scenario())
 
@@ -204,6 +209,7 @@ def test_planner_escalate_no_fabricated_answer():
         with tempfile.TemporaryDirectory() as directory:
             os.environ["DB_URL"] = f"sqlite:///{directory}/escalate.db"
             os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.modules.conversations.models import Message
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
@@ -220,6 +226,13 @@ def test_planner_escalate_no_fabricated_answer():
                 assert response.answer == build_terminal_response("escalated")
                 assert "模型不该被调用的回答" not in response.answer
                 assert generation_router.complete_calls == 0
+                # 终态分流：escalated → message_status ESCALATED
+                latest = db.scalar(
+                    select(Message)
+                    .where(Message.role == "assistant")
+                    .order_by(Message.id.desc())
+                )
+                assert latest.message_status == "ESCALATED"
 
     asyncio.run(scenario())
 
@@ -229,6 +242,7 @@ def test_stream_refused_terminates_normally():
         with tempfile.TemporaryDirectory() as directory:
             os.environ["DB_URL"] = f"sqlite:///{directory}/refuse-stream.db"
             os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.modules.conversations.models import Message
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
@@ -247,11 +261,11 @@ def test_stream_refused_terminates_normally():
                 ]
             types = [event["type"] for event in events]
             # prepare 阶段事件实时转发：第一条是 planning running（agent_progress），
-            # conversation 在其后；生成阶段顺序与成功路径一致
+            # conversation 在其后；生成阶段顺序：running → token → completed → complete
             assert types[0] == "agent_progress"
             assert types[-1] == "done"
-            # 顺序：conversation → generation running → completed → complete
-            # → token(拒绝文案) → done（generation 生命周期完整，正常完结）
+            # 顺序：conversation → generation running → token(拒绝文案) →
+            # generation completed → complete → done（正文先于「回答生成完成」）
             conversation = types.index("conversation")
             gen_running = next(
                 i
@@ -279,20 +293,94 @@ def test_stream_refused_terminates_normally():
             assert (
                 conversation
                 < gen_running
+                < token
                 < gen_completed
                 < complete
-                < token
                 < len(events) - 1
             )
             assert events[complete]["data"]["terminal"] == "refused"
-            # 固定文案以一次 token 输出
+            # 固定文案按句子拆 2-3 段 token 输出，拼接后等于完整文案
             token_events = [event for event in events if event["type"] == "token"]
-            assert len(token_events) == 1
-            assert token_events[0]["data"] == build_terminal_response("refused")
-            # done 携带同一 answer；生成模型全程未被调用
+            assert 1 <= len(token_events) <= 3
+            assert "".join(event["data"] for event in token_events) == (
+                build_terminal_response("refused")
+            )
+            # done 携带同一 answer 与 message_status；生成模型全程未被调用
             assert events[-1]["data"]["answer"] == build_terminal_response("refused")
+            assert events[-1]["data"]["message_status"] == "REJECTED"
             assert generation_router.complete_calls == 0
             assert generation_router.stream_calls == 0
+            with app.state.container.database.session_factory() as db:
+                latest = db.scalar(
+                    select(Message)
+                    .where(Message.role == "assistant")
+                    .order_by(Message.id.desc())
+                )
+                assert latest.message_status == "REJECTED"
+
+    asyncio.run(scenario())
+
+
+def test_stream_escalated_token_before_completed_and_status():
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/escalate-stream.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.modules.conversations.models import Message
+            from app.modules.users.repository import UserRepository
+
+            app, generation_router = _prepare_app()
+            app.state.container.agentic.model_router = _EscalatePlanner()
+            await _register(app, "escalate-stream-user")
+            service = app.state.container.chat
+            request = ChatRequest(
+                question="门店今天实时牛肉价格是多少，但系统没有价格数据",
+                request_id="request-escalate-stream-001",
+            )
+            with app.state.container.database.session_factory() as db:
+                user = UserRepository().get_by_username(db, "escalate-stream-user")
+                events = [
+                    event
+                    async for event in service.stream(db, user.id, user.id, request)
+                ]
+            gen_running = next(
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "agent_progress"
+                and event["data"]["phase"] == "generation"
+                and event["data"]["status"] == "running"
+            )
+            gen_completed = next(
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "agent_progress"
+                and event["data"]["phase"] == "generation"
+                and event["data"]["status"] == "completed"
+            )
+            complete = next(
+                i
+                for i, event in enumerate(events)
+                if event["type"] == "agent_progress"
+                and event["data"]["phase"] == "complete"
+            )
+            token = next(
+                i for i, event in enumerate(events) if event["type"] == "token"
+            )
+            assert gen_running < token < gen_completed < complete < len(events) - 1
+            assert events[complete]["data"]["terminal"] == "escalated"
+            assert "".join(
+                event["data"] for event in events if event["type"] == "token"
+            ) == build_terminal_response("escalated")
+            assert events[-1]["data"]["message_status"] == "ESCALATED"
+            assert generation_router.complete_calls == 0
+            assert generation_router.stream_calls == 0
+            with app.state.container.database.session_factory() as db:
+                latest = db.scalar(
+                    select(Message)
+                    .where(Message.role == "assistant")
+                    .order_by(Message.id.desc())
+                )
+                assert latest.message_status == "ESCALATED"
 
     asyncio.run(scenario())
 

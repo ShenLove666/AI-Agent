@@ -125,12 +125,15 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, []);
 
-  // Virtuoso 是唯一滚动权威：仅当用户位于底部且未滚离时跟随内容增长。
+  // Virtuoso 是唯一滚动权威。业务判断不再是「是否数学意义上的底部」，
+  // 而是「用户有没有主动离开最新消息」：detached=false 就跟随
+  // （含 ResizeObserver autoscroll 与内容增长），detached=true 停止。
+  // （签名仍兼容 Virtuoso 的 (isAtBottom) => FollowOutputScalarType，参数省略。）
   // 最新 Turn 自身高度增长（turns 数不变）由 Latest Turn ResizeObserver
-  // → autoscrollToBottom 兜底（见上方 effect），两者共用 detached 语义。
+  // → autoscrollToBottom 兜底（见下方 effect），两者共用 detached 语义。
   // detached 用 ref 同步，避免闭包过期；程序滚动/布局变化不影响 detached。
-  const followOutput = React.useCallback((isAtBottom: boolean) => {
-    return !detachedRef.current && isAtBottom ? "auto" : false;
+  const followOutput = React.useCallback(() => {
+    return detachedRef.current ? false : "auto";
   }, []);
 
   const handleAtBottomChange = React.useCallback((isAtBottom: boolean) => {
@@ -155,10 +158,11 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
 
   // ---- Latest Turn ResizeObserver → autoscrollToBottom ----
   // 第二、三轮起，最新 Turn 的 Timeline/正文/Thinking/Sources 持续增长只改变
-  // 「最后一个 ChatTurn 自身高度」，turns.length 不变：followOutput 的 isAtBottom
-  // 判定此时不可靠（jsdom 与真实滚动下都会失效），页面会停在回答上半部分。
-  // 方案：观察最新 Turn 外层容器，尺寸变化经 rAF 合并后调用 autoscrollToBottom。
-  // Virtuoso 仍是唯一滚动权威；detached 时跳过，用户回到底部后自动恢复跟随。
+  // 「最后一个 ChatTurn 自身高度」，turns.length 与数据项不变：Virtuoso 的
+  // followOutput 只对数据/条目数变化生效，感知不到单条目纯高度增长，
+  // 页面会停在回答上半部分。方案：观察最新 Turn 外层容器，尺寸变化经 rAF
+  // 合并后调用 autoscrollToBottom（Virtuoso 仍是唯一滚动权威）。
+  // detached 时跳过，用户回到底部后自动恢复跟随。
   const [latestTurnEl, setLatestTurnEl] = React.useState<HTMLDivElement | null>(null);
   const handleLatestTurnRef = React.useCallback((el: HTMLDivElement | null) => {
     setLatestTurnEl(el);
@@ -202,12 +206,15 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     setDetached(false);
   }, [stableTurns.length]);
 
+  // List 容器不得使用 margin（space-y-*）：margin 会破坏 Virtuoso 的 item 测量，
+  // 导致滚到底/跳动。Turn 间距改由 ChatTurnItem 内部的 item padding（pb-7）承担，
+  // 底部呼吸空间由本容器的 pb-8 承担（原 h-8 Footer 已删除，见下）。
   const List = React.useMemo(() => {
     const Comp = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
       ({ className, ...props }, ref) => (
         <div
           ref={ref}
-          className={cn("mx-auto max-w-[960px] space-y-7 px-4 pb-3 pt-8 sm:px-6 lg:pt-10", className)}
+          className={cn("mx-auto max-w-[960px] px-4 pb-8 pt-8 sm:px-6 lg:pt-10", className)}
           {...props}
         />
       )
@@ -216,37 +223,26 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     return Comp;
   }, []);
 
-  const Footer = React.useMemo(() => {
-    const Comp = () => <div aria-hidden="true" className="h-8" />;
-    Comp.displayName = "MessageListFooter";
-    return Comp;
-  }, []);
+  // 无 Footer：底部呼吸空间由 List 容器 padding（pb-8）承担。
+  // 这样 scrollToIndex(last, align: "end") 对齐的就是真正的列表底，
+  // 不再被 h-8 占位架空导致「刚滚到最新但 atBottom=false」。
 
-  // 展开推荐面板后把该条滚入视口：直接量真实 DOM 几何 不依赖 Virtuoso 的尺寸缓存
-  // 缓存滞后会按面板展开前的旧高度欠滚 使变高的面板落到折叠线下 被输入框遮挡
-  // 面板从骨架→问题会再次变高 故 ready 时会重新触发本效果按最终高度对齐 并在淡入动画结束后补一次精确贴齐
-  // 只由用户点击推荐问题触发，保留原实现。
+  // 推荐面板展开是用户主动动作：滚到该 turn 可见即可，交由 Virtuoso 的
+  // scrollIntoView 依据其自身尺寸缓存计算对齐（Virtuoso 是唯一滚动权威）。
+  // 不再直接量 DOM 几何、不再触碰 scroller.scrollTop/scrollTo，也不用
+  // 100/420ms 的 setTimeout 补滚。触发时机仍由 store 的 recommendReveal 控制
+  // （loading/ready/error 各置一次新对象即重新触发）；stableTurns 只经 ref 读取，
+  // 避免内容流式增长时该 effect 因 turns 变化而重复滚动。
+  const stableTurnsRef = React.useRef(stableTurns);
+  stableTurnsRef.current = stableTurns;
   React.useEffect(() => {
     if (!recommendReveal) return;
     const revealId = recommendReveal.id;
-    const revealBottom = (behavior: ScrollBehavior) => {
-      const scroller = scrollerRef.current;
-      if (!scroller) return;
-      const el = scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(revealId)}"]`);
-      if (!el) return;
-      const gap = 12; // 面板底部与输入框留出的呼吸间距
-      const delta = el.getBoundingClientRect().bottom - (scroller.getBoundingClientRect().bottom - gap);
-      // 仅在被遮挡时下滚露出 已完整可见则不上滚 避免打断阅读
-      if (delta > 0) {
-        scroller.scrollTo({ top: scroller.scrollTop + delta, behavior });
-      }
-    };
-    const smoothTimer = window.setTimeout(() => revealBottom("smooth"), 100);
-    const snapTimer = window.setTimeout(() => revealBottom("auto"), 420);
-    return () => {
-      window.clearTimeout(smoothTimer);
-      window.clearTimeout(snapTimer);
-    };
+    const turnIndex = stableTurnsRef.current.findIndex(
+      (t) => t.user?.id === revealId || t.assistant?.id === revealId
+    );
+    if (turnIndex === -1) return;
+    virtuosoRef.current?.scrollIntoView({ index: turnIndex, behavior: "smooth", align: "end" });
   }, [recommendReveal]);
 
   if (messages.length === 0) {
@@ -267,11 +263,14 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         atBottomStateChange={handleAtBottomChange}
         scrollerRef={attachScroller}
         className="h-full"
-        components={{ List, Footer }}
+        components={{ List }}
         itemContent={(index, turn) => (
           <ChatTurnItem
             turn={turn}
             isLatestTurn={index === stableTurns.length - 1}
+            // Turn 间距用 item padding（pb-7）而非 List 的 margin（space-y-*），
+            // 保证 Virtuoso item 测量准确（margin 会破坏测量导致滚到底/跳动）
+            className="pb-7"
             // 仅最新一轮挂 ref（Latest Turn ResizeObserver 观察目标），其余不传避免误绑定
             onRef={index === stableTurns.length - 1 ? handleLatestTurnRef : undefined}
           />

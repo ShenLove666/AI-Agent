@@ -1,5 +1,16 @@
 """RAGent 前端契约兼容路由: /knowledge-base (单数)
 
+!!! 已废弃（deprecated）!!!
+
+本模块当前未在 application_core.py 注册（未 include_router），是历史遗留的
+「修复版」副本，功能与 app/api/compat_knowledge.py 重复。
+
+注意：若未来重新注册使用，必须先与 compat_knowledge.py 同步 data_owner
+语义——本文件内所有 owner 判定（_resolve_base / list_bases / search_documents
+的 KnowledgeBase.owner_id == user.id、create_base/create_document 的 owner
+参数）仍按登录 user_id 归属，会导致「管理页面看到 KB、Agent 查不到」
+的同域不一致。请改用 resolve_owner(db, user) 的商家数据 owner。
+
 前端 knowledgeService.ts 使用单数 /knowledge-base 与 RAGent 原版字段名
 (kbId/docName/chunkCount/createTime 等), 与内部 /knowledge-bases 契约不同。
 本模块负责字段与路径映射, 内部复用 KnowledgeService, 不在页面层散落转换。
@@ -13,7 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, BackgroundTasks, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, select
 
 from app.api.dependencies import (
     CurrentUser,
@@ -189,7 +200,7 @@ def create_base(
     request: Request,
 ) -> ApiResponse:
     item = request.app.state.container.knowledge.create_base(
-        db, user.id, payload.name, payload.description
+        db, owner_id=user.id, name=payload.name, description=payload.description
     )
     return ApiResponse(data=str(item.id), traceId=current_trace_id())
 
@@ -302,6 +313,7 @@ async def upload_document(
         db,
         base_id=kb_id,
         uploader_id=user.id,
+        owner_id=user.id,
         filename=safe_name,
         storage_path=str(target),
         file_size=size,

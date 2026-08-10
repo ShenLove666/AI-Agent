@@ -264,7 +264,8 @@ export function buildAgentTimelineViewModel(
     // running 保持最高优先级（拒绝/升级的确定性文案在流收尾的 complete 事件后才落地）
     if (options.status === "running") return "正在分析并查询相关数据…";
     // refuse/escalate 的用户文案优先于 failed/cancelled/completed：
-    // 持久化路径里 refused 由 REJECTED 推导为 failed，仍应显示拒绝文案而非「处理失败」
+    // REJECTED/ESCALATED 是「正常完成的受限结果」（映射为 completed），
+    // 拒绝/升级文案由 mode/terminalState 驱动，避免显示「处理失败」
     if (options.mode === "refuse" || options.terminalState === "refused") {
       return "该请求无法协助执行";
     }

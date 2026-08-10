@@ -3,8 +3,21 @@ import { describe, expect, it } from "vitest";
 import {
   cancelAgentSteps,
   computeAgentExecutionSummary,
+  deriveAgentExecutionStatus,
   restoreAgentExecution
 } from "./agentExecution";
+
+describe("deriveAgentExecutionStatus", () => {
+  it("maps persisted status: INTERRUPTED→cancelled、ERROR→failed、REJECTED/ESCALATED→completed、其余→completed", () => {
+    expect(deriveAgentExecutionStatus("INTERRUPTED")).toBe("cancelled");
+    expect(deriveAgentExecutionStatus("ERROR")).toBe("failed");
+    // 受限结果不是失败：与 ERROR 分流
+    expect(deriveAgentExecutionStatus("REJECTED")).toBe("completed");
+    expect(deriveAgentExecutionStatus("ESCALATED")).toBe("completed");
+    expect(deriveAgentExecutionStatus("NORMAL")).toBe("completed");
+    expect(deriveAgentExecutionStatus(undefined)).toBe("completed");
+  });
+});
 
 describe("restoreAgentExecution", () => {
   it("restores a tool row from persisted {label, toolKey} (no name)", () => {
@@ -102,15 +115,25 @@ describe("restoreAgentExecution", () => {
     expect(result.agentSteps?.[1].status).toBe("failed");
   });
 
-  it("keeps completed steps untouched when deriving failed from REJECTED", () => {
+  it("derives completed from REJECTED (受限结果不是失败) and keeps steps untouched", () => {
     const json = {
       steps: [{ seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }]
     };
 
     const result = restoreAgentExecution(json, "REJECTED");
 
-    expect(result.agentExecutionStatus).toBe("failed");
+    expect(result.agentExecutionStatus).toBe("completed");
     expect(result.agentSteps?.[0].status).toBe("completed");
+  });
+
+  it("derives completed from ESCALATED (受限结果不是失败)", () => {
+    const json = {
+      steps: [{ seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }]
+    };
+
+    const result = restoreAgentExecution(json, "ESCALATED");
+
+    expect(result.agentExecutionStatus).toBe("completed");
   });
 
   it("sorts steps by seq and falls back to a computed summary when absent", () => {

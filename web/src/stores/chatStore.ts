@@ -84,7 +84,8 @@ function mapVoteToFeedback(vote?: number | null): FeedbackValue {
 
 function mapPersistedMessageStatus(status?: Message["messageStatus"] | null): Message["status"] {
   if (status === "INTERRUPTED") return "cancelled";
-  if (status === "ERROR" || status === "REJECTED") return "error";
+  if (status === "ERROR") return "error";
+  // REJECTED/ESCALATED 是受限结果而非系统错误：按完成态展示（ERROR 仍 → error）
   return "done";
 }
 
@@ -169,7 +170,8 @@ function mapConversationMessages(data: ConversationMessageVO[]): Message[] {
     version: item.version ?? undefined,
     answerVersions: item.answerVersions,
     // 老消息无 agent_execution_json 时保持 undefined，页面正常降级；
-    // 整体状态由持久化 messageStatus 推导（INTERRUPTED→cancelled / ERROR·REJECTED→failed）
+    // 整体状态由持久化 messageStatus 推导（INTERRUPTED→cancelled /
+    // ERROR→failed；REJECTED/ESCALATED 受限结果 → completed）
     ...restoreAgentExecution(item.agentExecutionJson, item.messageStatus)
   }));
 }

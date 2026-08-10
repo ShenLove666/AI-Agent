@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -16,6 +20,41 @@ from app.modules.rag.schemas import ChatRequest
 from app.modules.users.access import resolve_owner
 from app.api.source_refs import source_ref
 from app.modules.rag.task_registry import registry as task_registry
+
+
+# 项目根目录（app/api/system.py → parents[2]），用于定位 web/dist
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_git_commit() -> str:
+    """启动时读取一次 git 短提交号；subprocess 失败回退 GIT_COMMIT 或 "unknown"。"""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return os.getenv("GIT_COMMIT") or "unknown"
+    if result.returncode != 0:
+        return os.getenv("GIT_COMMIT") or "unknown"
+    commit = result.stdout.strip()
+    return commit or (os.getenv("GIT_COMMIT") or "unknown")
+
+
+def _resolve_frontend_build() -> str:
+    """web/dist/index.html 的构建时间（mtime ISO 字符串）；读取失败 "unknown"。
+
+    frontendBuild 兼作 buildTime（同一来源：前端产物构建时间），
+    避免两个冗余字段；启动时计算一次并缓存。
+    """
+    try:
+        mtime = (_PROJECT_ROOT / "web" / "dist" / "index.html").stat().st_mtime
+    except OSError:
+        return "unknown"
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
 
 
 class RagentChatStreamRequest(BaseModel):
@@ -46,6 +85,9 @@ class RagentChatStreamRequest(BaseModel):
 
 def create_system_router(settings: Settings) -> APIRouter:
     router = APIRouter(tags=["system"])
+    # 版本信息在路由创建（应用启动）时解析一次并缓存，避免每请求执行 subprocess
+    git_commit = _resolve_git_commit()
+    frontend_build = _resolve_frontend_build()
 
     @router.get("/health", response_model=ApiResponse)
     async def health() -> ApiResponse:
@@ -56,6 +98,9 @@ def create_system_router(settings: Settings) -> APIRouter:
                 "environment": settings.environment,
                 "architecture": "modular-monolith",
                 "runtime": "python",
+                # 启动时缓存的版本信息：git 短提交号 + 前端产物构建时间
+                "gitCommit": git_commit,
+                "frontendBuild": frontend_build,
             },
             traceId=current_trace_id(),
         )
@@ -136,7 +181,9 @@ def create_system_router(settings: Settings) -> APIRouter:
                             {
                                 "messageId": data.get("message_id"),
                                 "sources": citations,
-                                "messageStatus": "NORMAL",
+                                # 透传持久化 message_status（NORMAL/REJECTED/
+                                # ESCALATED），前端无需重载即可展示受限结果文案
+                                "messageStatus": data.get("message_status") or "NORMAL",
                                 "turnId": data.get("turn_id"),
                                 "userMessageId": data.get("user_message_id"),
                                 "version": data.get("version"),
