@@ -59,11 +59,11 @@ export function WelcomeScreen() {
   const hasContent = value.trim().length > 0;
 
   return (
-    // 必须用 h-full（非 min-h-full）：父容器高度由 flex 撑开，min-height 百分比
-    // 在该链路中不解析（回退 auto → 高度=内容高度），内容超出可视区会被外层
-    // overflow-hidden 裁剪且自身无法滚动；h-full 与 MessageList 同模式可正确撑满
-    <div className="flex h-full w-full items-start justify-center overflow-y-auto bg-[var(--merchant-surface-subtle)] px-3 py-6 sm:px-6 sm:py-10">
-      <div className="w-full max-w-[900px]">
+    // 输入框固定在底部（与消息页交互一致）：任何屏幕高度首屏即可输入，
+    // 标题/快捷卡片在上方独立滚动；h-full 撑满 flex 父级（min-h-full 在该链路不解析）
+    <div className="flex h-full w-full flex-col bg-[var(--merchant-surface-subtle)]">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-6 sm:px-6 sm:py-10">
+        <div className="mx-auto w-full max-w-[900px]">
         <div className="flex flex-col gap-5 border-b border-[var(--merchant-border)] pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--merchant-cyan-strong)]">
@@ -109,7 +109,15 @@ export function WelcomeScreen() {
           })}
         </div>
 
-        <div className="mt-5 rounded-[var(--merchant-radius-lg)] border border-[var(--merchant-border)] bg-white p-3 shadow-[var(--merchant-shadow-md)] sm:p-4">
+        <p className="mt-3 text-xs text-[var(--merchant-text-muted)]">
+          V4 Flash 与 BGE 512d 为本地配置描述，不代表实时健康检查结果。
+        </p>
+        </div>
+      </div>
+      {/* 底部固定输入区：safe-area 兜底 iPhone 底部横条 */}
+      <div className="shrink-0 border-t border-[var(--merchant-border)] bg-white/90 px-3 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-3 sm:px-6">
+        <div className="mx-auto w-full max-w-[900px]">
+          <div className="rounded-[var(--merchant-radius-lg)] border border-[var(--merchant-border)] bg-white p-3 shadow-[var(--merchant-shadow-md)] sm:p-4">
           <textarea
             ref={textareaRef}
             value={value}
@@ -164,10 +172,8 @@ export function WelcomeScreen() {
               {isStreaming ? <Square className="h-4 w-4" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
+          </div>
         </div>
-        <p className="mt-3 text-xs text-[var(--merchant-text-muted)]">
-          V4 Flash 与 BGE 512d 为本地配置描述，不代表实时健康检查结果。
-        </p>
       </div>
     </div>
   );
