@@ -46,6 +46,7 @@ class DecisionRequest(BaseModel):
     decision: str
     final_content: str | None = Field(default=None, alias="finalContent")
     reason: str | None = None
+    confirmed_facts: bool = Field(default=False, alias="confirmedFacts")
 
 
 class KnowledgeReleaseRequest(BaseModel):
@@ -284,6 +285,7 @@ def decide(
             payload.decision,
             payload.final_content,
             payload.reason,
+            confirmed_facts=payload.confirmed_facts,
         ),
         traceId=current_trace_id(),
     )

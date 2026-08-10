@@ -28,7 +28,7 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
-from app.modules.orders.models import Order, OutboundMessage
+from app.modules.orders.models import Fulfillment, Order, OutboundMessage, Refund
 from app.modules.orders.service import OrderService
 from app.modules.optimization.models import OptimizationTask
 from app.modules.support.outbound import OutboundService, build_customer_channel
@@ -76,6 +76,11 @@ RISK_TERMS = {
     "payment_review": ("扣款", "支付", "银行卡"),
     "food_safety": ("变质", "温度", "还能吃", "还能喝"),
 }
+# decide 风险门禁：命中这些 risk_flags 的建议视为高风险（必须升级主管），
+# 其余 flags（如 refund_review）视为中风险（发送前需确认已核对事实与规则）。
+HIGH_RISK_FLAG_KEYS = {"food_safety", "payment_review", "account_security"}
+# 高风险建议可直发的主管/管理员角色
+SUPERVISOR_ROLES = {"supervisor", "admin"}
 
 
 def _json(value: str | None, fallback):
@@ -497,22 +502,26 @@ class SupportService:
                 KnowledgeRelease.is_active.is_(True),
             )
         )
-        latest_customer = db.scalar(
-            select(SupportMessage)
-            .where(SupportMessage.case_id == case.id, SupportMessage.role == "customer")
-            .order_by(SupportMessage.id.desc())
-            .limit(1)
-        )
-        question = latest_customer.content if latest_customer else case.subject
-        # 关联订单：把订单号注入问题，让统一 Agent Runtime 自主拉取订单/履约/退款/顾客事实
-        order_no: str | None = None
-        if case.order_id is not None:
-            order = db.get(Order, case.order_id)
-            if order is not None and order.owner_id == owner_id:
-                order_no = order.order_no
-        agent_question = question
-        if order_no and order_no not in agent_question:
-            agent_question = f"{question}\n（关联订单号：{order_no}）"
+        # 已发布知识版本真正限制检索：Agent 只允许引用 release 内的文档。
+        # release 为空（无已发布版本）→ 空元组，禁止检索任何知识文档，
+        # Agent 只能依赖订单/履约/退款等实时业务事实作答（产品语义：
+        # 「只引用已发布知识」，绝不回退到未发布的草稿知识）。
+        if release is not None:
+            allowed_document_ids = tuple(
+                db.scalars(
+                    select(KnowledgeReleaseDocument.document_id).where(
+                        KnowledgeReleaseDocument.release_id == release.id
+                    )
+                )
+            )
+        else:
+            allowed_document_ids = ()
+        # 结构化工单上下文：最近对话 + 工单主题 + 订单/履约/退款/标签/升级状态，
+        # 替代旧「最后一条顾客消息 + 订单号」的自由文本拼接。
+        case_context = self._build_case_context(db, case, owner_id)
+        question = case_context["latest_request"]
+        order_no = case_context.get("order_no")
+        agent_question = self._compose_case_question(case_context)
         # 当前商家已启用的知识库，供 Agent 检索政策证据
         knowledge_base_ids = tuple(
             db.scalars(
@@ -541,9 +550,11 @@ class SupportService:
             try:
                 run = await coordinator.run(
                     db,
-                    user_id=owner_id,
+                    actor_user_id=actor_id,
+                    data_owner_id=owner_id,
                     question=agent_question,
                     knowledge_base_ids=knowledge_base_ids,
+                    allowed_document_ids=allowed_document_ids,
                 )
                 results = list(run.results)
                 citations = [
@@ -592,6 +603,15 @@ class SupportService:
             config_snapshot_json=json.dumps(
                 {
                     "knowledgeVersion": release.version if release else None,
+                    # Admin Trace 排障：本次请求放行的已发布文档数与
+                    # 实际检索到的 knowledge 证据数（0 且白名单非空 →
+                    # 可能知识库未索引或查询词未命中已发布文档）。
+                    "allowedDocumentCount": len(allowed_document_ids),
+                    "retrievedDocumentCount": sum(
+                        1
+                        for item in (run.results if run else [])
+                        if item.channel.startswith("knowledge")
+                    ),
                     "runtimeMode": run.runtime_mode if run else None,
                     "terminalState": run.terminal_state if run else None,
                     "resolution": resolution,
@@ -613,6 +633,90 @@ class SupportService:
         db.commit()
         return self._suggestion(suggestion, None)
 
+    def _build_case_context(self, db: Session, case: SupportCase, owner_id: int) -> dict:
+        """构造结构化工单上下文：最近对话 + 订单/履约/退款/标签/状态。
+
+        供 Agent 规划使用（不再只看最后一条消息）：返回字段全部可选，
+        缺省时组装方（_compose_case_question）省略对应行。
+        """
+        messages = list(
+            db.scalars(
+                select(SupportMessage)
+                .where(SupportMessage.case_id == case.id)
+                .order_by(SupportMessage.id.desc())
+                .limit(6)
+            )
+        )
+        messages.reverse()  # 按 id 升序取最后 6 条
+        latest_customer = db.scalar(
+            select(SupportMessage)
+            .where(
+                SupportMessage.case_id == case.id,
+                SupportMessage.role == "customer",
+            )
+            .order_by(SupportMessage.id.desc())
+            .limit(1)
+        )
+        order_no = None
+        fulfillment_status = None
+        refund_status = None
+        if case.order_id is not None:
+            order = db.get(Order, case.order_id)
+            if order is not None and order.owner_id == owner_id:
+                order_no = order.order_no
+                fulfillment = db.scalar(
+                    select(Fulfillment)
+                    .where(Fulfillment.order_id == order.id)
+                    .order_by(Fulfillment.updated_at.desc(), Fulfillment.id.desc())
+                    .limit(1)
+                )
+                refund = db.scalar(
+                    select(Refund)
+                    .where(Refund.order_id == order.id)
+                    .order_by(Refund.id.desc())
+                    .limit(1)
+                )
+                if fulfillment is not None:
+                    fulfillment_status = fulfillment.status
+                if refund is not None:
+                    refund_status = refund.status
+        return {
+            "latest_request": (
+                latest_customer.content if latest_customer else case.subject
+            ),
+            "subject": case.subject,
+            "order_no": order_no,
+            "fulfillment_status": fulfillment_status,
+            "refund_status": refund_status,
+            "tags": _json(case.labels_json, []),
+            "case_status": case.status,
+            "recent_messages": [
+                {"role": item.role, "content": item.content} for item in messages
+            ],
+        }
+
+    @staticmethod
+    def _compose_case_question(context: dict) -> str:
+        """把结构化工单上下文组装为 Agent 输入文本（内部结构，不对外展示）。
+
+        缺省字段省略对应行；对话内容原文保留（对客回复需要）。
+        """
+        lines = [f"顾客最新诉求：{context['latest_request']}"]
+        lines.append(f"工单主题：{context['subject']}")
+        if context.get("order_no"):
+            lines.append(f"（关联订单号：{context['order_no']}）")
+        if context.get("fulfillment_status"):
+            lines.append(f"订单履约状态：{context['fulfillment_status']}")
+        if context.get("refund_status"):
+            lines.append(f"退款状态：{context['refund_status']}")
+        recent = context.get("recent_messages") or []
+        if recent:
+            lines.append("最近对话：")
+            for message in recent:
+                who = "客服" if message["role"] == "agent" else "顾客"
+                lines.append(f"{who}: {message['content']}")
+        return "\n".join(lines)
+
     def decide(
         self,
         db: Session,
@@ -623,6 +727,7 @@ class SupportService:
         decision: str,
         final_content: str | None,
         reason: str | None,
+        confirmed_facts: bool = False,
     ) -> dict:
         if decision not in DECISIONS:
             raise AppError("INVALID_REPLY_DECISION", "不支持的审核动作", 422)
@@ -649,6 +754,23 @@ class SupportService:
             ) or ""
             if not outgoing.strip():
                 raise AppError("FINAL_REPLY_REQUIRED", "发送前必须填写最终回复", 422)
+            # 后端风险门禁：直接发送前按建议风险等级校验。
+            # escalated/rejected 决策路径不受影响（不产生对客发送）。
+            risk_level = self._suggestion_risk_level(suggestion)
+            if risk_level == "high":
+                actor = db.get(User, actor_id)
+                if actor is None or actor.role not in SUPERVISOR_ROLES:
+                    raise AppError(
+                        "HIGH_RISK_REQUIRES_ESCALATION",
+                        "高风险建议必须升级主管后由主管处理",
+                        403,
+                    )
+            elif risk_level == "medium" and not confirmed_facts:
+                raise AppError(
+                    "RISK_CONFIRMATION_REQUIRED",
+                    "中风险建议发送前必须确认已核对事实与规则",
+                    422,
+                )
         else:
             outgoing = None
         item = ReplyDecision(
@@ -784,10 +906,16 @@ class SupportService:
         return [self._release(db, item) for item in releases]
 
     def knowledge_sources(self, db: Session, owner_id: int) -> list[dict]:
+        # 商家归属按 KnowledgeBase.owner_id（uploader 只是操作者）：运营商账号
+        # 代上传的文档也归商家所有，避免商家视图/发布列表缺漏。
         documents = list(
             db.scalars(
                 select(KnowledgeDocument)
-                .where(KnowledgeDocument.uploader_id == owner_id)
+                .join(
+                    KnowledgeBase,
+                    KnowledgeBase.id == KnowledgeDocument.knowledge_base_id,
+                )
+                .where(KnowledgeBase.owner_id == owner_id)
                 .order_by(KnowledgeDocument.id)
             )
         )
@@ -838,11 +966,18 @@ class SupportService:
             )
         ):
             raise AppError("KNOWLEDGE_RELEASE_EXISTS", "该知识版本已存在", 409)
+        # 商家归属按 KnowledgeBase.owner_id（uploader 只是操作者）：运营商
+        # 账号上传的文档也能被商家纳入发布版本。
         documents = list(
             db.scalars(
-                select(KnowledgeDocument).where(
+                select(KnowledgeDocument)
+                .join(
+                    KnowledgeBase,
+                    KnowledgeBase.id == KnowledgeDocument.knowledge_base_id,
+                )
+                .where(
                     KnowledgeDocument.id.in_(set(document_ids)),
-                    KnowledgeDocument.uploader_id == owner_id,
+                    KnowledgeBase.owner_id == owner_id,
                 )
             )
         )
@@ -1970,30 +2105,122 @@ class SupportService:
         }
 
     @staticmethod
+    def _suggestion_risk_level(suggestion: ReplySuggestion) -> str:
+        """读取建议风险等级：config_snapshot.resolution.risk 优先（Agent 判定），
+        旧建议无该字段时按 risk_flags 推导（高安全类 flag → high，其余 → medium）。
+        """
+        snapshot = _json(suggestion.config_snapshot_json, {})
+        resolution = snapshot.get("resolution") or {}
+        if isinstance(resolution, dict) and resolution.get("risk") in {
+            "low",
+            "medium",
+            "high",
+        }:
+            return resolution["risk"]
+        flags = _json(suggestion.risk_flags_json, [])
+        if flags:
+            if set(flags) & HIGH_RISK_FLAG_KEYS:
+                return "high"
+            return "medium"
+        return "low"
+
+    @staticmethod
     def _compose_draft(run, question: str, order_no: str | None) -> str:
-        """生成简短、可直接发送给顾客的草稿，不混入内部证据原文。"""
-        intent = run.review_details.intent.lower()
-        topic = "退款" if "refund" in intent else "售后"
-        order_context = f"关于订单 {order_no}，" if order_no else ""
-        draft = (
-            f"您好，{order_context}您反馈的{topic}问题我们已收到并完成初步核实。"
-            "我们会依据实际情况和适用规则继续处理，并尽快向您同步结果。"
-            "如还需补充凭证或信息，我们会及时联系您，感谢您的理解与配合。"
-        )
+        """基于已核实事实生成对客草稿：只使用 run.results 的已核实事实，不编造。
+
+        - 订单/配送/退款状态取自事实 metadata（status/送达时点），不引用证据原文；
+        - 有配送状态但无送达时点 → 明确「暂未提供准确到达时间，不能承诺具体时点」；
+        - 无任何已核实事实 → 回退到通用「已收到并完成初步核实」模板（保留）。
+        """
+        order_status: str | None = None
+        delivery_status: str | None = None
+        delivery_estimated: str | None = None
+        delivery_delivered: str | None = None
+        refund_status: str | None = None
+        has_rule = False
+        for item in run.results:
+            meta = item.metadata or {}
+            fact_type = meta.get("factType")
+            if fact_type == "order":
+                order_status = order_status or meta.get("status")
+            elif fact_type == "delivery":
+                delivery_status = delivery_status or meta.get("status")
+                delivery_estimated = delivery_estimated or meta.get(
+                    "estimatedDeliveryAt"
+                )
+                delivery_delivered = delivery_delivered or meta.get("deliveredAt")
+            elif fact_type == "refund":
+                refund_status = refund_status or meta.get("status")
+            elif fact_type in (None, "policy") or item.channel.startswith(
+                "knowledge"
+            ):
+                has_rule = True
+        order_context = f"订单 {order_no}，" if order_no else ""
+        status_parts: list[str] = []
+        if order_status:
+            status_parts.append(f"订单状态为{order_status}")
+        if delivery_status:
+            if delivery_delivered:
+                status_parts.append(
+                    f"配送状态为{delivery_status}，已于{delivery_delivered}送达"
+                )
+            elif delivery_estimated:
+                status_parts.append(
+                    f"配送状态为{delivery_status}，预计{delivery_estimated}送达"
+                )
+            else:
+                status_parts.append(
+                    f"配送状态为{delivery_status}；当前系统暂未提供准确到达时间，"
+                    "我不能为您承诺具体时点"
+                )
+        if refund_status:
+            status_parts.append(f"退款状态为{refund_status}")
+        if not status_parts:
+            # 兜底模板：无任何已核实事实（保持原「完成初步核实」表述）
+            return (
+                f"您好，{order_context}您反馈的问题我们已收到并完成初步核实。"
+                "我们会依据实际情况和适用规则继续处理，并尽快向您同步结果。"
+                "如还需补充凭证或信息，我们会及时联系您，感谢您的理解与配合。"
+            )[:320]
+        draft = f"您好，已为您核实{order_context}以下情况：{'；'.join(status_parts)}。"
+        if has_rule:
+            draft += "相关规则已核对，我们将依据适用规则为您处理，并尽快向您同步结果。"
+        else:
+            draft += "我们会依据实际情况和适用规则继续处理，并尽快向您同步结果。"
         return draft[:320]
 
     @staticmethod
     def _build_resolution(
         run, question: str, order_no: str | None, risk_flags: list[str]
     ) -> dict:
-        """从 AgenticRun 派生结构化处理决议（intent/risk/facts/actions/canSend）。"""
+        """从 AgenticRun 派生结构化处理决议（intent/risk/facts/rules/actions/canSend）。
+
+        - facts：订单/履约/退款/顾客历史等业务事实；
+        - rules：policy 类 / knowledge channel 的规则证据（label/content/version）；
+        - citationGroups：事实与规则分类计数，供前端分组展示。
+        """
         details = run.review_details
         facts = []
+        rules = []
         missing = list(details.missing_fields or ())
         for item in run.results:
             meta = item.metadata or {}
             fact_type = meta.get("factType")
-            if fact_type in (None, "policy"):
+            if fact_type in (None, "policy") or item.channel.startswith("knowledge"):
+                rules.append(
+                    {
+                        "label": (
+                            meta.get("document_name")
+                            or meta.get("doc_name")
+                            or meta.get("source_title")
+                            or item.source
+                            or "知识规则"
+                        ),
+                        "content": item.content[:200],
+                        "version": meta.get("release_version")
+                        or meta.get("releaseVersion"),
+                    }
+                )
                 continue
             facts.append(
                 {
@@ -2003,7 +2230,7 @@ class SupportService:
                 }
             )
         can_send = run.terminal_state == "grounded" and details.decision == "ready"
-        actions = ["告知顾客当前已核实的状态与预计时间"]
+        actions = ["告知顾客当前已核实的状态"]
         if can_send:
             actions.append("按建议草稿回复顾客")
         else:
@@ -2016,9 +2243,11 @@ class SupportService:
             "intent": details.intent,
             "risk": details.risk,
             "facts": facts,
+            "rules": rules,
             "missingFacts": missing,
             "recommendedActions": actions,
             "draftReply": SupportService._compose_draft(run, question, order_no),
+            "citationGroups": {"orderFacts": len(facts), "rules": len(rules)},
             "citations": [
                 item.content[:260]
                 for item in run.results

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
+  BookOpen,
   Bot,
   Check,
   CheckCircle2,
@@ -73,6 +74,77 @@ const fulfillmentStatuses: Record<string, string> = {
   delivered: "已送达",
   cancelled: "已取消"
 };
+const riskTone: Record<"low" | "medium" | "high", string> = {
+  low: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  medium: "border-amber-200 bg-amber-50 text-amber-700",
+  high: "border-rose-200 bg-rose-50 text-rose-700"
+};
+type ResolutionFact = { type: string; content: string; orderNo?: string };
+/**
+ * 后端并行演进中的 resolution 扩展字段（rules / citationGroups）。
+ * 以可选字段接入并做运行时容错：后端尚未下发时对应区块自动隐藏。
+ */
+interface ResolutionWithExtras {
+  intent: string;
+  risk: "low" | "medium" | "high";
+  facts: ResolutionFact[];
+  missingFacts: string[];
+  recommendedActions: string[];
+  draftReply: string;
+  citations: string[];
+  canSend: boolean;
+  escalationReason: string | null;
+  terminalState: string;
+  rules?: Array<{ title?: string; content?: string } | string>;
+  citationGroups?: {
+    orderFacts?: Array<ResolutionFact | string>;
+    rules?: Array<{ title?: string; content?: string } | string>;
+  };
+}
+const evidenceItemText = (item: unknown): string => {
+  if (typeof item === "string") return item;
+  const value = item as {
+    content?: string;
+    title?: string;
+    docName?: string;
+    releaseVersion?: string;
+  };
+  return (
+    value.content ||
+    value.title ||
+    value.docName ||
+    (value.releaseVersion ? `发布版本 ${value.releaseVersion}` : "")
+  );
+};
+
+function GeneratingSuggestionStatus() {
+  return (
+    <div
+      role="status"
+      aria-label="AI 正在处理"
+      className="space-y-4 rounded-md border border-indigo-100 bg-indigo-50/50 p-4"
+    >
+      <p className="flex items-center gap-2 text-sm font-semibold text-indigo-900">
+        <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+        AI 正在处理
+      </p>
+      <ul className="space-y-2.5 text-xs text-slate-600">
+        <li className="flex items-center gap-2">
+          <Check className="h-3.5 w-3.5 text-emerald-500" />
+          核对订单信息
+        </li>
+        <li className="flex items-center gap-2">
+          <Check className="h-3.5 w-3.5 text-emerald-500" />
+          查询适用规则
+        </li>
+        <li className="flex items-center gap-2">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
+          正在评估处理风险
+        </li>
+      </ul>
+    </div>
+  );
+}
 
 function Metric({
   label,
@@ -154,7 +226,11 @@ export function SupportWorkbenchPage() {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const copilotRef = useRef<HTMLElement | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [generatingSuggestion, setGeneratingSuggestion] = useState(false);
+  const [sendingReply, setSendingReply] = useState(false);
+  const [updatingCase, setUpdatingCase] = useState(false);
+  const [escalating, setEscalating] = useState(false);
+  const [confirmedFacts, setConfirmedFacts] = useState(false);
   const selectCase = useCallback(async (id: number) => {
     const [value, context] = await Promise.all([getSupportCase(id), getSupportWorkspace(id)]);
     setDetail(value);
@@ -162,6 +238,7 @@ export function SupportWorkbenchPage() {
     const suggestion = value.suggestions.find((x) => !x.decision);
     setEdited(suggestion?.content || "");
     setEvidenceOpen(false);
+    setConfirmedFacts(false);
   }, []);
   const load = useCallback(async () => {
     setLoading(true);
@@ -186,8 +263,13 @@ export function SupportWorkbenchPage() {
     const timer = window.setTimeout(() => void load(), search ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [search, status]); // eslint-disable-line react-hooks/exhaustive-deps
-  const action = async <T,>(fn: () => Promise<T>, message: string, refresh = true) => {
-    setBusy(true);
+  const runCaseAction = async <T,>(
+    setter: (value: boolean) => void,
+    fn: () => Promise<T>,
+    message: string,
+    refresh = true
+  ) => {
+    setter(true);
     try {
       await fn();
       if (refresh && detail) {
@@ -202,7 +284,7 @@ export function SupportWorkbenchPage() {
     } catch (e) {
       toast.error((e as Error).message || "操作失败");
     } finally {
-      setBusy(false);
+      setter(false);
     }
   };
   const suggestion = detail?.suggestions.find((x) => !x.decision) || null;
@@ -342,10 +424,11 @@ export function SupportWorkbenchPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={busy || !user?.userId}
+                      disabled={updatingCase || !user?.userId}
                       onClick={() =>
                         user?.userId &&
-                        void action(
+                        void runCaseAction(
+                          setUpdatingCase,
                           () => assignSupportCase(detail.id, Number(user.userId), detail.version),
                           "已接单"
                         )
@@ -360,9 +443,10 @@ export function SupportWorkbenchPage() {
                       size="sm"
                       variant="outline"
                       className="text-emerald-700"
-                      disabled={busy}
+                      disabled={updatingCase}
                       onClick={() =>
-                        void action(
+                        void runCaseAction(
+                          setUpdatingCase,
                           () =>
                             transitionSupportCase(detail.id, "resolved", detail.version, {
                               resolutionCode: "policy_explained",
@@ -442,13 +526,17 @@ export function SupportWorkbenchPage() {
                 <div className="flex justify-end border-t pt-3">
                   <Button
                     size="sm"
-                    disabled={busy || !draft.trim()}
+                    disabled={sendingReply || !draft.trim()}
                     onClick={() =>
-                      void action(async () => {
-                        const value = await sendManualReply(detail.id, draft);
-                        setDraft("");
-                        return value;
-                      }, "回复已记录")
+                      void runCaseAction(
+                        setSendingReply,
+                        async () => {
+                          const value = await sendManualReply(detail.id, draft);
+                          setDraft("");
+                          return value;
+                        },
+                        "回复已记录"
+                      )
                     }
                   >
                     <Send className="mr-2 h-4 w-4" />
@@ -557,25 +645,25 @@ export function SupportWorkbenchPage() {
               size="sm"
               variant="outline"
               className="border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-50"
-              disabled={busy || !detail}
+              disabled={generatingSuggestion || !detail}
               onClick={async () => {
                 if (!detail) return;
-                setBusy(true);
+                setGeneratingSuggestion(true);
                 try {
                   await generateSupportSuggestion(detail.id);
                   await selectCase(detail.id);
                   toast.success("建议生成完成");
                   requestAnimationFrame(() => {
-                    copilotRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    copilotRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
                   });
                 } catch (e) {
                   toast.error((e as Error).message);
                 } finally {
-                  setBusy(false);
+                  setGeneratingSuggestion(false);
                 }
               }}
             >
-              {busy ? (
+              {generatingSuggestion ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Sparkles className="mr-1 h-3.5 w-3.5" />
@@ -587,7 +675,9 @@ export function SupportWorkbenchPage() {
             aria-label="AI 回复建议正文"
             className="min-h-0 flex-1 overflow-y-auto p-4"
           >
-            {!suggestion ? (
+            {generatingSuggestion ? (
+              <GeneratingSuggestionStatus />
+            ) : !suggestion ? (
               <div className="py-16 text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg border border-indigo-100 bg-indigo-50 text-indigo-600">
                   <Sparkles className="h-5 w-5" />
@@ -610,79 +700,185 @@ export function SupportWorkbenchPage() {
                 </div>
               </div>
             ) : (
-              <div className="space-y-3.5">
-                {suggestion.riskFlags.length > 0 && (
-                  <div className="flex gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
-                    <ShieldCheck className="h-4 w-4 shrink-0" />
-                    检测到退款、支付或安全风险，发送前必须人工确认
-                  </div>
-                )}
-                {suggestion.resolution && (
-                  <section
-                    aria-label="AI 审核摘要"
-                    className="space-y-2.5 rounded-md border border-indigo-100 bg-indigo-50/50 p-3 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-semibold text-slate-500">风险</span>
-                      <Badge variant="outline" className="border-indigo-100 bg-white text-slate-700">
-                        {riskLabels[suggestion.resolution.risk]}
-                      </Badge>
-                    </div>
-                    <div className="grid grid-cols-[64px_1fr] gap-2 leading-5">
-                      <span className="font-semibold text-slate-500">缺失事实</span>
-                      <span className="line-clamp-2 text-slate-700">
-                        {suggestion.resolution.missingFacts?.slice(0, 2).join("；") || "暂无"}
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-[64px_1fr] gap-2 leading-5">
-                      <span className="font-semibold text-slate-500">建议动作</span>
-                      <span className="line-clamp-2 text-slate-700">
-                        {suggestion.resolution.recommendedActions?.slice(0, 2).join("；") || "暂无"}
-                      </span>
-                    </div>
-                  </section>
-                )}
-                <Textarea
-                  aria-label="可编辑的对客回复"
-                  value={edited}
-                  onChange={(e) => setEdited(e.target.value)}
-                  className="h-[180px] min-h-[120px] max-h-[240px] resize-y overflow-y-auto rounded-md border-indigo-100 bg-white leading-6 text-slate-800 placeholder:text-slate-400 focus-visible:ring-indigo-200"
-                />
-                <div>
-                  <button
-                    type="button"
-                    aria-expanded={evidenceOpen}
-                    aria-controls={`suggestion-evidence-${suggestion.id}`}
-                    className="flex w-full items-center gap-2 rounded-md py-1 text-left text-xs font-semibold text-slate-500 hover:text-slate-700"
-                    onClick={() => setEvidenceOpen((open) => !open)}
-                  >
-                    <FileText className="h-4 w-4" />
-                    <span className="flex-1">引用证据 · {suggestion.citations.length}</span>
-                    <ChevronDown
-                      className={cn("h-4 w-4 transition-transform", evidenceOpen && "rotate-180")}
-                    />
-                  </button>
-                  {evidenceOpen && (
-                    <div id={`suggestion-evidence-${suggestion.id}`} className="mt-2">
-                      {suggestion.citations.map((citation, index) => (
-                        <div
-                          key={index}
-                          className="mb-2 flex gap-2 rounded-md border border-slate-200 bg-white p-2.5"
-                        >
-                          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-indigo-50 text-[10px] font-medium text-indigo-600">
-                            {index + 1}
-                          </span>
-                          <p className="line-clamp-3 text-xs leading-5 text-slate-600">
-                            {citation.content ||
-                              citation.docName ||
-                              `发布版本 ${citation.releaseVersion}`}
-                          </p>
+              (() => {
+                const res = suggestion.resolution as ResolutionWithExtras | null;
+                const groups = res?.citationGroups;
+                const rulesCount = res?.rules?.length ?? groups?.rules?.length ?? 0;
+                const orderFacts: Array<unknown> = groups?.orderFacts?.length
+                  ? groups.orderFacts
+                  : (res?.facts ?? []);
+                const ruleItems: Array<unknown> = groups?.rules?.length
+                  ? groups.rules
+                  : suggestion.citations;
+                return (
+                  <div className="space-y-3.5">
+                    {suggestion.riskFlags.length > 0 && (
+                      <div className="flex gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                        <ShieldCheck className="h-4 w-4 shrink-0" />
+                        检测到退款、支付或安全风险，发送前必须人工确认
+                      </div>
+                    )}
+                    {res && (
+                      <section
+                        aria-label="AI 处理建议"
+                        className="space-y-2.5 rounded-md border border-indigo-100 bg-indigo-50/50 p-3 text-xs"
+                      >
+                        <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-900">
+                          <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                          AI 处理建议
+                        </h3>
+                        {res.facts?.length > 0 && (
+                          <div className="rounded-md border border-emerald-100 bg-white p-2.5">
+                            <p className="flex items-center gap-1.5 font-semibold text-emerald-700">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              已核实事实
+                            </p>
+                            <ul className="mt-1.5 space-y-1 leading-5 text-slate-700">
+                              {res.facts.map((fact, index) => (
+                                <li key={index} className="flex gap-1.5">
+                                  <span className="shrink-0 text-emerald-500">·</span>
+                                  <span>
+                                    {fact.type && (
+                                      <span className="mr-1 font-medium text-slate-500">
+                                        {fact.type}
+                                      </span>
+                                    )}
+                                    {fact.content}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {res.missingFacts?.length > 0 && (
+                          <div className="rounded-md border border-amber-100 bg-white p-2.5">
+                            <p className="flex items-center gap-1.5 font-semibold text-amber-700">
+                              <AlertTriangle className="h-3.5 w-3.5" />
+                              待确认
+                            </p>
+                            <ul className="mt-1.5 space-y-1 leading-5 text-slate-700">
+                              {res.missingFacts.map((fact, index) => (
+                                <li key={index} className="flex gap-1.5">
+                                  <span className="shrink-0 text-amber-500">!</span>
+                                  {fact}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {rulesCount > 0 && (
+                          <div className="flex items-center justify-between rounded-md border border-slate-200 bg-white p-2.5">
+                            <p className="flex items-center gap-1.5 font-semibold text-slate-700">
+                              <BookOpen className="h-3.5 w-3.5 text-indigo-500" />
+                              适用规则
+                            </p>
+                            <span className="text-[11px] text-slate-500">
+                              规则依据 {rulesCount}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-semibold text-slate-500">风险</span>
+                          <Badge variant="outline" className={riskTone[res.risk]}>
+                            {riskLabels[res.risk]}
+                          </Badge>
                         </div>
-                      ))}
+                        {res.recommendedActions?.length > 0 && (
+                          <div className="rounded-md bg-white p-2.5">
+                            <p className="font-semibold text-slate-500">建议动作</p>
+                            <ol className="mt-1.5 space-y-1 leading-5 text-slate-700">
+                              {res.recommendedActions.map((item, index) => (
+                                <li key={index} className="flex gap-1.5">
+                                  <span className="shrink-0 font-medium text-slate-400">
+                                    {index + 1}.
+                                  </span>
+                                  {item}
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                      </section>
+                    )}
+                    <div className="flex items-center gap-2 text-[11px] font-semibold text-slate-500">
+                      <span className="h-px flex-1 bg-slate-200" />
+                      对客回复草稿
+                      <span className="h-px flex-1 bg-slate-200" />
                     </div>
-                  )}
-                </div>
-              </div>
+                    <Textarea
+                      aria-label="可编辑的对客回复"
+                      value={edited}
+                      onChange={(e) => setEdited(e.target.value)}
+                      className="h-[180px] min-h-[120px] max-h-[240px] resize-y overflow-y-auto rounded-md border-indigo-100 bg-white leading-6 text-slate-800 placeholder:text-slate-400 focus-visible:ring-indigo-200"
+                    />
+                    <div>
+                      <button
+                        type="button"
+                        aria-expanded={evidenceOpen}
+                        aria-controls={`suggestion-evidence-${suggestion.id}`}
+                        className="flex w-full items-center gap-2 rounded-md py-1 text-left text-xs font-semibold text-slate-500 hover:text-slate-700"
+                        onClick={() => setEvidenceOpen((open) => !open)}
+                      >
+                        <FileText className="h-4 w-4" />
+                        <span className="flex-1">处理依据</span>
+                        <ChevronDown
+                          className={cn("h-4 w-4 transition-transform", evidenceOpen && "rotate-180")}
+                        />
+                      </button>
+                      {evidenceOpen && (
+                        <div id={`suggestion-evidence-${suggestion.id}`} className="mt-2">
+                          {orderFacts.length > 0 && (
+                            <div className="mb-3">
+                              <p className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                                <span>订单事实</span>
+                                <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] text-slate-500">
+                                  {orderFacts.length}
+                                </span>
+                              </p>
+                              {orderFacts.map((item, index) => (
+                                <div
+                                  key={index}
+                                  className="mb-2 flex gap-2 rounded-md border border-slate-200 bg-white p-2.5"
+                                >
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-indigo-50 text-[10px] font-medium text-indigo-600">
+                                    {index + 1}
+                                  </span>
+                                  <p className="line-clamp-3 text-xs leading-5 text-slate-600">
+                                    {evidenceItemText(item)}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {ruleItems.length > 0 && (
+                            <div>
+                              <p className="mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-500">
+                                <span>规则依据</span>
+                                <span className="rounded-full bg-slate-100 px-1.5 py-px text-[10px] text-slate-500">
+                                  {ruleItems.length}
+                                </span>
+                              </p>
+                              {ruleItems.map((item, index) => (
+                                <div
+                                  key={index}
+                                  className="mb-2 flex gap-2 rounded-md border border-slate-200 bg-white p-2.5"
+                                >
+                                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-indigo-50 text-[10px] font-medium text-indigo-600">
+                                    {index + 1}
+                                  </span>
+                                  <p className="line-clamp-3 text-xs leading-5 text-slate-600">
+                                    {evidenceItemText(item)}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
             )}
           </section>
           {suggestion && (
@@ -690,33 +886,68 @@ export function SupportWorkbenchPage() {
               aria-label="AI 回复建议操作"
               className="shrink-0 space-y-2 border-t border-indigo-100 bg-indigo-50/30 p-4"
             >
-              {suggestion.status === "completed" && (
-                <Button
-                  className="w-full"
-                  disabled={busy}
-                  onClick={() =>
-                    void action(
-                      () =>
-                        decideSupportSuggestion(
-                          detail!.id,
-                          suggestion.id,
-                          edited === suggestion.content ? "accepted" : "edited",
-                          edited
-                        ),
-                      "回复已审核并记录"
-                    )
-                  }
-                >
-                  <Check className="mr-2 h-4 w-4" />
-                  {edited === suggestion.content ? "采纳并发送" : "发送修订版"}
-                </Button>
-              )}
+              {suggestion.status === "completed" &&
+                (() => {
+                  const risk = suggestion.resolution?.risk;
+                  return (
+                    <>
+                      {risk === "medium" && (
+                        <label className="flex items-start gap-2 rounded-md border border-amber-200 bg-white p-2.5 text-xs text-slate-600">
+                          <input
+                            type="checkbox"
+                            checked={confirmedFacts}
+                            onChange={(e) => setConfirmedFacts(e.target.checked)}
+                            className="mt-0.5 h-3.5 w-3.5 rounded accent-indigo-600"
+                          />
+                          <span>我已核对事实与规则</span>
+                        </label>
+                      )}
+                      {risk === "high" && (
+                        <p className="flex items-start gap-1.5 rounded-md border border-rose-200 bg-rose-50 p-2.5 text-xs leading-5 text-rose-700">
+                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                          高风险建议必须升级主管处理
+                        </p>
+                      )}
+                      <Button
+                        className="w-full"
+                        disabled={
+                          sendingReply ||
+                          risk === "high" ||
+                          (risk === "medium" && !confirmedFacts)
+                        }
+                        onClick={() =>
+                          void runCaseAction(
+                            setSendingReply,
+                            () =>
+                              decideSupportSuggestion(
+                                detail!.id,
+                                suggestion.id,
+                                edited === suggestion.content ? "accepted" : "edited",
+                                edited,
+                                undefined,
+                                confirmedFacts
+                              ),
+                            "回复已审核并记录"
+                          )
+                        }
+                      >
+                        <Check className="mr-2 h-4 w-4" />
+                        {edited === suggestion.content ? "采纳并发送" : "发送修订版"}
+                      </Button>
+                    </>
+                  );
+                })()}
               <Button
                 variant="outline"
-                className="w-full border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-50"
-                disabled={busy}
+                className={cn(
+                  "w-full border-indigo-200 bg-white text-indigo-600 hover:bg-indigo-50",
+                  suggestion.resolution?.risk === "high" &&
+                    "border-rose-300 bg-rose-600 text-white hover:bg-rose-700"
+                )}
+                disabled={escalating}
                 onClick={() =>
-                  void action(
+                  void runCaseAction(
+                    setEscalating,
                     () =>
                       raiseSupportEscalation(detail!.id, {
                         category: suggestion.riskFlags?.includes("food_safety")
@@ -745,9 +976,6 @@ export function SupportWorkbenchPage() {
                 <ArrowUpRight className="mr-2 h-4 w-4" />
                 升级主管
               </Button>
-              <p className="text-center text-[10px] text-slate-400">
-                {suggestion.modelId} · {suggestion.promptVersion} · {suggestion.latencyMs}ms
-              </p>
             </section>
           )}
         </aside>

@@ -292,11 +292,12 @@ export const decideSupportSuggestion = (
   suggestionId: number,
   decision: string,
   finalContent?: string,
-  reason?: string
+  reason?: string,
+  confirmedFacts = false
 ) =>
   api.post<never, SupportCaseDetail>(
     `/support/cases/${caseId}/suggestions/${suggestionId}/decision`,
-    { decision, finalContent, reason }
+    { decision, finalContent, reason, confirmedFacts }
   );
 export const getKnowledgeReleases = () =>
   api.get<never, KnowledgeRelease[]>("/support/knowledge/releases");

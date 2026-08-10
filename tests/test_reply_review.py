@@ -71,7 +71,11 @@ def _agentic_run(
                 content=f"订单 {order_no} 状态为已签收，退款状态为无。",
                 score=0.95,
                 channel="commerce.get_order",
-                metadata={"factType": "order", "orderNo": order_no},
+                metadata={
+                    "factType": "order",
+                    "orderNo": order_no,
+                    "status": "已签收",
+                },
             )
         )
     details = EvidenceReview(
@@ -116,17 +120,30 @@ class FakeCoordinator(AgenticRagCoordinator):
         self.policy_metadata = policy_metadata
         self.last_question: str | None = None
         self.last_knowledge_base_ids: tuple[int, ...] = ()
+        self.last_allowed_document_ids: tuple[int, ...] | None = None
+        self.last_actor_user_id: int | None = None
+        self.last_data_owner_id: int | None = None
 
     async def run(
         self,
         db,
         *,
-        user_id: int,
+        actor_user_id: int | None = None,
+        data_owner_id: int | None = None,
+        user_id: int | None = None,
         question: str,
         knowledge_base_ids: tuple[int, ...] = (),
+        allowed_document_ids: tuple[int, ...] | None = None,
     ) -> AgenticRun:
         self.last_question = question
         self.last_knowledge_base_ids = tuple(knowledge_base_ids)
+        self.last_allowed_document_ids = (
+            tuple(allowed_document_ids)
+            if allowed_document_ids is not None
+            else None
+        )
+        self.last_actor_user_id = actor_user_id if actor_user_id is not None else user_id
+        self.last_data_owner_id = data_owner_id if data_owner_id is not None else user_id
         return _agentic_run(
             grounded=self.grounded,
             order_no=self.order_no,
@@ -206,6 +223,13 @@ def _fixture(tmp_path):
     return database, db, user, case
 
 
+def _only_document_id(db) -> int:
+    """fixture 中唯一的 KnowledgeDocument id（用于白名单断言）。"""
+    from sqlalchemy import select
+
+    return db.scalar(select(KnowledgeDocument.id))
+
+
 def test_grounded_suggestion_has_citations_and_structured_resolution(tmp_path):
     database, db, user, case = _fixture(tmp_path)
     coordinator = FakeCoordinator(order_no=None)
@@ -218,7 +242,13 @@ def test_grounded_suggestion_has_citations_and_structured_resolution(tmp_path):
         assert result["status"] == "completed"
         assert result["citations"][0]["releaseVersion"] == "v1"
         assert "refund_review" in result["riskFlags"]
-        assert coordinator.last_question == "草莓坏了，退款后优惠券会退吗？"
+        # 结构化工单上下文：以「顾客最新诉求」开头，并包含主题行
+        assert coordinator.last_question.startswith(
+            "顾客最新诉求：草莓坏了，退款后优惠券会退吗？"
+        )
+        assert "工单主题：草莓破损" in coordinator.last_question
+        # 已发布版本白名单：fixture release 仅含 1 个文档
+        assert coordinator.last_allowed_document_ids == (_only_document_id(db),)
         persisted = db.get(ReplySuggestion, result["id"])
         assert persisted is not None
         snapshot = json.loads(persisted.config_snapshot_json)
@@ -265,7 +295,10 @@ content_origin: public_summary
         assert "content_origin" not in result["content"].lower()
         assert "---" not in result["content"]
         assert "生鲜商品破损时应保留照片" not in result["content"]
-        assert "状态为已签收" not in result["content"]
+        # 事实驱动草稿只引用已核实状态摘要，不泄露证据原文整句
+        assert "订单 NB-20260809-001 状态为已签收" not in result["content"]
+        # 已核实订单/退款状态进入对客草稿（不再使用万能模板）
+        assert "订单状态为已签收" in result["content"]
         assert result["resolution"]["facts"][0]["orderNo"] == "NB-20260809-001"
         assert result["resolution"]["recommendedActions"]
         assert result["resolution"]["missingFacts"] == []
@@ -396,6 +429,9 @@ def test_edit_preserves_suggestion_and_prevents_second_decision(tmp_path):
             )
         )
         original = generated["content"]
+        # 该建议为高风险（refund_policy + refund_review flag）：直接发送需主管角色
+        user.role = "supervisor"
+        db.commit()
         result = service.decide(
             db,
             user.id,

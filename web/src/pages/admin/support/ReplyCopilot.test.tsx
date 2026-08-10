@@ -170,7 +170,7 @@ describe("ReplyCopilot", () => {
   it("keeps cited evidence collapsed until the reviewer asks to inspect it", async () => {
     render(<SupportWorkbenchPage />);
 
-    const evidenceToggle = await screen.findByRole("button", { name: "引用证据 · 1" });
+    const evidenceToggle = await screen.findByRole("button", { name: "处理依据" });
 
     expect(evidenceToggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("优惠券按活动规则返还")).not.toBeInTheDocument();
@@ -185,7 +185,7 @@ describe("ReplyCopilot", () => {
     render(<SupportWorkbenchPage />);
 
     const editor = await screen.findByRole("textbox", { name: "可编辑的对客回复" });
-    const summary = screen.getByRole("region", { name: "AI 审核摘要" });
+    const summary = screen.getByRole("region", { name: "AI 处理建议" });
 
     expect(within(summary).getByText("高")).toBeInTheDocument();
     expect(within(summary).getByText("优惠券返还的具体到账时间")).toBeInTheDocument();

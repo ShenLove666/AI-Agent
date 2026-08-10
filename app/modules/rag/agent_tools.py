@@ -89,6 +89,10 @@ class ToolContext:
     db: Session
     owner_id: int
     knowledge_base_ids: tuple[int, ...] = ()
+    # 已发布知识版本放行的文档白名单（客服 Copilot：只允许检索已发布知识）。
+    # None = 不限制（聊天侧），空元组 = 禁止检索任何知识文档，非空 = 仅允许
+    # 这些文档。keyword/vector 两个通道统一按该集合过滤。
+    allowed_document_ids: tuple[int, ...] | None = None
 
 
 ToolHandler = Callable[[ToolContext, BaseModel], Awaitable[list[ToolEvidence] | ToolResult]]
@@ -187,13 +191,19 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
 
     async def knowledge_search(context: ToolContext, value: QueryInput) -> list[ToolEvidence] | ToolResult:
         if retrieval is None:
-            rows = context.db.execute(
+            statement = (
                 select(KnowledgeChunk, KnowledgeDocument)
                 .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
                 .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
                 .where(KnowledgeBase.owner_id == context.owner_id, KnowledgeChunk.enabled.is_(True), KnowledgeDocument.enabled.is_(True), KnowledgeDocument.status == "indexed", KnowledgeChunk.content.ilike(f"%{value.query}%"))
                 .limit(value.limit)
-            ).all()
+            )
+            # 已发布版本白名单：None 不过滤（聊天侧），空元组/非空集合按文档过滤
+            if context.allowed_document_ids is not None:
+                statement = statement.where(
+                    KnowledgeDocument.id.in_(context.allowed_document_ids)
+                )
+            rows = context.db.execute(statement).all()
             evidence = [_document_evidence(chunk, document) for chunk, document in rows]
             return ToolResult(
                 tool="knowledge.search",
@@ -215,9 +225,25 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
             query=value.query,
             knowledge_base_ids=tuple(str(item) for item in context.knowledge_base_ids),
             candidate_limit=max(20, value.limit), context_limit=value.limit,
-            metadata={"user_id": context.owner_id, "owner_id": context.owner_id},
+            metadata={
+                "user_id": context.owner_id,
+                "owner_id": context.owner_id,
+                # 通道如需在检索层过滤可读该字段；结果仍在此处统一后置过滤，
+                # 保证白名单约束不依赖具体通道实现。
+                "allowed_document_ids": context.allowed_document_ids,
+            },
         ))
         results = list(response.results)
+        # 已发布版本白名单后置过滤（向量通道无法在 SQL 层过滤时兜底）：
+        # 不能确认 document_id 属于白名单的证据一律剔除，空元组 = 全禁。
+        if context.allowed_document_ids is not None:
+            allowed = set(context.allowed_document_ids)
+            results = [
+                item
+                for item in results
+                if item.metadata.get("document_id") is not None
+                and int(item.metadata["document_id"]) in allowed
+            ]
         # 向量通道记录不携带 sourceKind：按 document_id 回查补齐 factType，
         # 避免 knowledge 证据被默认归为 policy。
         missing_ids = [
@@ -283,7 +309,13 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
         )
 
     async def knowledge_document(context: ToolContext, value: RecordInput) -> list[ToolEvidence]:
-        document = context.db.scalar(select(KnowledgeDocument).join(KnowledgeBase).where(KnowledgeDocument.id == value.record_id, KnowledgeBase.owner_id == context.owner_id))
+        statement = select(KnowledgeDocument).join(KnowledgeBase).where(KnowledgeDocument.id == value.record_id, KnowledgeBase.owner_id == context.owner_id)
+        # 与 knowledge.search 一致的已发布版本白名单约束（None = 不限制）
+        if context.allowed_document_ids is not None:
+            statement = statement.where(
+                KnowledgeDocument.id.in_(context.allowed_document_ids)
+            )
+        document = context.db.scalar(statement)
         if document is None:
             return []
         chunks = list(context.db.scalars(select(KnowledgeChunk).where(KnowledgeChunk.document_id == document.id, KnowledgeChunk.enabled.is_(True)).order_by(KnowledgeChunk.position).limit(8)))

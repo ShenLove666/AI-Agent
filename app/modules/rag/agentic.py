@@ -142,6 +142,8 @@ class _State(TypedDict, total=False):
     data_owner_id: Required[int]
     user_id: Required[int]
     knowledge_base_ids: Required[tuple[int, ...]]
+    # 已发布知识版本放行的文档白名单（None=不限制，空元组=禁止知识检索）
+    allowed_document_ids: tuple[int, ...] | None
     db: Required[Session]
     results: Required[list[SearchResult]]
     plan_count: Required[int]
@@ -221,6 +223,7 @@ class AgenticRagCoordinator:
         question: str,
         original_question: str | None = None,
         knowledge_base_ids: tuple[int, ...] = (),
+        allowed_document_ids: tuple[int, ...] | None = None,
         progress_sink: ProgressSink | None = None,
     ) -> AgenticRun:
         # 兼容旧调用方（如 evaluation/support 运行时）：只传 user_id 时
@@ -241,6 +244,7 @@ class AgenticRagCoordinator:
                 "data_owner_id": data_owner_id,
                 "user_id": actor_user_id,
                 "knowledge_base_ids": knowledge_base_ids,
+                "allowed_document_ids": allowed_document_ids,
                 "db": db,
                 "results": [],
                 "plan_count": 0,
@@ -618,6 +622,7 @@ class AgenticRagCoordinator:
             db=state["db"],
             owner_id=state["data_owner_id"],
             knowledge_base_ids=state.get("knowledge_base_ids", ()),
+            allowed_document_ids=state.get("allowed_document_ids"),
         )
         for call in decision.calls if decision is not None else ():
             if used >= self.max_tool_calls:
