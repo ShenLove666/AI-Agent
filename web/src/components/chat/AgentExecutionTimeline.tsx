@@ -13,9 +13,11 @@ import {
 
 import { cn } from "@/lib/utils";
 import type {
+  AgentExecutionMode,
   AgentExecutionStatus,
   AgentExecutionStep,
-  AgentExecutionSummary
+  AgentExecutionSummary,
+  AgentTerminalState
 } from "@/types";
 import { buildAgentTimelineViewModel } from "@/utils/agentTimelineViewModel";
 import type { TimelineRow } from "@/utils/agentTimelineViewModel";
@@ -25,6 +27,10 @@ interface AgentExecutionTimelineProps {
   status?: AgentExecutionStatus;
   summary?: AgentExecutionSummary | null;
   className?: string;
+  /** 本轮执行模式（planning completed 事件携带）：direct 隐藏时间线，refuse/escalate 强制展示 */
+  mode?: AgentExecutionMode;
+  /** 最终终止状态（complete 事件 / 持久化 summary）：direct 隐藏，refused/escalated 强制展示 */
+  terminalState?: AgentTerminalState;
   /**
    * 是否属于当前最新一轮：最新轮执行时展开并保持展开（完成后不自动折叠），
    * 不再是最新轮（用户发送了下一问）时收起；历史会话加载默认折叠。
@@ -152,6 +158,8 @@ export function AgentExecutionTimeline({
   status = "completed",
   summary,
   className,
+  mode,
+  terminalState,
   isCurrentTurn = true
 }: AgentExecutionTimelineProps) {
   const isRunning = status === "running";
@@ -178,7 +186,15 @@ export function AgentExecutionTimeline({
   // 空 steps（旧消息/旧后端无进度事件）时不渲染任何内容
   if (stepsList.length === 0) return null;
 
-  const vm = buildAgentTimelineViewModel(stepsList, { status, summary, expandedRounds });
+  const vm = buildAgentTimelineViewModel(stepsList, {
+    status,
+    summary,
+    expandedRounds,
+    mode,
+    terminalState
+  });
+  // direct 对话隐藏执行过程；refuse/escalate 与 failed/cancelled 及含工具步骤的旧数据照常展示
+  if (!vm.shouldShowTimeline) return null;
 
   const handleExpandRound = (roundIndex: number) => {
     setExpandedRounds((prev) => {

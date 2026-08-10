@@ -68,6 +68,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   const [atBottom, setAtBottom] = React.useState(true);
   const detachedRef = React.useRef(false);
   detachedRef.current = detached;
+  // atBottom 的 ref 镜像：供 ResizeObserver 回调里的 DEV 日志读取最新值
+  const atBottomRef = React.useRef(true);
+  atBottomRef.current = atBottom;
 
   const isDetachedFromBottom = React.useCallback(() => {
     const scroller = scrollerRef.current;
@@ -123,6 +126,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }, []);
 
   // Virtuoso 是唯一滚动权威：仅当用户位于底部且未滚离时跟随内容增长。
+  // 最新 Turn 自身高度增长（turns 数不变）由 Latest Turn ResizeObserver
+  // → autoscrollToBottom 兜底（见上方 effect），两者共用 detached 语义。
   // detached 用 ref 同步，避免闭包过期；程序滚动/布局变化不影响 detached。
   const followOutput = React.useCallback((isAtBottom: boolean) => {
     return !detachedRef.current && isAtBottom ? "auto" : false;
@@ -135,7 +140,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }, []);
 
   // 新消息发送（turns 数量增长且新 turn 含 user）：重置滚离标记并立即贴底一次，
-  // 只执行一次、无任何 timer；此后的内容增长由 followOutput 接管。
+  // 只执行一次、无任何 timer；此后的内容增长由 followOutput 与
+  // Latest Turn ResizeObserver → autoscrollToBottom 接管。
   // 历史加载贴底仅依赖 initialTopMostItemIndex LAST（Virtuoso 在 messages 非空时才挂载）。
   const prevTurnsCountRef = React.useRef(stableTurns.length);
   React.useEffect(() => {
@@ -146,6 +152,46 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
       virtuosoRef.current?.scrollToIndex({ index: stableTurns.length - 1, align: "end" });
     }
   }, [stableTurns.length]);
+
+  // ---- Latest Turn ResizeObserver → autoscrollToBottom ----
+  // 第二、三轮起，最新 Turn 的 Timeline/正文/Thinking/Sources 持续增长只改变
+  // 「最后一个 ChatTurn 自身高度」，turns.length 不变：followOutput 的 isAtBottom
+  // 判定此时不可靠（jsdom 与真实滚动下都会失效），页面会停在回答上半部分。
+  // 方案：观察最新 Turn 外层容器，尺寸变化经 rAF 合并后调用 autoscrollToBottom。
+  // Virtuoso 仍是唯一滚动权威；detached 时跳过，用户回到底部后自动恢复跟随。
+  const [latestTurnEl, setLatestTurnEl] = React.useState<HTMLDivElement | null>(null);
+  const handleLatestTurnRef = React.useCallback((el: HTMLDivElement | null) => {
+    setLatestTurnEl(el);
+  }, []);
+  React.useEffect(() => {
+    if (!latestTurnEl) return;
+    // frame-level merge：同一帧内多次 resize 只触发一次 autoscrollToBottom
+    let pendingFrame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (detachedRef.current) return;
+      if (pendingFrame !== null) return;
+      if (import.meta.env.DEV) {
+        console.debug("[scroll]", {
+          latestTurnResize: true,
+          detached: detachedRef.current,
+          atBottom: atBottomRef.current,
+          autoscrollTriggered: true
+        });
+      }
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null;
+        virtuosoRef.current?.autoscrollToBottom();
+      });
+    });
+    observer.observe(latestTurnEl);
+    return () => {
+      observer.disconnect();
+      if (pendingFrame !== null) {
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = null;
+      }
+    };
+  }, [latestTurnEl, stableTurns.length]);
 
   const scrollToLatest = React.useCallback(() => {
     virtuosoRef.current?.scrollToIndex({
@@ -223,7 +269,12 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         className="h-full"
         components={{ List, Footer }}
         itemContent={(index, turn) => (
-          <ChatTurnItem turn={turn} isLatestTurn={index === stableTurns.length - 1} />
+          <ChatTurnItem
+            turn={turn}
+            isLatestTurn={index === stableTurns.length - 1}
+            // 仅最新一轮挂 ref（Latest Turn ResizeObserver 观察目标），其余不传避免误绑定
+            onRef={index === stableTurns.length - 1 ? handleLatestTurnRef : undefined}
+          />
         )}
       />
       {detached && !atBottom ? (

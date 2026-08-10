@@ -189,13 +189,20 @@ def build_execution_summary(
     evidenceCount/durationMs，不含 arguments 原文、rationale 与内部英文工具名；
     final_status 提供时（"failed"/"cancelled"）把合并后仍为 running 的步骤
     强制改为该状态。无执行事件时返回 None。
+    summary 额外捕获 phase=="complete" 且带 "terminal" 字段的事件写入
+    terminalState（direct/grounded/refused/escalated；缺省不写）。
     """
     merged: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
     order: list[tuple[Any, Any, Any]] = []
     first_ts: float | None = None
     last_ts: float | None = None
+    # 终态来自 phase=="complete" 且带 "terminal" 的事件（complete 阶段本身
+    # 不进 steps，只用于向 summary 写入 terminalState；无该字段时不写）。
+    terminal_state: str | None = None
     for event in events:
         phase = event.get("phase")
+        if phase == "complete" and event.get("terminal"):
+            terminal_state = str(event["terminal"])
         if phase not in _EXECUTION_PHASES:
             continue
         tool = event.get("tool") or {}
@@ -266,13 +273,16 @@ def build_execution_summary(
     duration_ms = (
         last_ts - first_ts if first_ts is not None and last_ts is not None else 0
     )
+    summary: dict[str, Any] = {
+        "planCount": plan_count,
+        "toolCallCount": tool_call_count,
+        "evidenceCount": evidence_count,
+        "replanCount": replan_count,
+        "durationMs": duration_ms,
+    }
+    if terminal_state is not None:
+        summary["terminalState"] = terminal_state
     return {
-        "summary": {
-            "planCount": plan_count,
-            "toolCallCount": tool_call_count,
-            "evidenceCount": evidence_count,
-            "replanCount": replan_count,
-            "durationMs": duration_ms,
-        },
+        "summary": summary,
         "steps": steps,
     }

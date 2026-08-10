@@ -7,13 +7,18 @@ import type { ChatTurn } from "@/utils/chatTurns";
 interface ChatTurnItemProps {
   turn: ChatTurn;
   isLatestTurn: boolean;
+  /**
+   * 暴露最外层容器 DOM 节点（Latest Turn ResizeObserver 观察目标）。
+   * 由 MessageList 仅对最新一轮传入；挂载时收到节点、卸载时收到 null。
+   */
+  onRef?: (el: HTMLDivElement | null) => void;
 }
 
 /**
  * 一个 Virtuoso Item = 一个完整 Chat Turn（user + assistant）。
  * 内层 div 的 data-message-id 供「推荐面板展开滚入视口」等按消息定位的逻辑使用。
  */
-export function ChatTurnItem({ turn, isLatestTurn }: ChatTurnItemProps) {
+export function ChatTurnItem({ turn, isLatestTurn, onRef }: ChatTurnItemProps) {
   // Intercept triple-click at mousedown phase to prevent browser from
   // extending paragraph selection across sibling message boundaries.
   // preventDefault() stops the default selection, then we manually select
@@ -34,7 +39,7 @@ export function ChatTurnItem({ turn, isLatestTurn }: ChatTurnItemProps) {
   }, []);
 
   return (
-    <div className={cn(isLatestTurn && "animate-fade-up")} onMouseDown={handleTripleClickDown}>
+    <div ref={onRef} className={cn(isLatestTurn && "animate-fade-up")} onMouseDown={handleTripleClickDown}>
       {turn.user ? (
         <div data-message-id={turn.user.id}>
           <MessageItem message={turn.user} />

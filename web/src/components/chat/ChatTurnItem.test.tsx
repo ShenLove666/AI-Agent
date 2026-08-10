@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatTurnItem } from "@/components/chat/ChatTurnItem";
 import type { Message } from "@/types";
@@ -55,5 +55,25 @@ describe("ChatTurnItem Turn 渲染", () => {
     };
     render(<ChatTurnItem turn={turn} isLatestTurn={false} />);
     expect(screen.getByText("孤立回答")).toBeInTheDocument();
+  });
+
+  it("onRef 暴露最外层容器节点，卸载时收到 null", () => {
+    const onRef = vi.fn();
+    const turn: ChatTurn = {
+      key: "local-0",
+      user: makeMessage("u1", "user", "问题"),
+      assistant: makeMessage("a1", "assistant", "回答")
+    };
+    const { unmount } = render(<ChatTurnItem turn={turn} isLatestTurn={false} onRef={onRef} />);
+
+    expect(onRef).toHaveBeenCalledTimes(1);
+    const el = onRef.mock.calls[0]![0] as HTMLDivElement | null;
+    expect(el).toBeInstanceOf(HTMLDivElement);
+    // 最外层容器：user / assistant 的 data-message-id 节点都在其内
+    expect(el!.querySelector('[data-message-id="u1"]')).not.toBeNull();
+    expect(el!.querySelector('[data-message-id="a1"]')).not.toBeNull();
+
+    unmount();
+    expect(onRef).toHaveBeenLastCalledWith(null);
   });
 });

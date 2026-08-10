@@ -137,6 +137,52 @@ describe("restoreAgentExecution", () => {
     expect(restoreAgentExecution({ steps: [] })).toEqual({});
     expect(restoreAgentExecution({ summary: {} })).toEqual({});
   });
+
+  it("restores terminalState from summary into agentTerminalState (new data only)", () => {
+    const json = {
+      summary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0, terminalState: "refused" },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+        { seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect(result.agentExecutionStatus).toBe("completed");
+    expect(result.agentExecutionSummary?.terminalState).toBe("refused");
+    expect(result.agentTerminalState).toBe("refused");
+  });
+
+  it("omits agentTerminalState when summary has no terminalState (old data)", () => {
+    const json = {
+      summary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0 },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect("agentTerminalState" in result).toBe(false);
+    expect(result.agentTerminalState).toBeUndefined();
+    // agentExecutionMode 无持久化来源：一律不恢复
+    expect("agentExecutionMode" in result).toBe(false);
+  });
+
+  it("ignores invalid terminalState value from summary", () => {
+    const json = {
+      summary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0, terminalState: "mystery" },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect(result.agentTerminalState).toBeUndefined();
+    expect(result.agentExecutionSummary?.terminalState).toBeUndefined();
+  });
 });
 
 describe("cancelAgentSteps", () => {

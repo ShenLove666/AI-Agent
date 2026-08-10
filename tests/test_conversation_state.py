@@ -118,6 +118,7 @@ def test_prepare_failure_finishes_trace():
                     await app.state.container.chat.complete(
                         db,
                         user.id,
+                        user.id,
                         ChatRequest(
                             question="无效轮次",
                             request_id="prepare-failure-trace",

@@ -1,8 +1,10 @@
 import type {
+  AgentExecutionMode,
   AgentExecutionStatus,
   AgentExecutionStep,
   AgentExecutionSummary,
-  AgentProgressStatus
+  AgentProgressStatus,
+  AgentTerminalState
 } from "@/types";
 
 /**
@@ -45,6 +47,14 @@ export interface AgentTimelineViewModel {
   evidenceCount: number;
   replanCount: number;
   hasRunning: boolean;
+  /**
+   * 是否渲染 Timeline：
+   * - direct（mode 或 terminalState）→ false：普通直接对话隐藏执行过程
+   * - refuse/escalate（mode 或 terminalState）→ true：虽无工具步骤也需展示（用户要理解状态）
+   * - 否则按是否有工具/审查/重规划步骤或 failed/cancelled 状态计算；
+   *   旧数据（无 mode/terminalState 且仅 planning+generation）→ false（绝大多数是 direct 老数据）
+   */
+  shouldShowTimeline: boolean;
 }
 
 const CN_NUMERALS: Record<number, string> = { 1: "一", 2: "二", 3: "三" };
@@ -190,6 +200,10 @@ export function buildAgentTimelineViewModel(
     summary?: AgentExecutionSummary | null;
     /** 用户点「查看详情」展开的旧轮（roundIndex 集合） */
     expandedRounds?: ReadonlySet<number>;
+    /** 本轮执行模式（planning completed 事件携带；旧数据缺失） */
+    mode?: AgentExecutionMode;
+    /** 最终终止状态（complete 事件 / 持久化 summary；旧数据缺失） */
+    terminalState?: AgentTerminalState;
   }
 ): AgentTimelineViewModel {
   const all = steps ?? [];
@@ -247,7 +261,16 @@ export function buildAgentTimelineViewModel(
   const replanCount = options.summary?.replanCount ?? computed.replanCount;
 
   const summaryText = (() => {
+    // running 保持最高优先级（拒绝/升级的确定性文案在流收尾的 complete 事件后才落地）
     if (options.status === "running") return "正在分析并查询相关数据…";
+    // refuse/escalate 的用户文案优先于 failed/cancelled/completed：
+    // 持久化路径里 refused 由 REJECTED 推导为 failed，仍应显示拒绝文案而非「处理失败」
+    if (options.mode === "refuse" || options.terminalState === "refused") {
+      return "该请求无法协助执行";
+    }
+    if (options.mode === "escalate" || options.terminalState === "escalated") {
+      return "当前资料不足，暂无法可靠确认";
+    }
     if (options.status === "failed") return "处理失败";
     if (options.status === "cancelled") return "已停止处理";
     // completed：无 summary 时按 rows 现算（tool 行 completed/failed 计数、evidence 求和）
@@ -270,6 +293,25 @@ export function buildAgentTimelineViewModel(
     return text;
   })();
 
+  // direct 隐藏；refuse/escalate 虽无工具步骤也显示（用户需理解状态）；
+  // 旧数据无 mode/terminalState 且只有 planning+generation 时按 false 处理（绝大多数是 direct 老数据）
+  const isDirect =
+    options.mode === "direct" || options.terminalState === "direct";
+  const isBlocked =
+    options.mode === "refuse" ||
+    options.mode === "escalate" ||
+    options.terminalState === "refused" ||
+    options.terminalState === "escalated";
+  const hasExecution = rows.some(
+    (row) => row.phase === "tool" || row.phase === "review" || row.phase === "replan"
+  );
+  const shouldShowTimeline =
+    !isDirect &&
+    (hasExecution ||
+      isBlocked ||
+      options.status === "failed" ||
+      options.status === "cancelled");
+
   return {
     rows,
     currentActivityTitle,
@@ -278,6 +320,7 @@ export function buildAgentTimelineViewModel(
     toolCallCount,
     evidenceCount,
     replanCount,
-    hasRunning: all.some((step) => step.status === "running" || step.status === "pending")
+    hasRunning: all.some((step) => step.status === "running" || step.status === "pending"),
+    shouldShowTimeline
   };
 }

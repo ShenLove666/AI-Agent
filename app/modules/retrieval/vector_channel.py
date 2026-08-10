@@ -22,7 +22,11 @@ class VectorSearchChannel(BaseSearchChannel):
         self.store = store
 
     async def search(self, request: RetrievalRequest) -> list[SearchResult]:
-        owner_id = int(request.metadata["user_id"])
+        # owner 过滤统一以 metadata["owner_id"] 优先（业务数据归属），
+        # user_id 保留为兼容回退（旧调用方仍只传 user_id）。
+        owner_id = int(
+            request.metadata.get("owner_id") or request.metadata.get("user_id")
+        )
         vector = await self.embeddings.embed_query(request.query)
         matches = await self.store.search(
             vector,

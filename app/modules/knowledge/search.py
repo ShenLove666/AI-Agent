@@ -7,7 +7,12 @@ import jieba
 from sqlalchemy import or_, select
 
 from app.framework.database import Database
-from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
+from app.modules.knowledge.models import (
+    FACT_TYPE_BY_SOURCE_KIND,
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from app.modules.retrieval.channels import BaseSearchChannel
 from app.modules.retrieval.models import RetrievalRequest, SearchResult
 
@@ -52,8 +57,11 @@ class SqlKeywordSearchChannel(BaseSearchChannel):
                 )
                 .limit(request.candidate_limit * 3)
             )
-            if user_id := request.metadata.get("user_id"):
-                statement = statement.where(KnowledgeBase.owner_id == int(user_id))
+            # owner 过滤统一以 metadata["owner_id"] 优先（业务数据归属），
+            # user_id 保留为兼容回退（旧调用方仍只传 user_id）。
+            owner_id = request.metadata.get("owner_id") or request.metadata.get("user_id")
+            if owner_id:
+                statement = statement.where(KnowledgeBase.owner_id == int(owner_id))
             if request.knowledge_base_ids:
                 statement = statement.where(
                     KnowledgeChunk.knowledge_base_id.in_(
@@ -87,6 +95,10 @@ class SqlKeywordSearchChannel(BaseSearchChannel):
                         "review_status": document.review_status,
                         "next_review_at": document.next_review_at.isoformat() if document.next_review_at else None,
                         "content_origin": document.content_origin,
+                        "sourceKind": document.source_kind,
+                        "factType": FACT_TYPE_BY_SOURCE_KIND.get(
+                            document.source_kind, "general"
+                        ),
                     },
                 )
             )

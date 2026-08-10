@@ -10,6 +10,29 @@ from app.framework.database import Base
 
 CONTENT_ORIGINS = frozenset({"user_upload", "public_summary", "synthetic"})
 
+# 知识文档的来源类型：摄取时按文件名/知识库名推断，供证据 factType 映射使用。
+# factType 映射：policy→policy、sop→sop、product_knowledge→product_knowledge、
+# recommendation_guide→recommendation、operations_guide→operations、general→general。
+SOURCE_KINDS = frozenset(
+    {
+        "general",
+        "policy",
+        "sop",
+        "product_knowledge",
+        "recommendation_guide",
+        "operations_guide",
+    }
+)
+
+FACT_TYPE_BY_SOURCE_KIND: dict[str, str] = {
+    "policy": "policy",
+    "sop": "sop",
+    "product_knowledge": "product_knowledge",
+    "recommendation_guide": "recommendation",
+    "operations_guide": "operations",
+    "general": "general",
+}
+
 
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
@@ -62,6 +85,11 @@ class KnowledgeDocument(Base):
     applicability_json: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
     exclusions_json: Mapped[str] = mapped_column(Text, default="[]", server_default=text("'[]'"))
     license_or_usage_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 注意：新列必须追加在表定义末尾（与 Alembic add_column 的追加顺序一致，
+    # 迁移签名测试按列顺序对比 metadata 与迁移结果）。
+    source_kind: Mapped[str] = mapped_column(
+        String(40), default="general", server_default="general", nullable=False
+    )
 
     @validates("content_origin")
     def validate_content_origin(self, _key: str, value: str) -> str:

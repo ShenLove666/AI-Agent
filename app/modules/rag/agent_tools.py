@@ -9,9 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from app.framework.errors import AppError
+from app.framework.errors import AppError, RetrievalError
 from app.modules.commerce.models import AssociationRule, Basket, BasketItem, CommerceImport, Product
-from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
+from app.modules.knowledge.models import (
+    FACT_TYPE_BY_SOURCE_KIND,
+    KnowledgeBase,
+    KnowledgeChunk,
+    KnowledgeDocument,
+)
 from app.modules.orders.service import OrderService
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import RetrievalRequest, SearchResult
@@ -74,6 +79,9 @@ class ToolResult(BaseModel):
     duration_ms: int = 0
     error_code: str | None = None
     error_message: str | None = None
+    # 仅 Trace 消费的诊断信息（ownerId/knowledgeBaseIds/通道计数与错误等），
+    # 不进用户文案；execute() 抛错路径不带。
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +91,7 @@ class ToolContext:
     knowledge_base_ids: tuple[int, ...] = ()
 
 
-ToolHandler = Callable[[ToolContext, BaseModel], Awaitable[list[ToolEvidence]]]
+ToolHandler = Callable[[ToolContext, BaseModel], Awaitable[list[ToolEvidence] | ToolResult]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,9 +131,36 @@ class ToolRegistry:
         safe_arguments = parsed.model_dump(exclude_none=True)
         try:
             evidence = await tool.handler(context, parsed)
-            return ToolResult(tool=canonical, status="success", arguments=safe_arguments, evidence=evidence, duration_ms=self._elapsed(started))
+            if isinstance(evidence, ToolResult):
+                # 处理器自带的完整结果（如 knowledge.search 的通道诊断）
+                return evidence
+            return ToolResult(
+                tool=canonical,
+                status="success",
+                arguments=safe_arguments,
+                evidence=evidence,
+                duration_ms=self._elapsed(started),
+            )
+        except RetrievalError as exc:
+            # 全部检索通道失败：显式 status=failed + RETRIEVAL_FAILED，
+            # 与「检索成功但 0 结果」区分，避免被展示为 0 evidence。
+            return ToolResult(
+                tool=canonical,
+                status="failed",
+                arguments=safe_arguments,
+                duration_ms=self._elapsed(started),
+                error_code="RETRIEVAL_FAILED",
+                error_message=str(exc),
+            )
         except Exception:
-            return ToolResult(tool=canonical, status="error", arguments=safe_arguments, duration_ms=self._elapsed(started), error_code="TOOL_EXECUTION_FAILED", error_message="工具执行失败")
+            return ToolResult(
+                tool=canonical,
+                status="error",
+                arguments=safe_arguments,
+                duration_ms=self._elapsed(started),
+                error_code="TOOL_EXECUTION_FAILED",
+                error_message="工具执行失败",
+            )
 
     @staticmethod
     def _elapsed(started: float) -> int:
@@ -150,23 +185,102 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
                 return None
             raise
 
-    async def knowledge_search(context: ToolContext, value: QueryInput) -> list[ToolEvidence]:
+    async def knowledge_search(context: ToolContext, value: QueryInput) -> list[ToolEvidence] | ToolResult:
         if retrieval is None:
             rows = context.db.execute(
                 select(KnowledgeChunk, KnowledgeDocument)
                 .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
                 .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
-                .where(KnowledgeBase.owner_id == context.owner_id, KnowledgeChunk.enabled.is_(True), KnowledgeDocument.enabled.is_(True), KnowledgeChunk.content.ilike(f"%{value.query}%"))
+                .where(KnowledgeBase.owner_id == context.owner_id, KnowledgeChunk.enabled.is_(True), KnowledgeDocument.enabled.is_(True), KnowledgeDocument.status == "indexed", KnowledgeChunk.content.ilike(f"%{value.query}%"))
                 .limit(value.limit)
             ).all()
-            return [_document_evidence(chunk, document) for chunk, document in rows]
+            evidence = [_document_evidence(chunk, document) for chunk, document in rows]
+            return ToolResult(
+                tool="knowledge.search",
+                status="success",
+                evidence=evidence,
+                diagnostics={
+                    "ownerId": context.owner_id,
+                    "knowledgeBaseIds": list(context.knowledge_base_ids),
+                    "keywordCount": len(rows),
+                    "keywordError": None,
+                    "vectorEnabled": False,
+                    "vectorCandidateCount": None,
+                    "vectorError": None,
+                    "finalCount": len(evidence),
+                    "channelErrors": {},
+                },
+            )
         response = await retrieval.retrieve(RetrievalRequest(
             query=value.query,
             knowledge_base_ids=tuple(str(item) for item in context.knowledge_base_ids),
             candidate_limit=max(20, value.limit), context_limit=value.limit,
-            metadata={"user_id": context.owner_id},
+            metadata={"user_id": context.owner_id, "owner_id": context.owner_id},
         ))
-        return [ToolEvidence(id=item.id, content=item.content, source=item.source or "knowledge", score=item.score, provenance=str(item.metadata.get("provenance", "source")), metadata=item.metadata) for item in response.results]
+        results = list(response.results)
+        # 向量通道记录不携带 sourceKind：按 document_id 回查补齐 factType，
+        # 避免 knowledge 证据被默认归为 policy。
+        missing_ids = [
+            int(item.metadata["document_id"])
+            for item in results
+            if "sourceKind" not in item.metadata and item.metadata.get("document_id")
+        ]
+        kinds: dict[int, str] = {}
+        if missing_ids:
+            kinds = dict(
+                context.db.execute(
+                    select(KnowledgeDocument.id, KnowledgeDocument.source_kind).where(
+                        KnowledgeDocument.id.in_(missing_ids)
+                    )
+                ).all()
+            )
+        for item in results:
+            doc_id = (
+                int(item.metadata["document_id"])
+                if item.metadata.get("document_id") is not None
+                else None
+            )
+            if "sourceKind" not in item.metadata and doc_id in kinds:
+                kind = kinds[doc_id]
+                item.metadata["sourceKind"] = kind
+                item.metadata["factType"] = FACT_TYPE_BY_SOURCE_KIND.get(kind, "general")
+        diagnostics: dict[str, Any] = {
+            "ownerId": context.owner_id,
+            "knowledgeBaseIds": list(context.knowledge_base_ids),
+            "keywordCount": None,
+            "keywordError": None,
+            "vectorEnabled": None,
+            "vectorCandidateCount": None,
+            "vectorError": None,
+            "finalCount": len(results),
+            "channelErrors": {},
+        }
+        for outcome in response.outcomes:
+            if outcome.channel == "keyword":
+                diagnostics["keywordCount"] = len(outcome.results)
+                diagnostics["keywordError"] = outcome.error
+            elif outcome.channel == "vector":
+                diagnostics["vectorEnabled"] = True
+                diagnostics["vectorCandidateCount"] = len(outcome.results)
+                diagnostics["vectorError"] = outcome.error
+            if outcome.error:
+                diagnostics["channelErrors"][outcome.channel] = outcome.error
+        return ToolResult(
+            tool="knowledge.search",
+            status="success",
+            evidence=[
+                ToolEvidence(
+                    id=item.id,
+                    content=item.content,
+                    source=item.source or "knowledge",
+                    score=item.score,
+                    provenance=str(item.metadata.get("provenance", "source")),
+                    metadata=item.metadata,
+                )
+                for item in results
+            ],
+            diagnostics=diagnostics,
+        )
 
     async def knowledge_document(context: ToolContext, value: RecordInput) -> list[ToolEvidence]:
         document = context.db.scalar(select(KnowledgeDocument).join(KnowledgeBase).where(KnowledgeDocument.id == value.record_id, KnowledgeBase.owner_id == context.owner_id))
@@ -289,7 +403,7 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
         )]
 
     tools = [
-        AgentTool("knowledge.search", "检索当前商家的政策、SOP 与规则证据", QueryInput, knowledge_search),
+        AgentTool("knowledge.search", "检索当前商家知识库中的政策、SOP、商品知识、推荐指南与操作说明，作为推荐依据与规则证据", QueryInput, knowledge_search),
         AgentTool("knowledge.get_document", "读取当前商家指定知识文档", RecordInput, knowledge_document),
         AgentTool("commerce.search_association_rules", "查询商品关联规则", AssociationInput, association_rules),
         AgentTool("commerce.get_product_metrics", "查询商品交易覆盖指标", ProductMetricsInput, product_metrics),
@@ -317,6 +431,8 @@ def _document_metadata(document: KnowledgeDocument) -> dict[str, Any]:
         "applicability": _loads(document.applicability_json, []),
         "exclusions": _loads(document.exclusions_json, []),
         "review_status": document.review_status,
+        "sourceKind": document.source_kind,
+        "factType": FACT_TYPE_BY_SOURCE_KIND.get(document.source_kind, "general"),
     }
 
 

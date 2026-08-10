@@ -341,4 +341,126 @@ describe("buildAgentTimelineViewModel", () => {
     // 当前轮（第 5 轮）完整展示
     expect(vm.rows[4]).toMatchObject({ kind: "step", phase: "tool", roundIndex: 4 });
   });
+
+  describe("shouldShowTimeline（mode / terminalState 契约）", () => {
+    /** 仅 planning+generation 的无工具步骤（direct/refuse/escalate 的典型形状） */
+    const plainSteps = [
+      makeStep("plan-1-planning-1", 1, "planning", "completed", 1, "制定计划"),
+      makeStep("plan-1-generation-1", 2, "generation", "completed", 1, "生成回答")
+    ];
+    const toolSteps = [
+      makeStep("plan-1-planning-1", 1, "planning", "completed", 1, "制定计划"),
+      makeStep("plan-1-tool-1", 2, "tool", "completed", 1, "业务数据查询", {
+        tool: { ...ASSOCIATION_TOOL }
+      }),
+      makeStep("plan-1-generation-1", 3, "generation", "completed", 1, "生成回答")
+    ];
+
+    it("direct（mode=direct，仅 planning+generation）：隐藏 Timeline", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        mode: "direct"
+      });
+      expect(vm.shouldShowTimeline).toBe(false);
+    });
+
+    it("direct（terminalState=direct，含工具步骤仍隐藏）", () => {
+      const vm = buildAgentTimelineViewModel(toolSteps, {
+        status: "completed",
+        terminalState: "direct"
+      });
+      expect(vm.shouldShowTimeline).toBe(false);
+    });
+
+    it("research（mode=research 含 tool 步骤）：显示 Timeline", () => {
+      const vm = buildAgentTimelineViewModel(toolSteps, {
+        status: "completed",
+        mode: "research"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+    });
+
+    it("refuse（mode=refuse 无工具步骤）：强制显示且 summaryText 为拒绝文案", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        mode: "refuse"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+      expect(vm.summaryText).toBe("该请求无法协助执行");
+    });
+
+    it("escalate（mode=escalate 无工具步骤）：强制显示且 summaryText 为资料不足文案", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        mode: "escalate"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+      expect(vm.summaryText).toBe("当前资料不足，暂无法可靠确认");
+    });
+
+    it("terminalState=refused / escalated：同样强制显示并给出对应文案", () => {
+      const refused = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        terminalState: "refused"
+      });
+      expect(refused.shouldShowTimeline).toBe(true);
+      expect(refused.summaryText).toBe("该请求无法协助执行");
+
+      const escalated = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        terminalState: "escalated"
+      });
+      expect(escalated.shouldShowTimeline).toBe(true);
+      expect(escalated.summaryText).toBe("当前资料不足，暂无法可靠确认");
+    });
+
+    it("旧数据（无 mode/terminalState，仅 planning+generation）：隐藏（绝大多数是 direct 老数据）", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, { status: "completed" });
+      expect(vm.shouldShowTimeline).toBe(false);
+    });
+
+    it("无 mode 但含 tool 步骤：显示 Timeline", () => {
+      const vm = buildAgentTimelineViewModel(toolSteps, { status: "completed" });
+      expect(vm.shouldShowTimeline).toBe(true);
+    });
+
+    it("failed / cancelled：无工具步骤也显示 Timeline", () => {
+      const failed = buildAgentTimelineViewModel(plainSteps, { status: "failed" });
+      expect(failed.shouldShowTimeline).toBe(true);
+      expect(failed.summaryText).toBe("处理失败");
+
+      const cancelled = buildAgentTimelineViewModel(plainSteps, { status: "cancelled" });
+      expect(cancelled.shouldShowTimeline).toBe(true);
+      expect(cancelled.summaryText).toBe("已停止处理");
+    });
+
+    it("refuse 文案优先于 failed（持久化路径 REJECTED → failed 仍显示拒绝文案）", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "failed",
+        mode: "refuse"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+      expect(vm.summaryText).toBe("该请求无法协助执行");
+    });
+
+    it("running 状态优先级保持最前：refuse 模式下 running 仍显示进行中文案", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "running",
+        mode: "refuse"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+      expect(vm.summaryText).toBe("正在分析并查询相关数据…");
+    });
+
+    it("direct 隐藏不依赖步骤形状（含 tool 也隐藏）；无 mode 的空 rows 按 status 计算", () => {
+      expect(
+        buildAgentTimelineViewModel(toolSteps, { status: "completed", mode: "direct" })
+          .shouldShowTimeline
+      ).toBe(false);
+      // 空 rows + completed + 无 mode/terminalState：hasExecution 为 false → 隐藏
+      expect(
+        buildAgentTimelineViewModel([], { status: "completed" }).shouldShowTimeline
+      ).toBe(false);
+    });
+  });
 });

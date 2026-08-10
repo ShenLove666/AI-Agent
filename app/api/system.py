@@ -13,6 +13,7 @@ from app.framework.errors import AppError
 from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.rag.schemas import ChatRequest
+from app.modules.users.access import resolve_owner
 from app.api.source_refs import source_ref
 from app.modules.rag.task_registry import registry as task_registry
 
@@ -89,6 +90,10 @@ def create_system_router(settings: Settings) -> APIRouter:
             regenerate=payload.regenerate,
         )
         task_id = uuid.uuid4().hex
+        # 会话归属用 actor_user_id（user.id）；商家数据归属用 data_owner_id
+        # （组织成员 → 组织 owner_user_id，否则为本人），避免把操作者身份
+        # 当作业务数据 owner 传给 Agent/Knowledge/Commerce/Retrieval。
+        data_owner_id = resolve_owner(db, user)
 
         async def events():
             citations: list[dict] = []
@@ -97,7 +102,13 @@ def create_system_router(settings: Settings) -> APIRouter:
             # conversation 事件到达后再补发一次全量 meta（含 conversationId）。
             yield _sse("meta", {"taskId": task_id})
             try:
-                async for event in service.stream(db, user.id, chat_request, cancel_event):
+                async for event in service.stream(
+                    db,
+                    actor_user_id=user.id,
+                    data_owner_id=data_owner_id,
+                    request=chat_request,
+                    cancel_event=cancel_event,
+                ):
                     event_type = event["type"]
                     data = event["data"]
                     if event_type == "conversation":

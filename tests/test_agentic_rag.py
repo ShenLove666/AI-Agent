@@ -28,9 +28,16 @@ def test_react_agent_autonomously_selects_tools_and_direct_mode(tmp_path: Path):
         database = Database(f"sqlite:///{tmp_path / 'agentic.db'}")
         upgrade_database(database)
         with database.session_factory() as db:
-            direct = await coordinator.run(db, user_id=1, question="你好")
+            direct = await coordinator.run(
+                db, actor_user_id=1, data_owner_id=1, question="你好"
+            )
             assert direct.decision.mode == "direct" and not direct.decision.tools
-            research = await coordinator.run(db, user_id=1, question="分析购物篮，并结合退货政策说明风险")
+            research = await coordinator.run(
+                db,
+                actor_user_id=1,
+                data_owner_id=1,
+                question="分析购物篮，并结合退货政策说明风险",
+            )
             assert set(research.decision.tools) == {"commerce_data", "knowledge_search"}
             assert research.steps[0]["agent"] == "planner"
             assert research.steps[-1]["agent"] == "evidence_reviewer"
@@ -46,7 +53,12 @@ def test_insufficient_evidence_returns_to_planner_with_changed_strategy(tmp_path
         database = Database(f"sqlite:///{tmp_path / 'replan.db'}")
         upgrade_database(database)
         with database.session_factory() as db:
-            result = await coordinator.run(db, user_id=1, question="查询不存在的商品和规则")
+            result = await coordinator.run(
+                db,
+                actor_user_id=1,
+                data_owner_id=1,
+                question="查询不存在的商品和规则",
+            )
             planner_steps = [step for step in result.steps if step["agent"] == "planner"]
             assert router.calls == 2 and len(planner_steps) == 2
             assert planner_steps[0]["calls"] != planner_steps[1]["calls"]
@@ -67,7 +79,12 @@ def test_malformed_model_plan_uses_typed_deterministic_fallback(tmp_path: Path):
         database = Database(f"sqlite:///{tmp_path / 'fallback.db'}")
         upgrade_database(database)
         with database.session_factory() as db:
-            result = await coordinator.run(db, user_id=1, question="退货政策是什么")
+            result = await coordinator.run(
+                db,
+                actor_user_id=1,
+                data_owner_id=1,
+                question="退货政策是什么",
+            )
             assert result.runtime_mode == "deterministic_fallback"
             assert result.steps[0]["calls"][0]["name"] == "knowledge.search"
             assert result.terminal_state == "escalated"
@@ -108,7 +125,8 @@ def test_offline_agent_uses_order_and_delivery_tools_when_order_number_is_presen
                 None, None, max_steps=1
             ).run(
                 db,
-                user_id=owner.id,
+                actor_user_id=owner.id,
+                data_owner_id=owner.id,
                 question="订单 NB-AGENT-001 什么时候送达？",
             )
 

@@ -67,7 +67,8 @@ class _SlowCoordinator:
         self,
         db,
         *,
-        user_id,
+        actor_user_id,
+        data_owner_id,
         question,
         knowledge_base_ids=(),
         progress_sink=None,
@@ -186,7 +187,8 @@ def test_agentic_run_emits_progress_event_sequence(tmp_path: Path):
 
             result = await coordinator.run(
                 db,
-                user_id=owner.id,
+                actor_user_id=owner.id,
+                data_owner_id=owner.id,
                 question="牛肉和什么商品适合搭配推荐？",
                 progress_sink=sink,
             )
@@ -527,6 +529,8 @@ def test_zero_result_replan_does_not_just_raise_min_lift(tmp_path: Path):
         decision = await model_coordinator._decide(
             {
                 "question": "牛肉和什么商品适合搭配推荐？",
+                "actor_user_id": 1,
+                "data_owner_id": 1,
                 "user_id": 1,
                 "knowledge_base_ids": (),
                 "db": None,
@@ -569,7 +573,8 @@ def test_zero_result_replan_does_not_just_raise_min_lift(tmp_path: Path):
 
             result = await AgenticRagCoordinator(None, None, max_steps=2).run(
                 db,
-                user_id=owner.id,
+                actor_user_id=owner.id,
+                data_owner_id=owner.id,
                 question="牛肉和什么商品适合搭配推荐？",
                 progress_sink=sink,
             )
@@ -613,7 +618,8 @@ def test_progress_events_do_not_leak_internal_text(tmp_path: Path):
 
             await coordinator.run(
                 db,
-                user_id=owner.id,
+                actor_user_id=owner.id,
+                data_owner_id=owner.id,
                 question="牛肉和什么商品适合搭配推荐？",
                 progress_sink=sink,
             )
@@ -881,7 +887,9 @@ def test_stream_cancel_during_prepare_finishes_request_run():
                 )
                 with app.state.container.database.session_factory() as db:
                     user = UserRepository().get_by_username(db, "cancel-user")
-                    stream_gen = service.stream(db, user.id, request, cancel_event=None)
+                    stream_gen = service.stream(
+                        db, user.id, user.id, request, cancel_event=None
+                    )
                     # 第一条事件：planning running（假协调器先发事件再 sleep）
                     first = await anext(stream_gen)
                     assert first["type"] == "agent_progress"
@@ -912,7 +920,7 @@ def test_stream_cancel_during_prepare_finishes_request_run():
                         db, user_id=user.id, query=request.question
                     )
                     prepared = await service.prepare(
-                        db, user_id=user.id, request=request, trace=trace
+                        db, user.id, user.id, request, trace
                     )
                     assert prepared.request_run_id is not None
                     service._finish_request(

@@ -213,7 +213,7 @@ def test_cancelled_request_is_not_cached_and_abnormal_history_is_filtered():
                     first_events = [
                         event
                         async for event in app.state.container.chat.stream(
-                            db, user.id, request, cancelled
+                            db, user.id, user.id, request, cancelled
                         )
                     ]
                     assert first_events[-1]["type"] == "cancelled"
@@ -232,7 +232,7 @@ def test_cancelled_request_is_not_cached_and_abnormal_history_is_filtered():
                     second_events = [
                         event
                         async for event in app.state.container.chat.stream(
-                            db, user.id, request, asyncio.Event()
+                            db, user.id, user.id, request, asyncio.Event()
                         )
                     ]
                     assert second_events[-1]["type"] == "done"
@@ -249,6 +249,7 @@ def test_cancelled_request_is_not_cached_and_abnormal_history_is_filtered():
                     )
                     await app.state.container.chat.complete(
                         db,
+                        user.id,
                         user.id,
                         RagChatRequest(
                             question="下一轮问题",

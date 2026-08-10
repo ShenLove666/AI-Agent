@@ -54,7 +54,8 @@ def test_policy_text_without_live_order_facts_is_not_ready(tmp_path):
         with database.session_factory() as db:
             result = await coordinator.run(
                 db,
-                user_id=1,
+                actor_user_id=1,
+                data_owner_id=1,
                 question="订单 NB-REVIEW-001 什么时候送达？",
             )
 
@@ -110,7 +111,8 @@ def test_conflicting_high_risk_policy_evidence_is_blocked(tmp_path):
         with database.session_factory() as db:
             result = await coordinator.run(
                 db,
-                user_id=1,
+                actor_user_id=1,
+                data_owner_id=1,
                 question="鲜活商品没有质量问题，可以按七日无理由退款吗？",
             )
 

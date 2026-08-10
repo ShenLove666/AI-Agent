@@ -178,4 +178,86 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
       "false"
     );
   });
+
+  it("agentExecutionMode=direct 的完成消息：Timeline 不渲染（隐藏 AI 处理过程）", () => {
+    const message: Message = {
+      id: "direct-msg",
+      role: "assistant",
+      content: "直接回答",
+      status: "done",
+      messageStatus: "NORMAL",
+      // 即便带工具步骤，direct 模式也必须隐藏执行过程
+      agentSteps: steps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: summary,
+      agentExecutionMode: "direct"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).toBeNull();
+    expect(screen.queryByText("AI 处理过程")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /查看处理过程/ })).not.toBeInTheDocument();
+  });
+
+  it("agentExecutionMode=research：Timeline 正常渲染", () => {
+    const message: Message = {
+      id: "research-msg",
+      role: "assistant",
+      content: "检索回答",
+      status: "done",
+      messageStatus: "NORMAL",
+      agentSteps: steps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: summary,
+      agentExecutionMode: "research"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).not.toBeNull();
+  });
+
+  it("agentExecutionMode=refuse：无工具步骤也渲染 Timeline，并显示拒绝文案", () => {
+    const plainSteps: AgentExecutionStep[] = [
+      { stepId: "plan-1-planning-1", seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+      { stepId: "plan-1-generation-1", seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+    ];
+    const message: Message = {
+      id: "refuse-msg",
+      role: "assistant",
+      content: "抱歉，我无法处理这个请求。",
+      status: "done",
+      messageStatus: "NORMAL",
+      agentSteps: plainSteps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0 },
+      agentExecutionMode: "refuse"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).not.toBeNull();
+    // 折叠态头部显示拒绝文案
+    expect(screen.getByText("该请求无法协助执行")).toBeInTheDocument();
+  });
+
+  it("agentTerminalState=refused：同样渲染 Timeline 并显示拒绝文案", () => {
+    const plainSteps: AgentExecutionStep[] = [
+      { stepId: "plan-1-planning-1", seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+      { stepId: "plan-1-generation-1", seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+    ];
+    const message: Message = {
+      id: "refused-msg",
+      role: "assistant",
+      content: "抱歉，我无法处理这个请求。",
+      status: "done",
+      messageStatus: "REJECTED",
+      agentSteps: plainSteps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0, terminalState: "refused" },
+      agentTerminalState: "refused"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).not.toBeNull();
+    expect(screen.getByText("该请求无法协助执行")).toBeInTheDocument();
+  });
 });

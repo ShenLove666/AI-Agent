@@ -202,6 +202,25 @@ export const useChatStore = create<ChatState>((set, get) => {
         }))
     });
     scheduler.push(payload);
+    // 契约扩展（并行后端在改）：planning completed 携带 mode、complete 携带 terminal。
+    // scheduler 的 onChange 只写 agentSteps，mode/terminal 单独 set 到消息，避免互相覆盖；
+    // set 内用 state.streamingMessageId 守卫，与 onChange 的写入条件保持一致
+    const nextMode =
+      payload.phase === "planning" && payload.status === "completed" ? payload.mode : undefined;
+    const nextTerminal = payload.phase === "complete" ? payload.terminal : undefined;
+    if (nextMode || nextTerminal) {
+      set((state) => ({
+        messages: state.messages.map((message) =>
+          message.id === state.streamingMessageId
+            ? {
+                ...message,
+                ...(nextMode ? { agentExecutionMode: nextMode } : {}),
+                ...(nextTerminal ? { agentTerminalState: nextTerminal } : {})
+              }
+            : message
+        )
+      }));
+    }
   };
 
   /**

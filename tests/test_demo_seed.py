@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import errno
 import json
@@ -37,8 +38,10 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.knowledge.search import SqlKeywordSearchChannel, tokenize_query
 from app.modules.orders.models import Order, OrderItem
 from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
+from app.modules.retrieval.models import RetrievalRequest
 from app.modules.support.models import SupportCase
 from app.modules.users.models import User
 from app.modules.vector.indexer import VectorIndexer
@@ -741,27 +744,53 @@ class _FailThirdDocumentStore:
         }
 
 
-def test_seed_vector_failure_removes_partial_demo_graph_and_vectors(
+def test_seed_vector_failure_degrades_to_keyword_search(
     app, db: Session
 ):
+    """向量索引失败不再使文档 failed：摄取降级为关键词检索，seed 正常完成。"""
     store = _FailThirdDocumentStore()
     app.state.container.knowledge.vector_indexer = VectorIndexer(
         _OfflineEmbeddingModel(), store
     )
 
-    with pytest.raises(DemoSeedError, match="injected vector index failure"):
-        DemoSeedService(app.state.container).seed(
-            db, password="StrongDemo123!"
-        )
+    DemoSeedService(app.state.container).seed(db, password="StrongDemo123!")
 
-    assert store.upsert_calls == 3
-    assert store.records == {}
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
-    assert db.scalar(select(func.count(KnowledgeBase.id))) == 0
-    assert db.scalar(select(func.count(KnowledgeDocument.id))) == 0
-    assert db.scalar(select(func.count(KnowledgeChunk.id))) == 0
-    assert db.scalar(select(func.count(EvaluationDataset.id))) == 0
-    assert db.scalar(select(func.count(EvaluationCase.id))) == 0
+    # 第 3 次 upsert 失败被吞掉，后续文档继续索引（seed 不中断）
+    assert store.upsert_calls == 12
+    degraded = db.scalar(
+        select(KnowledgeDocument).where(KnowledgeDocument.error_message.isnot(None))
+    )
+    assert degraded is not None
+    assert degraded.status == "indexed"
+    assert "向量索引失败" in (degraded.error_message or "")
+    # 其余 11 个文档向量索引成功
+    assert (
+        db.scalar(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.error_message.is_(None)
+            )
+        )
+        == 11
+    )
+    # 降级文档的关键词检索仍可用（0-evidence 修复的核心保证）
+    chunks = list(
+        db.scalars(
+            select(KnowledgeChunk).where(
+                KnowledgeChunk.document_id == degraded.id
+            )
+        )
+    )
+    assert chunks
+    channel = SqlKeywordSearchChannel(app.state.container.database)
+    term = tokenize_query(chunks[0].content)[0]
+    hits = asyncio.run(
+        channel.search(
+            RetrievalRequest(term, metadata={"owner_id": degraded.uploader_id})
+        )
+    )
+    assert any(
+        int(item.metadata["document_id"]) == degraded.id for item in hits
+    )
 
 
 def test_demo_cli_uses_named_password_env_and_requires_yes_for_noninteractive_clear(
@@ -1430,40 +1459,51 @@ class _PartialWriteThenFailStore:
         }
 
 
-def test_partial_vector_write_is_removed_by_seed_compensation(app, db: Session):
+def test_partial_vector_write_does_not_block_seed_and_is_cleaned_up(
+    app, db: Session
+):
+    """每次 upsert 部分写入后失败：seed 不中断，残留向量被尽力清理。"""
     store = _PartialWriteThenFailStore()
     app.state.container.knowledge.vector_indexer = VectorIndexer(
         _OfflineEmbeddingModel(), store
     )
 
-    with pytest.raises(DemoSeedError, match="partial vector write"):
-        DemoSeedService(app.state.container).seed(
-            db, password="StrongDemo123!"
-        )
+    DemoSeedService(app.state.container).seed(db, password="StrongDemo123!")
 
+    assert store.partial_written
     assert store.delete_attempts
     assert store.records == {}
-    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 0
+    assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
+    documents = list(db.scalars(select(KnowledgeDocument)))
+    assert documents
+    assert all(item.status == "indexed" for item in documents)
+    assert (
+        db.scalar(
+            select(func.count(KnowledgeDocument.id)).where(
+                KnowledgeDocument.error_message.isnot(None)
+            )
+        )
+        == len(documents)
+    )
 
 
 def test_partial_vector_cleanup_failure_keeps_attempt_metadata_for_retry(
     app, db: Session
 ):
+    """清理失败被吞掉：seed 仍完成，残留向量保留供后续按 document 重试清理。"""
     store = _PartialWriteThenFailStore(fail_cleanup=True)
     app.state.container.knowledge.vector_indexer = VectorIndexer(
         _OfflineEmbeddingModel(), store
     )
 
-    with pytest.raises(DemoSeedError, match="cleanup"):
-        DemoSeedService(app.state.container).seed(
-            db, password="StrongDemo123!"
-        )
+    DemoSeedService(app.state.container).seed(db, password="StrongDemo123!")
 
-    document = db.scalar(select(KnowledgeDocument))
-    assert len(store.delete_attempts) >= 2
-    assert store.delete_attempts[-1] == document.id
+    documents = list(db.scalars(select(KnowledgeDocument)))
+    assert documents
+    # 每个文档至少 2 次清理尝试（索引前 + 失败后的尽力清理）
+    assert len(store.delete_attempts) >= 2 * len(documents)
     assert store.records
-    assert document.vector_indexed is True
+    assert all(item.status == "indexed" for item in documents)
     assert db.scalar(select(func.count(User.id)).where(User.is_demo.is_(True))) == 4
 
 

@@ -18,6 +18,7 @@ from app.infra_ai.contracts import ChatMessage, ChatRequest as ModelChatRequest,
 from app.infra_ai.router import ChatModelRouter
 from app.modules.conversations.models import ChatRequestRun, ConversationTurn, Message
 from app.modules.conversations.service import ConversationService
+from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
 from app.modules.rag.prompt_budget import count_tokens, truncate_to_tokens
 from app.modules.rag.progress import (
     AgentProgressEvent,
@@ -28,6 +29,7 @@ from app.modules.rag.progress import (
 )
 from app.modules.rag.rewrite import QueryRewriteService, RewriteResult
 from app.modules.rag.schemas import ChatRequest, ChatResponse
+from app.modules.rag.terminal import build_terminal_response
 from app.modules.rag.trace_service import RagTraceService, TraceExecution
 from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
@@ -45,6 +47,12 @@ class PreparedChat:
     rewritten_query: str
     trace: TraceExecution
     request_run_id: int | None = None
+    # agentic 决策模式（direct/research/refuse/escalate；非 agentic 回退 research）
+    agent_mode: str | None = None
+    # agentic 终态（direct/grounded/refused/escalated；非 agentic 回退 grounded）。
+    # complete()/stream() 生成阶段按它分流：refused/escalated 不调用模型，
+    # direct 用普通助手 prompt，grounded 走证据上下文。
+    agent_terminal_state: str | None = None
     # 收集的原始 agent 进度事件（prepare 阶段，seq/timestamp 已编号），
     # generation 阶段由 complete()/stream() 继续追加，持久化时再做 reducer 合并。
     agent_execution_events: list[AgentProgressEvent] = field(default_factory=list)
@@ -101,6 +109,69 @@ class RagChatService:
                     "retrieval_timeout_seconds", self.retrieval.timeout_seconds
                 )
             )
+
+    @staticmethod
+    def _assert_knowledge_base_access(
+        db: Session, data_owner_id: int, knowledge_base_ids: list[int]
+    ) -> None:
+        """knowledgeBaseIds 归属校验：请求的知识库必须属于 data_owner_id。
+
+        [] 语义保持「data_owner_id 名下全部知识库」，不做校验。
+        跨商家知识库 ID 一律 403，阻止越权检索。
+        """
+        if not knowledge_base_ids:
+            return
+        owned_ids = set(
+            db.scalars(
+                select(KnowledgeBase.id).where(KnowledgeBase.owner_id == data_owner_id)
+            )
+        )
+        for base_id in knowledge_base_ids:
+            if base_id not in owned_ids:
+                raise AppError(
+                    "KNOWLEDGE_BASE_FORBIDDEN", "知识库不存在或无权访问", 403
+                )
+
+    @staticmethod
+    def _knowledge_diagnostics(
+        db: Session, data_owner_id: int, requested_ids: list[int]
+    ) -> dict[str, Any]:
+        """从数据库实查知识库/文档状态，供 Admin Trace 诊断（不编造）。"""
+        owned_ids = set(
+            db.scalars(
+                select(KnowledgeBase.id).where(KnowledgeBase.owner_id == data_owner_id)
+            )
+        )
+        if requested_ids:
+            resolved = sorted(set(requested_ids) & owned_ids)
+        else:
+            resolved = sorted(owned_ids)
+        if not resolved:
+            return {
+                "resolvedKnowledgeBaseIds": [],
+                "eligibleKnowledgeDocuments": 0,
+                "indexedKnowledgeDocuments": 0,
+                "vectorIndexedDocuments": 0,
+                "failedKnowledgeDocuments": 0,
+            }
+        documents = list(
+            db.scalars(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.knowledge_base_id.in_(resolved)
+                )
+            )
+        )
+        eligible = [item for item in documents if item.enabled]
+        indexed = [item for item in eligible if item.status == "indexed"]
+        vector_indexed = [item for item in indexed if item.vector_indexed]
+        failed = [item for item in documents if item.status == "failed"]
+        return {
+            "resolvedKnowledgeBaseIds": resolved,
+            "eligibleKnowledgeDocuments": len(eligible),
+            "indexedKnowledgeDocuments": len(indexed),
+            "vectorIndexedDocuments": len(vector_indexed),
+            "failedKnowledgeDocuments": len(failed),
+        }
 
     def _budget_history(
         self, history: list[tuple[Message, Message]]
@@ -279,18 +350,20 @@ class RagChatService:
     async def prepare(
         self,
         db: Session,
-        user_id: int,
+        actor_user_id: int,
+        data_owner_id: int,
         request: ChatRequest,
         trace: TraceExecution,
         progress_sink: ProgressSink | None = None,
     ) -> PreparedChat:
         self._apply_runtime_overrides(db)
-        request_run = self._begin_request(db, user_id, request)
+        self._assert_knowledge_base_access(db, data_owner_id, request.knowledge_base_ids)
+        request_run = self._begin_request(db, actor_user_id, request)
         turn = (
-            self.conversations.require_owned_turn(db, request.turn_id, user_id)
+            self.conversations.require_owned_turn(db, request.turn_id, actor_user_id)
             if request.turn_id is not None
             else (
-                self.conversations.require_owned_turn(db, request_run.turn_id, user_id)
+                self.conversations.require_owned_turn(db, request_run.turn_id, actor_user_id)
                 if request_run is not None and request_run.turn_id is not None
                 else None
             )
@@ -301,14 +374,14 @@ class RagChatService:
                 request_run.conversation_id
                 if request_run and request_run.conversation_id
                 else (turn.conversation_id if turn is not None else request.conversation_id),
-                user_id,
+                actor_user_id,
             )
             if (
                 request.conversation_id
                 or turn is not None
                 or (request_run and request_run.conversation_id)
             )
-            else self.conversations.create(db, user_id, request.question[:40])
+            else self.conversations.create(db, actor_user_id, request.question[:40])
         )
         if turn is not None and turn.conversation_id != conversation.id:
             raise AppError("TURN_CONVERSATION_MISMATCH", "轮次不属于当前会话", 409)
@@ -319,7 +392,7 @@ class RagChatService:
             turn, user_message = self.conversations.create_turn(
                 db,
                 conversation_id=conversation.id,
-                user_id=user_id,
+                user_id=actor_user_id,
                 question=request.question,
                 rag_enabled=request.rag_enabled,
                 deep_thinking=request.deep_thinking,
@@ -342,7 +415,7 @@ class RagChatService:
         history = self.conversations.active_history(
             db,
             conversation.id,
-            user_id,
+            actor_user_id,
             before_sequence=turn.sequence,
         )
         budgeted_history = self._budget_history(history)
@@ -359,6 +432,8 @@ class RagChatService:
                 )
             )
             attributes.update(
+                actorUserId=actor_user_id,
+                dataOwnerId=data_owner_id,
                 rewritten_query=rewrite.rewritten_query,
                 fallback=rewrite.used_fallback,
                 skip_reason=rewrite.skip_reason,
@@ -366,6 +441,11 @@ class RagChatService:
             )
 
         documents: list[SearchResult] = []
+        # agent 模式/终态：agentic 路径来自 run() 结果；非 agentic（retrieval
+        # 回退）统一按 research/grounded 处理（保持现有证据上下文生成路径，
+        # 简化处理，不按 0 条结果细分 escalate）。
+        agent_mode: str = "research"
+        agent_terminal_state: str = "grounded"
         # 收集本请求的 agent 进度事件（prepare 内部 seq 统一递增），
         # 并透传给外层 sink（stream 层会再次统一编号，最外层编号生效）。
         collected: list[AgentProgressEvent] = []
@@ -382,19 +462,87 @@ class RagChatService:
                 await progress_sink(event)
 
         with self.traces.node(db, trace, "retrieval") as attributes:
+            kb_diagnostics = self._knowledge_diagnostics(
+                db, data_owner_id, request.knowledge_base_ids
+            )
             if request.rag_enabled and self.agentic is not None:
                 agent_run = await self.agentic.run(
-                    db, user_id=user_id, question=rewrite.rewritten_query,
+                    db,
+                    actor_user_id=actor_user_id,
+                    data_owner_id=data_owner_id,
+                    question=rewrite.rewritten_query,
                     knowledge_base_ids=tuple(request.knowledge_base_ids),
                     progress_sink=collect,
                 )
+                agent_mode = agent_run.decision.mode
+                agent_terminal_state = agent_run.terminal_state
                 documents = self._budget_documents(list(agent_run.results))
+                tool_diagnostics = [
+                    {"tool": execution.get("tool"), **execution.get("diagnostics", {})}
+                    for step in agent_run.steps
+                    if step.get("agent") == "tools"
+                    for execution in step.get("executions", [])
+                ]
+                knowledge_diag = next(
+                    (
+                        item
+                        for item in tool_diagnostics
+                        if item.get("tool") == "knowledge.search"
+                    ),
+                    None,
+                )
                 attributes.update(
-                    agentic=True, mode=agent_run.decision.mode,
+                    agentic=True,
+                    mode=agent_run.decision.mode,
                     selected_tools=list(agent_run.decision.tools),
                     rationale=agent_run.decision.rationale,
                     evidence_review=agent_run.review,
-                    react_steps=list(agent_run.steps), result_count=len(documents),
+                    react_steps=list(agent_run.steps),
+                    result_count=len(documents),
+                    actorUserId=actor_user_id,
+                    dataOwnerId=data_owner_id,
+                    requestedKnowledgeBaseIds=list(request.knowledge_base_ids),
+                    resolvedKnowledgeBaseIds=kb_diagnostics["resolvedKnowledgeBaseIds"],
+                    eligibleKnowledgeDocuments=kb_diagnostics["eligibleKnowledgeDocuments"],
+                    indexedKnowledgeDocuments=kb_diagnostics["indexedKnowledgeDocuments"],
+                    vectorIndexedDocuments=kb_diagnostics["vectorIndexedDocuments"],
+                    failedKnowledgeDocuments=kb_diagnostics["failedKnowledgeDocuments"],
+                    keywordCandidateCount=(
+                        knowledge_diag.get("keywordCount")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    keywordError=(
+                        knowledge_diag.get("keywordError")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    vectorEnabled=(
+                        knowledge_diag.get("vectorEnabled")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    vectorCandidateCount=(
+                        knowledge_diag.get("vectorCandidateCount")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    vectorError=(
+                        knowledge_diag.get("vectorError")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    postprocessorFinalCount=(
+                        knowledge_diag.get("finalCount")
+                        if knowledge_diag is not None
+                        else None
+                    ),
+                    finalContextCount=len(documents),
+                    keywordDegraded=bool(
+                        knowledge_diag is not None
+                        and knowledge_diag.get("keywordError")
+                        and int(knowledge_diag.get("finalCount") or 0) > 0
+                    ),
                 )
             elif request.rag_enabled and self.retrieval is not None:
                 response = await self.retrieval.retrieve(
@@ -403,15 +551,60 @@ class RagChatService:
                         knowledge_base_ids=tuple(str(item) for item in request.knowledge_base_ids),
                         candidate_limit=self.retrieval_candidate_limit,
                         context_limit=self.retrieval_context_limit,
-                        metadata={"user_id": user_id},
+                        metadata={
+                            "user_id": actor_user_id,
+                            "owner_id": data_owner_id,
+                        },
                     )
                 )
                 documents = self._budget_documents(response.results)
+                keyword_outcome = next(
+                    (
+                        outcome
+                        for outcome in response.outcomes
+                        if outcome.channel == "keyword"
+                    ),
+                    None,
+                )
+                vector_outcome = next(
+                    (
+                        outcome
+                        for outcome in response.outcomes
+                        if outcome.channel == "vector"
+                    ),
+                    None,
+                )
                 attributes.update(
                     result_count=len(documents),
                     elapsed_ms=response.elapsed_ms,
                     requested_knowledge_base_ids=request.knowledge_base_ids,
                     resolved_knowledge_base_ids=request.knowledge_base_ids,
+                    actorUserId=actor_user_id,
+                    dataOwnerId=data_owner_id,
+                    requestedKnowledgeBaseIds=list(request.knowledge_base_ids),
+                    resolvedKnowledgeBaseIds=kb_diagnostics["resolvedKnowledgeBaseIds"],
+                    eligibleKnowledgeDocuments=kb_diagnostics["eligibleKnowledgeDocuments"],
+                    indexedKnowledgeDocuments=kb_diagnostics["indexedKnowledgeDocuments"],
+                    vectorIndexedDocuments=kb_diagnostics["vectorIndexedDocuments"],
+                    failedKnowledgeDocuments=kb_diagnostics["failedKnowledgeDocuments"],
+                    keywordCandidateCount=(
+                        len(keyword_outcome.results)
+                        if keyword_outcome is not None
+                        else None
+                    ),
+                    keywordError=keyword_outcome.error if keyword_outcome else None,
+                    vectorEnabled=vector_outcome is not None,
+                    vectorCandidateCount=(
+                        len(vector_outcome.results) if vector_outcome is not None else None
+                    ),
+                    vectorError=vector_outcome.error if vector_outcome else None,
+                    postprocessorFinalCount=len(response.results),
+                    finalContextCount=len(documents),
+                    keywordDegraded=bool(
+                        keyword_outcome is not None
+                        and keyword_outcome.error
+                        and response.results
+                    ),
                     channels=[
                         {
                             "name": outcome.channel,
@@ -436,19 +629,36 @@ class RagChatService:
                 }
                 for item in documents
             ]
-            context = "\n\n".join(
-                f"[资料 {index}] {item.content}"
-                for index, item in enumerate(documents, start=1)
-            )
+            # 生成阶段的 system prompt 按 agent 终态选择（complete/stream 共用
+            # 同一策略）：direct 与 refused/escalated 不拼接检索证据上下文；
+            # refused/escalated 的 model_request 仅占位保持类型完整，生成阶段
+            # 不会调用模型（直接输出固定文案）。
+            if agent_terminal_state == "direct":
+                context = ""
+                system_prompt = (
+                    "你是邻里鲜选 AI 运营助手，可以协助查询商品经营、订单、"
+                    "售后与知识库相关问题。请用中文简洁友好地回复。"
+                )
+            elif agent_terminal_state in ("refused", "escalated"):
+                context = ""
+                system_prompt = (
+                    "你是邻里鲜选 AI 运营助手，可以协助查询商品经营、订单、"
+                    "售后与知识库相关问题。请用中文简洁友好地回复。"
+                )
+            else:
+                context = "\n\n".join(
+                    f"[资料 {index}] {item.content}"
+                    for index, item in enumerate(documents, start=1)
+                )
+                system_prompt = (
+                    "你是零售运营 Agent。依据 ReAct 工具返回的资料回答，并区分"
+                    " observed/derived/synthetic；资料不足时明确说明，不得编造"
+                    "来源、销量、价格或政策。"
+                )
             user_content = request.question
             if context:
                 user_content = f"用户问题：{request.question}\n\n可用资料：\n{context}"
-            messages = [
-                ChatMessage(
-                    "system",
-                    "你是零售运营 Agent。依据 ReAct 工具返回的资料回答，并区分 observed/derived/synthetic；资料不足时明确说明，不得编造来源、销量、价格或政策。",
-                )
-            ]
+            messages = [ChatMessage("system", system_prompt)]
             messages.extend(budgeted_history)
             messages.append(ChatMessage("user", user_content))
             attributes.update(
@@ -480,6 +690,8 @@ class RagChatService:
             rewrite.rewritten_query,
             trace,
             request_run.id if request_run is not None else None,
+            agent_mode,
+            agent_terminal_state,
             agent_execution_events=collected,
         )
 
@@ -505,8 +717,14 @@ class RagChatService:
             raise ProviderUnavailableError("尚未配置 LLM API Key")
         return self.model_router
 
-    async def complete(self, db: Session, user_id: int, request: ChatRequest) -> ChatResponse:
-        cached = self._cached_message(db, user_id, request)
+    async def complete(
+        self,
+        db: Session,
+        actor_user_id: int,
+        data_owner_id: int,
+        request: ChatRequest,
+    ) -> ChatResponse:
+        cached = self._cached_message(db, actor_user_id, request)
         if cached is not None:
             run, message = cached
             return ChatResponse(
@@ -519,12 +737,18 @@ class RagChatService:
                 assistant_message_id=message.id,
                 version=message.version,
             )
-        trace = self.traces.start(db, user_id=user_id, query=request.question)
+        trace = self.traces.start(db, user_id=actor_user_id, query=request.question)
         try:
-            prepared = await self.prepare(db, user_id, request, trace)
+            prepared = await self.prepare(
+                db, actor_user_id, data_owner_id, request, trace
+            )
         except Exception as exc:
             if not isinstance(exc, AppError) or exc.code != "REQUEST_IN_PROGRESS":
-                run = self._request_run(db, user_id, request.request_id) if request.request_id else None
+                run = (
+                    self._request_run(db, actor_user_id, request.request_id)
+                    if request.request_id
+                    else None
+                )
                 self._finish_request(
                     db, run.id if run else None, status="failed", error=str(exc)
                 )
@@ -538,8 +762,14 @@ class RagChatService:
             )
             raise
         try:
+            terminal = prepared.agent_terminal_state
             with self.traces.node(db, prepared.trace, "generation") as attributes:
-                answer = await self.require_router().complete(prepared.model_request)
+                attributes["terminal_mode"] = terminal
+                if terminal in ("refused", "escalated"):
+                    # terminal 状态：不调用模型，直接输出固定文案
+                    answer = build_terminal_response(terminal)
+                else:
+                    answer = await self.require_router().complete(prepared.model_request)
                 attributes["answer_chars"] = len(answer)
             # generation 事件携带最终 plan 编号（multi-plan 顺序修复的数据端）
             final_plan = max(
@@ -566,10 +796,24 @@ class RagChatService:
                         "timestamp": round(time.time() * 1000, 3),
                     }
                 )
+            # complete 阶段事件携带 terminal，供 summary 持久化 terminalState
+            # （与 stream() 成功路径的 complete 事件同一契约）。
+            prepared.agent_execution_events.append(
+                {
+                    "seq": len(prepared.agent_execution_events) + 1,
+                    "phase": "complete",
+                    "status": "completed",
+                    "agent": "generator",
+                    "title": phase_text("complete", "completed"),
+                    "detail": "回答生成完成",
+                    "terminal": terminal,
+                    "timestamp": round(time.time() * 1000, 3),
+                }
+            )
             message = self.conversations.add_assistant_version(
                 db,
                 turn=prepared.turn,
-                user_id=user_id,
+                user_id=actor_user_id,
                 content=answer,
                 citations=prepared.citations,
                 message_status="NORMAL",
@@ -615,11 +859,12 @@ class RagChatService:
     async def stream(
         self,
         db: Session,
-        user_id: int,
+        actor_user_id: int,
+        data_owner_id: int,
         request: ChatRequest,
         cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[dict]:
-        cached = self._cached_message(db, user_id, request)
+        cached = self._cached_message(db, actor_user_id, request)
         if cached is not None:
             run, message = cached
             citations = json.loads(message.citations_json or "[]")
@@ -648,7 +893,7 @@ class RagChatService:
                 },
             }
             return
-        trace = self.traces.start(db, user_id=user_id, query=request.question)
+        trace = self.traces.start(db, user_id=actor_user_id, query=request.question)
         queue: asyncio.Queue[dict] = asyncio.Queue()
         # 流级事件收集：prepare 与 generation 的全部事件以统一 seq（计数 sink）
         # 进入 persist_events，流结束（成功/异常）后做 reducer 合并持久化。
@@ -661,7 +906,7 @@ class RagChatService:
         # prepare 内部与 generation 的事件共享同一计数 sink（seq 全流唯一递增）
         emit = make_counting_sink(enqueue)
         prepare_task = asyncio.create_task(
-            self.prepare(db, user_id, request, trace, progress_sink=emit)
+            self.prepare(db, actor_user_id, data_owner_id, request, trace, progress_sink=emit)
         )
         try:
             # prepare 执行期间实时转发 progress 事件
@@ -695,7 +940,7 @@ class RagChatService:
             # 取消发生在 prepare 期间：请求记录与 trace 也要收尾，
             # 否则 ChatRequestRun 停留 processing（5 分钟内同 requestId 被 REQUEST_IN_PROGRESS 拦截）
             if request.request_id:
-                run = self._request_run(db, user_id, request.request_id)
+                run = self._request_run(db, actor_user_id, request.request_id)
                 if run is not None and run.status == "processing":
                     self._finish_request(db, run.id, status="cancelled")
             self.traces.finish(
@@ -713,7 +958,7 @@ class RagChatService:
                 prepare_task.cancel()
                 await asyncio.gather(prepare_task, return_exceptions=True)
             if not isinstance(exc, AppError) or exc.code != "REQUEST_IN_PROGRESS":
-                run = self._request_run(db, user_id, request.request_id) if request.request_id else None
+                run = self._request_run(db, actor_user_id, request.request_id) if request.request_id else None
                 self._finish_request(
                     db, run.id if run else None, status="failed", error=str(exc)
                 )
@@ -752,6 +997,7 @@ class RagChatService:
 
         try:
             interrupted = False
+            terminal = prepared.agent_terminal_state
             generation_started_at = time.perf_counter()
             first_token_at: float | None = None
             thinking_started_at: float | None = None
@@ -767,45 +1013,59 @@ class RagChatService:
             ):
                 yield item
             with self.traces.node(db, prepared.trace, "generation") as attributes:
-                async for chunk in self.require_router().stream(
-                    prepared.model_request, cancel_event=cancel_event
-                ):
-                    if isinstance(chunk, ModelStreamChunk) and chunk.kind == "thinking":
-                        if thinking_started_at is None:
-                            thinking_started_at = time.perf_counter()
-                        thinking_parts.append(chunk.content)
-                        yield {"type": "thinking", "data": chunk.content}
-                        continue
-                    token = chunk.content if isinstance(chunk, ModelStreamChunk) else chunk
-                    if first_token_at is None:
-                        first_token_at = time.perf_counter()
-                        thinking_finished_at = first_token_at
-                        async for item in emit_event(
-                            {
-                                "phase": "generation",
-                                "status": "running",
-                                "agent": "generator",
-                                "plan": final_plan,
-                                "title": "正在生成回答",
-                                "detail": "回答内容正在生成中",
-                            }
-                        ):
-                            yield item
-                    answer_parts.append(token)
-                    yield {"type": "token", "data": token}
-                interrupted = bool(cancel_event is not None and cancel_event.is_set())
-                attributes.update(
-                    answer_chars=sum(map(len, answer_parts)),
-                    interrupted=interrupted,
-                    ttft_ms=(
-                        round((first_token_at - generation_started_at) * 1000, 2)
-                        if first_token_at is not None
-                        else None
-                    ),
-                    requested_mode=prepared.model_request.metadata.get("requested_mode"),
-                    reasoning_enabled=prepared.model_request.metadata.get("deep_thinking", False),
-                    thinking_chars=sum(map(len, thinking_parts)),
-                )
+                if terminal in ("refused", "escalated"):
+                    # terminal 状态：不进入 router.stream 循环（不调用模型），
+                    # 固定文案在 complete 事件之后作为一次 token 输出（见下方
+                    # terminal_token），answer_parts 累计保持一致，SSE 生命周期
+                    # 正常完结。
+                    text = build_terminal_response(terminal)
+                    answer_parts.append(text)
+                    attributes.update(
+                        answer_chars=len(text),
+                        interrupted=False,
+                        terminal_mode=terminal,
+                    )
+                else:
+                    async for chunk in self.require_router().stream(
+                        prepared.model_request, cancel_event=cancel_event
+                    ):
+                        if isinstance(chunk, ModelStreamChunk) and chunk.kind == "thinking":
+                            if thinking_started_at is None:
+                                thinking_started_at = time.perf_counter()
+                            thinking_parts.append(chunk.content)
+                            yield {"type": "thinking", "data": chunk.content}
+                            continue
+                        token = chunk.content if isinstance(chunk, ModelStreamChunk) else chunk
+                        if first_token_at is None:
+                            first_token_at = time.perf_counter()
+                            thinking_finished_at = first_token_at
+                            async for item in emit_event(
+                                {
+                                    "phase": "generation",
+                                    "status": "running",
+                                    "agent": "generator",
+                                    "plan": final_plan,
+                                    "title": "正在生成回答",
+                                    "detail": "回答内容正在生成中",
+                                }
+                            ):
+                                yield item
+                        answer_parts.append(token)
+                        yield {"type": "token", "data": token}
+                    interrupted = bool(cancel_event is not None and cancel_event.is_set())
+                    attributes.update(
+                        answer_chars=sum(map(len, answer_parts)),
+                        interrupted=interrupted,
+                        ttft_ms=(
+                            round((first_token_at - generation_started_at) * 1000, 2)
+                            if first_token_at is not None
+                            else None
+                        ),
+                        requested_mode=prepared.model_request.metadata.get("requested_mode"),
+                        reasoning_enabled=prepared.model_request.metadata.get("deep_thinking", False),
+                        thinking_chars=sum(map(len, thinking_parts)),
+                        terminal_mode=terminal,
+                    )
             answer = "".join(answer_parts)
             if not interrupted:
                 # 回答生成完成（generation completed）先于 complete 事件下发
@@ -826,13 +1086,18 @@ class RagChatService:
                         "agent": "generator",
                         "title": phase_text("complete", "completed"),
                         "detail": "回答生成完成",
+                        "terminal": terminal,
                     }
                 ):
                     yield item
+            if terminal in ("refused", "escalated") and not interrupted:
+                # terminal 状态：固定文案在 complete 事件之后以单次 token 下发，
+                # 随后 finish（持久化/trace/requestRun 收尾）与 done 正常结束。
+                yield {"type": "token", "data": answer_parts[0]}
             message = self.conversations.add_assistant_version(
                 db,
                 turn=prepared.turn,
-                user_id=user_id,
+                user_id=actor_user_id,
                 content=answer,
                 citations=prepared.citations,
                 message_status="INTERRUPTED" if interrupted else "NORMAL",
@@ -880,7 +1145,7 @@ class RagChatService:
             message = self.conversations.add_assistant_version(
                 db,
                 turn=prepared.turn,
-                user_id=user_id,
+                user_id=actor_user_id,
                 content=answer,
                 citations=prepared.citations,
                 message_status="INTERRUPTED" if cancelled else "ERROR",

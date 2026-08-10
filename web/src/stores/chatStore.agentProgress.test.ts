@@ -201,4 +201,66 @@ describe("chatStore agent_progress（经 Presentation Scheduler）", () => {
     vi.advanceTimersByTime(300);
     expect(useChatStore.getState().messages[1].agentSteps).toBe(before);
   });
+
+  it("planning completed 携带 mode=direct：消息写入 agentExecutionMode", () => {
+    const getHandlers = setupCapturedHandlers();
+    // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
+    useChatStore.getState().sendMessage("直接问一个问题");
+    const handlers = getHandlers();
+
+    handlers.onAgentProgress?.({
+      seq: 1,
+      phase: "planning",
+      status: "completed",
+      title: "制定计划",
+      mode: "direct"
+    });
+
+    expect(useChatStore.getState().messages[1].agentExecutionMode).toBe("direct");
+  });
+
+  it("complete 携带 terminal=refused：消息写入 agentTerminalState", () => {
+    const getHandlers = setupCapturedHandlers();
+    // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
+    useChatStore.getState().sendMessage("查询商品关联数据");
+    const handlers = getHandlers();
+
+    handlers.onAgentProgress?.({
+      seq: 1,
+      phase: "complete",
+      status: "completed",
+      title: "完成",
+      terminal: "refused"
+    });
+
+    const message = useChatStore.getState().messages[1];
+    expect(message.agentTerminalState).toBe("refused");
+    // terminal 只写 agentTerminalState，不污染 agentSteps / agentExecutionMode
+    expect(message.agentSteps).toEqual([]);
+    expect(message.agentExecutionMode).toBeUndefined();
+  });
+
+  it("planning completed 无 mode / complete 无 terminal：不写对应字段（旧后端兼容）", () => {
+    const getHandlers = setupCapturedHandlers();
+    // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
+    useChatStore.getState().sendMessage("查询商品关联数据");
+    const handlers = getHandlers();
+
+    handlers.onAgentProgress?.({
+      seq: 1,
+      phase: "planning",
+      status: "completed",
+      title: "制定计划"
+    });
+    handlers.onAgentProgress?.({
+      seq: 2,
+      phase: "complete",
+      status: "completed",
+      title: "完成"
+    });
+
+    const message = useChatStore.getState().messages[1];
+    expect(message.agentExecutionMode).toBeUndefined();
+    expect(message.agentTerminalState).toBeUndefined();
+  });
 });

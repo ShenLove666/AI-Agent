@@ -13,6 +13,8 @@ from app.framework.response import ApiResponse
 from app.framework.trace import current_trace_id
 from app.modules.conversations.models import ConversationTurn, Message
 from app.modules.rag.schemas import ChatRequest
+from app.modules.users.access import resolve_owner
+from app.modules.users.models import User
 
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -180,10 +182,12 @@ async def regenerate_turn(
         from app.framework.errors import AppError
 
         raise AppError("TURN_USER_MESSAGE_MISSING", "轮次缺少用户消息", 409)
+    actor = db.get(User, user_id)
     result = await request.app.state.container.chat.complete(
         db,
-        user_id,
-        ChatRequest(
+        actor_user_id=user_id,
+        data_owner_id=resolve_owner(db, actor),
+        request=ChatRequest(
             question=user_message.content,
             conversation_id=turn.conversation_id,
             request_id=uuid.uuid4().hex,

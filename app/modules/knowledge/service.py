@@ -13,6 +13,29 @@ from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, Knowledg
 from app.modules.vector.indexer import VectorIndexer
 
 
+_POLICY_TERMS = ("政策", "规则", "退货", "退款", "售后")
+_RECOMMENDATION_TERMS = ("指南", "推荐", "搭配")
+_PRODUCT_TERMS = ("商品", "说明")
+
+
+def infer_source_kind(*names: str) -> str:
+    """按文件名/知识库名做初始 source_kind 推断（简单规则）。
+
+    含 政策/规则/退货/退款/售后 → policy；
+    含 指南/推荐/搭配 → recommendation_guide；
+    含 商品/说明 → product_knowledge；
+    其余 → general。
+    """
+    text = " ".join(name or "" for name in names)
+    if any(term in text for term in _POLICY_TERMS):
+        return "policy"
+    if any(term in text for term in _RECOMMENDATION_TERMS):
+        return "recommendation_guide"
+    if any(term in text for term in _PRODUCT_TERMS):
+        return "product_knowledge"
+    return "general"
+
+
 class DocumentParser:
     def parse(self, path: Path) -> str:
         suffix = path.suffix.lower()
@@ -117,6 +140,7 @@ class KnowledgeService:
         if not document:
             raise AppError("DOCUMENT_NOT_FOUND", "文档不存在", 404)
         document.status = "processing"
+        document.error_message = None
         db.commit()
         try:
             chunks = self.chunker.split(self.parser.parse(Path(document.storage_path)))
@@ -137,25 +161,57 @@ class KnowledgeService:
             vector_chunks = [
                 (chunk.id, chunk.position, chunk.content) for chunk in chunk_rows
             ]
+            base = db.get(KnowledgeBase, document.knowledge_base_id)
+            document.source_kind = infer_source_kind(
+                document.filename, base.name if base is not None else None
+            )
+            db.commit()
+
+            # parse + chunk 写库成功 → keyword 检索立即可用：
+            # status=indexed 且 vector_indexed=False（即使后续向量索引失败也保持可用）。
+            document.status = "indexed"
+            document.vector_indexed = False
+            document.error_message = None
             db.commit()
 
             if self.vector_indexer is not None:
-                # Remove every previous generation before inserting the new DB-backed chunk IDs.
-                # This prevents shorter re-chunks from leaving searchable stale vectors.
-                asyncio.run(self.vector_indexer.store.delete_document(document.id))
-                asyncio.run(
-                    self.vector_indexer.index(
-                        owner_id=document.uploader_id,
-                        knowledge_base_id=document.knowledge_base_id,
-                        document_id=document.id,
-                        source=document.filename,
-                        chunks=vector_chunks,
+                try:
+                    # Remove every previous generation before inserting the new DB-backed chunk IDs.
+                    # This prevents shorter re-chunks from leaving searchable stale vectors.
+                    asyncio.run(self.vector_indexer.store.delete_document(document.id))
+                    asyncio.run(
+                        self.vector_indexer.index(
+                            owner_id=(
+                                base.owner_id if base is not None else document.uploader_id
+                            ),
+                            knowledge_base_id=document.knowledge_base_id,
+                            document_id=document.id,
+                            source=document.filename,
+                            chunks=vector_chunks,
+                        )
                     )
-                )
-            document.status = "indexed"
-            document.error_message = None
-            db.commit()
+                    document.vector_indexed = True
+                    document.error_message = None
+                    db.commit()
+                except Exception as exc:  # noqa: BLE001
+                    # 向量索引失败 ≠ 文档不可用：降级为关键词检索，status 保持 indexed。
+                    # 尽力清理本次写入的残留向量（清理失败不影响降级结果）。
+                    db.rollback()
+                    document = db.get(KnowledgeDocument, document_id)
+                    try:
+                        asyncio.run(
+                            self.vector_indexer.store.delete_document(document.id)
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    document.vector_indexed = False
+                    document.status = "indexed"
+                    document.error_message = (
+                        f"向量索引失败，当前已降级使用关键词检索：{exc}"
+                    )
+                    db.commit()
         except Exception as exc:
+            # 只有 parse 失败/文档为空/chunk 为空/DB 写入失败才置 failed
             db.rollback()
             document = db.get(KnowledgeDocument, document_id)
             document.status = "failed"

@@ -19,6 +19,12 @@ export type AgentProgressPhase =
 /** Agent 步骤状态 */
 export type AgentProgressStatus = "pending" | "running" | "completed" | "warning" | "failed" | "cancelled";
 
+/** 本轮执行模式（planning completed 的 agent_progress 事件携带；旧数据缺失） */
+export type AgentExecutionMode = "direct" | "research" | "refuse" | "escalate";
+
+/** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧数据缺失） */
+export type AgentTerminalState = "direct" | "grounded" | "refused" | "escalated";
+
 /** Agent 工具调用进度（phase=tool 时携带） */
 export interface AgentToolProgress {
   name: string;
@@ -44,6 +50,10 @@ export interface AgentProgressPayload {
   tool?: AgentToolProgress | null;
   metrics?: { evidenceCount?: number; coverage?: number; conflictCount?: number } | null;
   timestamp?: string;
+  /** planning completed 时携带：本轮执行模式（direct 直接回答，research 检索，refuse/escalate 拒绝/升级） */
+  mode?: AgentExecutionMode;
+  /** complete 时携带：最终终止状态（direct/grounded/refused/escalated） */
+  terminal?: AgentTerminalState;
 }
 
 /** 时间线中的单步执行记录（stepId 由前端构造，保证 running→completed 原地更新） */
@@ -66,6 +76,8 @@ export interface AgentExecutionSummary {
   evidenceCount: number;
   replanCount: number;
   durationMs?: number;
+  /** 最终终止状态（仅新数据持久化；旧消息缺失） */
+  terminalState?: AgentTerminalState;
 }
 
 export type AgentExecutionStatus = "running" | "completed" | "failed" | "cancelled";
@@ -117,6 +129,10 @@ export interface AnswerVersion {
   agentSteps?: AgentExecutionStep[];
   agentExecutionStatus?: AgentExecutionStatus;
   agentExecutionSummary?: AgentExecutionSummary | null;
+  /** 本轮执行模式（planning completed 事件携带；旧消息缺失） */
+  agentExecutionMode?: AgentExecutionMode;
+  /** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧消息缺失） */
+  agentTerminalState?: AgentTerminalState;
 }
 
 export interface Message {
@@ -143,6 +159,10 @@ export interface Message {
   /** Agent 执行整体状态；无 agent_progress 数据的旧消息保持 undefined */
   agentExecutionStatus?: AgentExecutionStatus;
   agentExecutionSummary?: AgentExecutionSummary | null;
+  /** 本轮执行模式（planning completed 事件携带；旧消息缺失） */
+  agentExecutionMode?: AgentExecutionMode;
+  /** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧消息缺失） */
+  agentTerminalState?: AgentTerminalState;
 }
 
 export type RecommendedQuestionStatus = "SUCCESS" | "EMPTY" | "FAILED";

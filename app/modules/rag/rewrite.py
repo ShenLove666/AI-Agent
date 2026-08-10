@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.infra_ai.contracts import ChatMessage, ChatRequest
 from app.infra_ai.router import ChatModelRouter
+from app.modules.rag.terminal import is_trivial_direct
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,9 @@ class QueryRewriteService:
         self.router = router
 
     async def rewrite(self, query: str, history: list[tuple[str, str]] | None = None) -> RewriteResult:
+        # 普通问候/感谢/自我介绍/笑声等：无需改写，直接短路，跳过 LLM 调用。
+        if is_trivial_direct(query):
+            return RewriteResult(query, query, skip_reason="trivial_direct")
         if not history:
             return RewriteResult(query, query, skip_reason="no_history")
         if self.router is None:

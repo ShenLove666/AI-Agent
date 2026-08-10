@@ -50,7 +50,10 @@ export const MessageItem = React.memo(function MessageItem({
         // 会把当前版本的执行过程串显示到旧版本上
         agentSteps: selectedVersion.agentSteps,
         agentExecutionStatus: selectedVersion.agentExecutionStatus,
-        agentExecutionSummary: selectedVersion.agentExecutionSummary
+        agentExecutionSummary: selectedVersion.agentExecutionSummary,
+        // mode/terminalState 同样严格绑定版本（老版本缺失时保持 undefined，不做兜底）
+        agentExecutionMode: selectedVersion.agentExecutionMode,
+        agentTerminalState: selectedVersion.agentTerminalState
       }
     : message;
   const isUser = message.role === "user";
@@ -113,6 +116,8 @@ export const MessageItem = React.memo(function MessageItem({
             (renderedMessage.status === "streaming" ? "running" : "completed")
           }
           summary={renderedMessage.agentExecutionSummary}
+          mode={renderedMessage.agentExecutionMode}
+          terminalState={renderedMessage.agentTerminalState}
           isCurrentTurn={isLatestTurn}
         />
         {isThinking ? (

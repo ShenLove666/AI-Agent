@@ -4,6 +4,7 @@ import type {
   AgentExecutionSummary,
   AgentProgressPhase,
   AgentProgressStatus,
+  AgentTerminalState,
   Message,
   PersistedMessageStatus
 } from "@/types";
@@ -38,6 +39,17 @@ export function isAgentProgressPhase(value: unknown): value is AgentProgressPhas
 
 export function isAgentProgressStatus(value: unknown): value is AgentProgressStatus {
   return typeof value === "string" && (AGENT_PROGRESS_STATUSES as string[]).includes(value);
+}
+
+const AGENT_TERMINAL_STATES: AgentTerminalState[] = [
+  "direct",
+  "grounded",
+  "refused",
+  "escalated"
+];
+
+function isAgentTerminalState(value: unknown): value is AgentTerminalState {
+  return typeof value === "string" && (AGENT_TERMINAL_STATES as string[]).includes(value);
 }
 
 export function toNumber(value: unknown, fallback: number): number {
@@ -98,7 +110,14 @@ export function deriveAgentExecutionStatus(
 export function restoreAgentExecution(
   json?: unknown,
   messageStatus?: PersistedMessageStatus | null
-): Pick<Message, "agentSteps" | "agentExecutionStatus" | "agentExecutionSummary"> {
+): Pick<
+  Message,
+  | "agentSteps"
+  | "agentExecutionStatus"
+  | "agentExecutionSummary"
+  | "agentExecutionMode"
+  | "agentTerminalState"
+> {
   if (!json || typeof json !== "object") return {};
   const raw = json as Record<string, unknown>;
   if (!Array.isArray(raw.steps)) return {};
@@ -177,7 +196,11 @@ export function restoreAgentExecution(
           toolCallCount: toNumber(summaryRaw.toolCallCount, 0),
           evidenceCount: toNumber(summaryRaw.evidenceCount, 0),
           replanCount: toNumber(summaryRaw.replanCount, 0),
-          durationMs: typeof summaryRaw.durationMs === "number" ? summaryRaw.durationMs : undefined
+          durationMs: typeof summaryRaw.durationMs === "number" ? summaryRaw.durationMs : undefined,
+          // 仅新数据持久化 terminalState；缺失时省略，页面按旧行为降级
+          ...(isAgentTerminalState(summaryRaw.terminalState)
+            ? { terminalState: summaryRaw.terminalState }
+            : {})
         }
       : computeAgentExecutionSummary(steps) ?? {
           planCount: maxPlan,
@@ -188,6 +211,8 @@ export function restoreAgentExecution(
   return {
     agentSteps: restoredSteps,
     agentExecutionStatus,
-    agentExecutionSummary: summary
+    agentExecutionSummary: summary,
+    // planning 的 mode 无持久化来源，不恢复（省略）；terminalState 仅新数据存在
+    ...(summary.terminalState ? { agentTerminalState: summary.terminalState } : {})
   };
 }

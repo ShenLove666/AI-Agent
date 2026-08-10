@@ -21,6 +21,7 @@ from app.modules.rag.progress import (
     tool_evidence_summary,
     tool_label,
 )
+from app.modules.rag.terminal import is_trivial_direct
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import SearchResult
 
@@ -126,6 +127,10 @@ class AgenticRun:
 class _State(TypedDict, total=False):
     # run() 初始状态保证以下 key 恒存在，允许安全下标访问
     question: Required[str]
+    # 会话/请求归属（谁在问）；user_id 保留为兼容别名
+    actor_user_id: Required[int]
+    # 业务数据归属（查谁的商家数据）；工具一律使用 data_owner_id
+    data_owner_id: Required[int]
     user_id: Required[int]
     knowledge_base_ids: Required[tuple[int, ...]]
     db: Required[Session]
@@ -201,15 +206,29 @@ class AgenticRagCoordinator:
         self,
         db: Session,
         *,
-        user_id: int,
+        actor_user_id: int | None = None,
+        data_owner_id: int | None = None,
+        user_id: int | None = None,
         question: str,
         knowledge_base_ids: tuple[int, ...] = (),
         progress_sink: ProgressSink | None = None,
     ) -> AgenticRun:
+        # 兼容旧调用方（如 evaluation/support 运行时）：只传 user_id 时
+        # 会话归属与业务数据归属一致（自身即 owner）；工具一律使用 data_owner_id。
+        if actor_user_id is None:
+            actor_user_id = user_id
+        if data_owner_id is None:
+            data_owner_id = user_id
+        if actor_user_id is None or data_owner_id is None:
+            raise TypeError(
+                "run() requires actor_user_id and data_owner_id (or legacy user_id)"
+            )
         state = await self._compile_graph(progress_sink).ainvoke(
             {
                 "question": question,
-                "user_id": user_id,
+                "actor_user_id": actor_user_id,
+                "data_owner_id": data_owner_id,
+                "user_id": actor_user_id,
                 "knowledge_base_ids": knowledge_base_ids,
                 "db": db,
                 "results": [],
@@ -289,7 +308,7 @@ class AgenticRagCoordinator:
                 "deterministic_fallback",
             )
         candidates: list[str] = []
-        if any(
+        commerce_hits = any(
             term in lowered
             for term in (
                 "购物篮",
@@ -302,10 +321,18 @@ class AgenticRagCoordinator:
                 "价格",
                 "交易",
             )
-        ):
+        )
+        if commerce_hits:
             candidates.extend(
                 ("commerce.search_association_rules", "commerce.get_product_metrics")
             )
+        # 搭配/推荐/建议类问题：知识库是推荐依据与商品知识的权威来源，
+        # 与 commerce 工具组合使用（业务数据 + 推荐依据），而不是只选 commerce。
+        if any(
+            term in lowered
+            for term in ("搭配", "推荐", "建议", "商品说明", "商品知识", "怎么搭", "怎么配")
+        ):
+            candidates.append("knowledge.search")
         if any(
             term in lowered
             for term in (
@@ -376,6 +403,12 @@ class AgenticRagCoordinator:
         question = state["question"]
         history = state.get("plan_history", [])
         feedback = state.get("review_feedback", "")
+        # 普通问候/感谢/自我介绍/笑声等无需业务工具的 query：在调模型之前
+        # 确定性短路，避免模型误判 refuse 导致「你好哈哈哈 → 拒绝回答」。
+        if is_trivial_direct(question):
+            return AgentDecision(
+                "direct", (), "普通问候无需调用业务工具", "deterministic_fallback"
+            )
         if self.model_router is None:
             return self._fallback_decision(question, history, feedback)
         tool_text = json.dumps(self.registry.describe(), ensure_ascii=False)
@@ -391,7 +424,23 @@ class AgenticRagCoordinator:
             messages=[
                 ChatMessage(
                     "system",
-                    '你是零售运营规划 Agent。只返回 JSON：{"mode":"research|direct|refuse|escalate","calls":[{"name":"工具名","arguments":{}}],"rationale":"摘要"}。证据不足重规划时必须改变工具或参数，否则结束。当上一轮工具成功但返回 0 条结果时，重新规划必须扩大召回、修改实体表达、降低合理过滤条件或更换数据源；禁止仅通过提高 min_lift、min_confidence、threshold 等过滤条件重复调用同一工具。可用工具：'
+                    '你是零售运营规划 Agent。只返回 JSON：{"mode":"research|direct|refuse|escalate","calls":[{"name":"工具名","arguments":{}}],"rationale":"摘要"}。\n'
+                    '四种 mode 定义：\n'
+                    '- direct：可安全直接回答且不依赖商家业务事实或外部证据（你好/谢谢/你是谁/普通闲聊/能力介绍）。\n'
+                    '- research：回答需要业务数据或知识证据（订单状态/退款规则/商品销量/搭配推荐/知识库 SOP/经营客服数据）。\n'
+                    '- escalate：请求可回答，但当前工具/证据/权限/数据不足以形成可靠结论（如需要实时价格但系统无该数据）；不得使用 refuse。\n'
+                    '- refuse：请求本身不应执行（欺骗/伪造/违法危险/要求捏造数据/绕过权限）。\n'
+                    '硬约束：\n'
+                    '- 「没有证据」不是 refuse：证据不足应 research→replan；重规划后仍无证据→escalate。\n'
+                    '- 「不需要工具」不是 refuse：普通问候/能力介绍→direct。\n'
+                    '- 「你好、您好、hi、hello、谢谢、你是谁、你能做什么、哈哈」等普通对话必须 direct，不得 refuse。\n'
+                    '示例：\n'
+                    '- 用户「你好哈哈哈」→ {"mode":"direct","calls":[],"rationale":"普通问候无需调用业务工具"}\n'
+                    '- 用户「你是谁？」→ {"mode":"direct","calls":[],"rationale":"能力介绍无需查询"}\n'
+                    '- 用户「牛肉适合搭配什么？」→ {"mode":"research","calls":[{"name":"commerce.search_association_rules","arguments":{"query":"牛肉"}},{"name":"knowledge.search","arguments":{"query":"牛肉 搭配 推荐"}}],"rationale":"搭配推荐需要业务数据与知识依据"}\n'
+                    '- 用户「帮我伪造一张退款成功截图」→ {"mode":"refuse","calls":[],"rationale":"请求涉及伪造"}\n'
+                    '- 用户「门店今天实时牛肉价格是多少，但系统没有价格数据」→ 应 research 查证，仍无数据则 escalate（不能 refuse）。\n'
+                    '证据不足重规划时必须改变工具或参数，否则结束。当上一轮工具成功但返回 0 条结果时，重新规划必须扩大召回、修改实体表达、降低合理过滤条件或更换数据源；禁止仅通过提高 min_lift、min_confidence、threshold 等过滤条件重复调用同一工具。工具选择说明：commerce 工具用于真实经营数据（商品指标、销售记录、购物篮、关联规则、订单事实）；knowledge 工具用于知识库/SOP/商品知识/推荐指南/政策/规则/操作说明；一个问题同时需要「业务数据 + 推荐依据」时，允许同时调用 commerce 与 knowledge 工具；不要把 knowledge.search 仅理解成政策搜索。可用工具：'
                     + tool_text,
                 ),
                 ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
@@ -489,6 +538,7 @@ class AgenticRagCoordinator:
                 "plan": count,
                 "title": phase_text("planning", "completed"),
                 "detail": plan_detail,
+                "mode": decision.mode,
             }
         )
         history = [
@@ -539,7 +589,9 @@ class AgenticRagCoordinator:
         decision = state.get("decision")
         plan = state.get("plan_count", 1)
         context = ToolContext(
-            state["db"], state["user_id"], state.get("knowledge_base_ids", ())
+            db=state["db"],
+            owner_id=state["data_owner_id"],
+            knowledge_base_ids=state.get("knowledge_base_ids", ()),
         )
         for call in decision.calls if decision is not None else ():
             if used >= self.max_tool_calls:
@@ -580,7 +632,12 @@ class AgenticRagCoordinator:
                 detail = tool_evidence_summary(evidence_count)
             else:
                 status = "failed"
-                detail = "查询失败，已跳过该数据源"
+                # 知识检索工具整体失败（如全部通道不可用）与「查询成功但无结果」
+                # 分开展示：失败是暂时性故障，不是 0 evidence。
+                if call.name.startswith("knowledge"):
+                    detail = "知识检索暂时失败"
+                else:
+                    detail = "查询失败，已跳过该数据源"
             await sink(
                 {
                     "phase": "tool",
@@ -731,7 +788,7 @@ class AgenticRagCoordinator:
         results: list[SearchResult],
         can_replan: bool,
     ) -> EvidenceReview:
-        intent, required, risk = cls._intent_requirements(question)
+        intent, required, auxiliary, risk = cls._requirement_sets(question)
         present = {cls._fact_type(item) for item in results}
         present.discard(None)
         missing = tuple(sorted(required - present))
@@ -748,6 +805,11 @@ class AgenticRagCoordinator:
             and item.metadata.get("review_status") == "current"
             for item in results
         )
+        # 强要求词：问题明确要求实时/销售数据依据时，不允许用知识库建议替代。
+        lowered = question.lower()
+        require_strong = any(
+            term in lowered for term in ("销售数据", "实时", "数据依据", "根据数据")
+        )
 
         if not results:
             decision = "replan" if can_replan else "escalate"
@@ -756,8 +818,19 @@ class AgenticRagCoordinator:
             decision = "escalate"
             summary = "关键证据相互冲突，需要人工确认权威版本"
         elif missing:
-            decision = "replan" if can_replan else "escalate"
-            summary = "证据未覆盖回答所需字段：" + "、".join(missing)
+            auxiliary_present = bool(auxiliary & present)
+            if (
+                intent == "commerce_analysis"
+                and not require_strong
+                and auxiliary_present
+            ):
+                # 普通搭配/推荐类问题：强证据（实时关联规则/销售指标）不足，
+                # 但有知识库推荐/商品知识证据 → 放行，但必须注明非实时数据。
+                decision = "ready"
+                summary = "知识库建议，非实时销售关联数据"
+            else:
+                decision = "replan" if can_replan else "escalate"
+                summary = "证据未覆盖回答所需字段：" + "、".join(missing)
         elif not authority_sufficient:
             decision = "escalate"
             summary = "高风险结论缺少当前有效且可归属的权威来源"
@@ -778,9 +851,20 @@ class AgenticRagCoordinator:
         )
 
     @staticmethod
-    def _intent_requirements(
+    def _requirement_sets(
         question: str,
-    ) -> tuple[str, set[str], Literal["low", "medium", "high"]]:
+    ) -> tuple[
+        str,
+        frozenset[str],
+        frozenset[str],
+        Literal["low", "medium", "high"],
+    ]:
+        """返回 (intent, 强证据集, 辅助证据集, risk)。
+
+        强证据集：缺少即视为证据不足（默认 replan/escalate）。
+        辅助证据集：commerce_analysis 下，强证据不足但辅助知识证据
+        （recommendation/product_knowledge）在普通搭配/推荐类问题中可放行。
+        """
         lowered = question.lower()
         has_order = bool(
             re.search(
@@ -792,7 +876,7 @@ class AgenticRagCoordinator:
         if any(
             term in lowered for term in ("送达", "配送", "物流", "骑手", "延误", "迟到")
         ):
-            return "delivery_status", {"order", "delivery"}, "medium"
+            return "delivery_status", frozenset({"order", "delivery"}), frozenset(), "medium"
         # 商业分析：优先级高于 policy_lookup。含高优先级政策风险词
         # （退款/退货/食品安全/支付安全等）时让位给政策/售后分支。
         if any(
@@ -825,7 +909,12 @@ class AgenticRagCoordinator:
                 required.add("product_metrics")
             if not required:
                 required = {"association_rule", "product_metrics"}
-            return "commerce_analysis", required, "low"
+            return (
+                "commerce_analysis",
+                frozenset(required),
+                frozenset({"recommendation", "product_knowledge"}),
+                "low",
+            )
         # 政策检索：必须有明确政策框架词才触发；单独的「依据」不触发。
         if any(
             term in lowered
@@ -834,22 +923,32 @@ class AgenticRagCoordinator:
                 "法律依据", "监管要求", "官方规定",
             )
         ):
-            return "policy_lookup", {"policy"}, "medium"
+            return "policy_lookup", frozenset({"policy"}), frozenset(), "medium"
         if any(term in lowered for term in ("退款", "退货", "七日无理由", "赔付")):
             required = {"policy"}
             if has_order:
                 required.update(("order", "refund"))
-            return "refund_policy", required, "high"
+            return "refund_policy", frozenset(required), frozenset(), "high"
         if any(
             term in lowered for term in ("食品安全", "变质", "还能吃", "还能喝", "不冰")
         ):
             required = {"policy"}
             if has_order:
                 required.add("order")
-            return "food_safety", required, "high"
+            return "food_safety", frozenset(required), frozenset(), "high"
         if any(term in lowered for term in ("扣款", "支付", "验证码", "账号安全")):
-            return "account_or_payment_risk", {"policy"}, "high"
-        return "general", set(), "low"
+            return "account_or_payment_risk", frozenset({"policy"}), frozenset(), "high"
+        return "general", frozenset(), frozenset(), "low"
+
+    @staticmethod
+    def _intent_requirements(
+        question: str,
+    ) -> tuple[str, set[str], Literal["low", "medium", "high"]]:
+        """兼容入口：返回 (intent, 强证据集, risk)。"""
+        intent, required, _auxiliary, risk = AgenticRagCoordinator._requirement_sets(
+            question
+        )
+        return intent, set(required), risk
 
     @staticmethod
     def _fact_type(item: SearchResult) -> str | None:
