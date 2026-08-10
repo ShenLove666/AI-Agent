@@ -33,6 +33,16 @@ from app.modules.rag.progress import build_execution_summary
 from app.modules.users.models import User
 
 
+class _ResearchIntentRouter:
+    """强制 research 意图：意图路由前置后，需要验证 rewrite/agentic 流程的
+    测试注入固定 research，避免分类器消费模型调用或改变执行路径。"""
+
+    async def classify(self, question, history=None):
+        from app.modules.rag.intent_router import IntentDecision
+
+        return IntentDecision("research", "测试固定 research")
+
+
 class _CommercePlanner:
     """固定返回商品关联 + 商品指标两个工具的模型规划器。"""
 
@@ -70,6 +80,7 @@ class _SlowCoordinator:
         actor_user_id,
         data_owner_id,
         question,
+        original_question=None,
         knowledge_base_ids=(),
         progress_sink=None,
     ):
@@ -242,6 +253,7 @@ def test_sse_stream_emits_agent_progress_before_tokens():
 
             app = create_app()
             app.state.container.chat.model_router = _StreamRouter()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _CommercePlanner()
             transport = httpx.ASGITransport(app=app)
             async with app.router.lifespan_context(app):
@@ -913,6 +925,7 @@ def test_rewrite_progress_events_real_time():
             upgrade_database(app.state.container.database)
             router = _RewriteTimelineRouter()
             app.state.container.chat.model_router = router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.chat.rewrite = QueryRewriteService(router)
             app.state.container.agentic.model_router = router
             with app.state.container.database.session_factory() as db:
@@ -989,9 +1002,9 @@ def test_rewrite_progress_events_real_time():
             # 4) rewrite 与 planning/generation 同一条 collect 流：seq 全流唯一递增
             seqs = [item["seq"] for item in progress]
             assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
-            # 5) planner 收到的是改写后的查询
+            # 5) planner 收到的是改写后的查询（新 prompt 同时携带原始问题与解析后问题）
             assert router.last_planner_request.messages[-1].content.startswith(
-                "问题：改写后的牛肉搭配查询"
+                "原始问题：牛肉适合搭配什么？\n解析后问题：改写后的牛肉搭配查询"
             )
             assert events[-1]["type"] == "done"
 
@@ -1014,6 +1027,7 @@ def test_rewrite_no_history_emits_progress():
             upgrade_database(app.state.container.database)
             router = _RewriteTimelineRouter()
             app.state.container.chat.model_router = router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.chat.rewrite = QueryRewriteService(router)
             app.state.container.agentic.model_router = router
             with app.state.container.database.session_factory() as db:
@@ -1067,6 +1081,7 @@ def test_trivial_direct_emits_no_planning_events():
             app = create_app()
             upgrade_database(app.state.container.database)
             app.state.container.chat.model_router = _StreamRouter()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             planner = _CountingPlannerRouter()
             app.state.container.agentic.model_router = planner
             with app.state.container.database.session_factory() as db:
@@ -1126,6 +1141,7 @@ def test_stream_cancel_during_prepare_finishes_request_run():
 
             app = create_app()
             app.state.container.chat.model_router = _StreamRouter()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.chat.agentic = _SlowCoordinator()
             transport = httpx.ASGITransport(app=app)
             async with app.router.lifespan_context(app):

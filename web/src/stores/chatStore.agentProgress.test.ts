@@ -240,7 +240,29 @@ describe("chatStore agent_progress（经 Presentation Scheduler）", () => {
     expect(message.agentExecutionMode).toBeUndefined();
   });
 
-  it("planning completed 无 mode / complete 无 terminal：不写对应字段（旧后端兼容）", () => {
+  it("complete 携带 intent=history_reference：消息写入 agentIntent", () => {
+    const getHandlers = setupCapturedHandlers();
+    // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
+    useChatStore.getState().sendMessage("查询商品关联数据");
+    const handlers = getHandlers();
+
+    handlers.onAgentProgress?.({
+      seq: 1,
+      phase: "complete",
+      status: "completed",
+      title: "完成",
+      intent: "history_reference"
+    });
+
+    const message = useChatStore.getState().messages[1];
+    expect(message.agentIntent).toBe("history_reference");
+    // intent 只写 agentIntent，不污染 agentSteps / agentTerminalState / agentExecutionMode
+    expect(message.agentSteps).toEqual([]);
+    expect(message.agentTerminalState).toBeUndefined();
+    expect(message.agentExecutionMode).toBeUndefined();
+  });
+
+  it("planning completed 无 mode / complete 无 terminal 无 intent：不写对应字段（旧后端兼容）", () => {
     const getHandlers = setupCapturedHandlers();
     // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
     useChatStore.getState().sendMessage("查询商品关联数据");
@@ -262,6 +284,7 @@ describe("chatStore agent_progress（经 Presentation Scheduler）", () => {
     const message = useChatStore.getState().messages[1];
     expect(message.agentExecutionMode).toBeUndefined();
     expect(message.agentTerminalState).toBeUndefined();
+    expect(message.agentIntent).toBeUndefined();
   });
 });
 

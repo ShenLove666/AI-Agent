@@ -10,6 +10,15 @@ from sqlalchemy import select
 from app.infra_ai.contracts import ChatRequest as ModelChatRequest, ModelStreamChunk
 
 
+class _ResearchIntentRouter:
+    """强制 research 意图：避免意图分类器消费测试路由器的模型调用。"""
+
+    async def classify(self, question, history=None):
+        from app.modules.rag.intent_router import IntentDecision
+
+        return IntentDecision("research", "测试固定 research")
+
+
 class VersionedRouter:
     def __init__(self) -> None:
         self.calls = 0
@@ -33,6 +42,7 @@ def test_regeneration_versions_and_active_turn_history():
             app = create_app()
             router = VersionedRouter()
             app.state.container.chat.model_router = router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             transport = httpx.ASGITransport(app=app)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

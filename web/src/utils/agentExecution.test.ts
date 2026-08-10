@@ -206,6 +206,63 @@ describe("restoreAgentExecution", () => {
     expect(result.agentTerminalState).toBeUndefined();
     expect(result.agentExecutionSummary?.terminalState).toBeUndefined();
   });
+
+  it("restores intent from summary into agentIntent (new data only)", () => {
+    const json = {
+      summary: {
+        planCount: 1,
+        toolCallCount: 0,
+        evidenceCount: 0,
+        replanCount: 0,
+        intent: "history_reference"
+      },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+        { seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect(result.agentExecutionStatus).toBe("completed");
+    expect(result.agentExecutionSummary?.intent).toBe("history_reference");
+    expect(result.agentIntent).toBe("history_reference");
+  });
+
+  it("omits agentIntent when summary has no intent (old data)", () => {
+    const json = {
+      summary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0 },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect("agentIntent" in result).toBe(false);
+    expect(result.agentIntent).toBeUndefined();
+  });
+
+  it("ignores invalid intent value from summary", () => {
+    const json = {
+      summary: {
+        planCount: 1,
+        toolCallCount: 0,
+        evidenceCount: 0,
+        replanCount: 0,
+        intent: "mystery"
+      },
+      steps: [
+        { seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" }
+      ]
+    };
+
+    const result = restoreAgentExecution(json, "NORMAL");
+
+    expect("agentIntent" in result).toBe(false);
+    expect(result.agentIntent).toBeUndefined();
+    expect(result.agentExecutionSummary?.intent).toBeUndefined();
+  });
 });
 
 describe("cancelAgentSteps", () => {

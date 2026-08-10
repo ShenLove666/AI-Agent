@@ -431,6 +431,7 @@ class _FakeAgentic:
         actor_user_id,
         data_owner_id,
         question,
+        original_question=None,
         knowledge_base_ids=(),
         progress_sink=None,
     ):

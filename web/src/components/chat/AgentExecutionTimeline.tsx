@@ -17,6 +17,7 @@ import type {
   AgentExecutionStatus,
   AgentExecutionStep,
   AgentExecutionSummary,
+  AgentIntent,
   AgentTerminalState
 } from "@/types";
 import { buildAgentTimelineViewModel } from "@/utils/agentTimelineViewModel";
@@ -31,6 +32,8 @@ interface AgentExecutionTimelineProps {
   mode?: AgentExecutionMode;
   /** 最终终止状态（complete 事件 / 持久化 summary）：direct 隐藏，refused/escalated 强制展示 */
   terminalState?: AgentTerminalState;
+  /** 本轮请求意图（complete 事件 / 持久化 summary.intent）：direct/history_reference 隐藏时间线 */
+  intent?: AgentIntent;
   /**
    * 是否属于当前最新一轮：最新轮执行时展开并保持展开（完成后不自动折叠），
    * 不再是最新轮（用户发送了下一问）时收起；历史会话加载默认折叠。
@@ -160,6 +163,7 @@ export function AgentExecutionTimeline({
   className,
   mode,
   terminalState,
+  intent,
   isCurrentTurn = true
 }: AgentExecutionTimelineProps) {
   const isRunning = status === "running";
@@ -191,7 +195,8 @@ export function AgentExecutionTimeline({
     summary,
     expandedRounds,
     mode,
-    terminalState
+    terminalState,
+    intent
   });
   // direct 对话隐藏执行过程；refuse/escalate 与 failed/cancelled 及含工具步骤的旧数据照常展示
   if (!vm.shouldShowTimeline) return null;

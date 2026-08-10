@@ -51,9 +51,10 @@ export const MessageItem = React.memo(function MessageItem({
         agentSteps: selectedVersion.agentSteps,
         agentExecutionStatus: selectedVersion.agentExecutionStatus,
         agentExecutionSummary: selectedVersion.agentExecutionSummary,
-        // mode/terminalState 同样严格绑定版本（老版本缺失时保持 undefined，不做兜底）
+        // mode/terminalState/intent 同样严格绑定版本（老版本缺失时保持 undefined，不做兜底）
         agentExecutionMode: selectedVersion.agentExecutionMode,
-        agentTerminalState: selectedVersion.agentTerminalState
+        agentTerminalState: selectedVersion.agentTerminalState,
+        agentIntent: selectedVersion.agentIntent
       }
     : message;
   const isUser = message.role === "user";
@@ -122,6 +123,7 @@ export const MessageItem = React.memo(function MessageItem({
           summary={renderedMessage.agentExecutionSummary}
           mode={renderedMessage.agentExecutionMode}
           terminalState={renderedMessage.agentTerminalState}
+          intent={renderedMessage.agentIntent}
           isCurrentTurn={isLatestTurn}
         />
         {isThinking ? (

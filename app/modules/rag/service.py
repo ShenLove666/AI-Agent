@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 from app.framework.errors import AppError, ProviderUnavailableError
 from app.infra_ai.contracts import ChatMessage, ChatRequest as ModelChatRequest, ModelStreamChunk
 from app.infra_ai.router import ChatModelRouter
-from app.modules.conversations.models import ChatRequestRun, ConversationTurn, Message
+from app.modules.conversations.models import (
+    ChatRequestRun,
+    Conversation,
+    ConversationTurn,
+    Message,
+)
 from app.modules.conversations.service import ConversationService
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
 from app.modules.rag.prompt_budget import count_tokens, truncate_to_tokens
@@ -27,6 +32,7 @@ from app.modules.rag.progress import (
     make_counting_sink,
     phase_text,
 )
+from app.modules.rag.intent_router import ConversationIntentRouter, IntentDecision
 from app.modules.rag.rewrite import QueryRewriteService, RewriteResult
 from app.modules.rag.schemas import ChatRequest, ChatResponse
 from app.modules.rag.terminal import build_terminal_response
@@ -56,6 +62,16 @@ class PreparedChat:
     # 收集的原始 agent 进度事件（prepare 阶段，seq/timestamp 已编号），
     # generation 阶段由 complete()/stream() 继续追加，持久化时再做 reducer 合并。
     agent_execution_events: list[AgentProgressEvent] = field(default_factory=list)
+    # 意图前置路由结果（direct/history_reference/research/refuse）。
+    # complete()/stream() 生成阶段按它分流（配合 prebuilt_answer），
+    # complete 事件携带同值。
+    intent: str | None = None
+    # 执行模式：direct/history_reference/research/refuse（与 intent 同步，
+    # 语义上描述「本条消息走了哪条执行路径」）。
+    execution_mode: str | None = None
+    # history_reference/refuse 的确定性回答文本（生成阶段直接输出，
+    # 不调用模型）；None 表示正常模型生成。
+    prebuilt_answer: str | None = None
 
 
 _TERMINAL_SENTENCE_ENDINGS = "。！？"
@@ -93,6 +109,7 @@ class RagChatService:
         context_token_budget: int = 4000,
         agentic: AgenticRagCoordinator | None = None,
         runtime_settings_repository=None,
+        intent_router: ConversationIntentRouter | None = None,
     ):
         self.model_router = model_router
         self.conversations = conversations
@@ -106,6 +123,12 @@ class RagChatService:
         self.context_token_budget = context_token_budget
         self.agentic = agentic
         self.runtime_settings_repository = runtime_settings_repository
+        # 意图前置路由（Intent → Rewrite → Research）。构造时创建，测试可注入
+        # 自定义实例；model_router 在每次 classify 前同步为服务当前值
+        # （运行期/测试会整体替换 router 实例，避免陈旧绑定）。
+        self.intent_router = intent_router or ConversationIntentRouter(
+            self.model_router
+        )
 
     def _apply_runtime_overrides(self, db: Session) -> None:
         """应用运行时配置中「立即生效」的参数（保存后无需重启）。"""
@@ -233,6 +256,186 @@ class RagChatService:
             )
             remaining -= count_tokens(content)
         return selected
+
+    @staticmethod
+    def _plain_assistant_prompt(
+        request: ChatRequest, history: list[ChatMessage]
+    ) -> ModelChatRequest:
+        """普通零售运营助手 prompt（无证据上下文）。
+
+        direct 与 refused/escalated 终态共用；history_reference/refuse 的
+        占位 model_request 也用同一构造（生成阶段直接输出 prebuilt_answer，
+        不会真正调用模型）。
+        """
+        system_prompt = (
+            "你是邻里鲜选 AI 运营助手，可以协助查询商品经营、订单、"
+            "售后与知识库相关问题。请用中文简洁友好地回复。"
+        )
+        messages = [ChatMessage("system", system_prompt)]
+        messages.extend(history)
+        messages.append(ChatMessage("user", request.question))
+        return ModelChatRequest(
+            messages=messages,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            metadata={
+                "deep_thinking": request.deep_thinking,
+                "requested_mode": "thinking" if request.deep_thinking else "normal",
+            },
+        )
+
+    @staticmethod
+    def _emit_generation_progress(prepared: PreparedChat) -> bool:
+        """是否发送 generation running/completed 进度事件。
+
+        research（含 escalate 终态）与 refuse 保留现有事件流：refuse 需在
+        Timeline 展示「请求无法执行」状态（现有测试与前端依赖）；direct 与
+        history_reference 的 Timeline 对用户隐藏（前端 steps 为空），
+        不发送任何 generation progress 事件。
+        """
+        return prepared.intent in (None, "research", "refuse")
+
+    async def prepare_history_reference_response(
+        self,
+        db: Session,
+        request: ChatRequest,
+        trace: TraceExecution,
+        conversation: Conversation,
+        turn: ConversationTurn,
+        user_message: Message,
+        request_run_id: int | None,
+        budgeted_history: list[ChatMessage],
+    ) -> PreparedChat:
+        """history_reference：答案来自当前对话本身，不 Rewrite、不 RAG。
+
+        从 budgeted_history 取最近一条 user 消息确定性回答；无历史时兜底
+        「当前对话还没有历史消息」。terminal 语义 direct（message_status
+        NORMAL），生成阶段直接输出 prebuilt_answer，不调用模型。
+        """
+        previous_user = next(
+            (item for item in reversed(budgeted_history) if item.role == "user"),
+            None,
+        )
+        prebuilt_answer = (
+            f"你上一句话问的是：\u201c{previous_user.content}\u201d"
+            if previous_user is not None
+            else "当前对话还没有历史消息"
+        )
+        with self.traces.node(db, trace, "prompt") as attributes:
+            model_request = self._plain_assistant_prompt(request, budgeted_history)
+            attributes.update(
+                intent="history_reference",
+                original_question=request.question,
+                resolved_question=request.question,
+                prebuilt=True,
+                history_messages_used=len(budgeted_history),
+                prompt_messages=len(model_request.messages),
+            )
+        return PreparedChat(
+            conversation.id,
+            conversation.title,
+            turn,
+            user_message.id,
+            model_request,
+            [],
+            request.question,
+            trace,
+            request_run_id,
+            "direct",
+            "direct",
+            intent="history_reference",
+            execution_mode="history_reference",
+            prebuilt_answer=prebuilt_answer,
+        )
+
+    async def prepare_direct_response(
+        self,
+        db: Session,
+        request: ChatRequest,
+        trace: TraceExecution,
+        conversation: Conversation,
+        turn: ConversationTurn,
+        user_message: Message,
+        request_run_id: int | None,
+        budgeted_history: list[ChatMessage],
+    ) -> PreparedChat:
+        """direct：不需要商家私有数据/知识库即可回答。
+
+        不 Rewrite、不 Agent；model_request 用普通零售运营助手 prompt
+        （无证据上下文）；Timeline 对用户隐藏（生成阶段不发 generation
+        progress 事件，token 正常流式）。
+        """
+        with self.traces.node(db, trace, "prompt") as attributes:
+            model_request = self._plain_assistant_prompt(request, budgeted_history)
+            attributes.update(
+                intent="direct",
+                original_question=request.question,
+                resolved_question=request.question,
+                context_count=0,
+                context_chars=0,
+                history_messages_used=len(budgeted_history),
+                prompt_messages=len(model_request.messages),
+                requested_mode="thinking" if request.deep_thinking else "normal",
+                reasoning_enabled=request.deep_thinking,
+            )
+        return PreparedChat(
+            conversation.id,
+            conversation.title,
+            turn,
+            user_message.id,
+            model_request,
+            [],
+            request.question,
+            trace,
+            request_run_id,
+            "direct",
+            "direct",
+            intent="direct",
+            execution_mode="direct",
+        )
+
+    async def prepare_refusal_response(
+        self,
+        db: Session,
+        request: ChatRequest,
+        trace: TraceExecution,
+        conversation: Conversation,
+        turn: ConversationTurn,
+        user_message: Message,
+        request_run_id: int | None,
+        budgeted_history: list[ChatMessage],
+    ) -> PreparedChat:
+        """refuse：请求本身不应执行，固定拒绝响应，不 Retrieval。
+
+        prebuilt_answer = build_terminal_response("refused")；生成阶段保留
+        generation running/completed 事件（展示「请求无法执行」状态）。
+        """
+        with self.traces.node(db, trace, "prompt") as attributes:
+            model_request = self._plain_assistant_prompt(request, budgeted_history)
+            attributes.update(
+                intent="refuse",
+                original_question=request.question,
+                resolved_question=request.question,
+                prebuilt=True,
+                history_messages_used=len(budgeted_history),
+                prompt_messages=len(model_request.messages),
+            )
+        return PreparedChat(
+            conversation.id,
+            conversation.title,
+            turn,
+            user_message.id,
+            model_request,
+            [],
+            request.question,
+            trace,
+            request_run_id,
+            "refuse",
+            "refused",
+            intent="refuse",
+            execution_mode="refuse",
+            prebuilt_answer=build_terminal_response("refused"),
+        )
 
     @staticmethod
     def _fingerprint(
@@ -441,6 +644,49 @@ class RagChatService:
         )
         budgeted_history = self._budget_history(history)
 
+        # 意图前置路由（Intent → Rewrite → Research）：只有 research 才继续
+        # rewrite/agentic；direct/history_reference/refuse 走确定性快速分支，
+        # 不调用改写与 Agent 流程（refuse 同时保证不触发任何 Retrieval）。
+        # 同步当前 model_router：运行期/测试可能整体替换 router 实例，
+        # 避免构造时的陈旧绑定（否则 classify 会调用旧模型导致意图误判）。
+        # 注入的测试替身（非 ConversationIntentRouter）无此属性则跳过。
+        if isinstance(self.intent_router, ConversationIntentRouter):
+            self.intent_router.model_router = self.model_router
+        intent = await self.intent_router.classify(request.question, budgeted_history)
+        if intent.intent == "history_reference":
+            return await self.prepare_history_reference_response(
+                db,
+                request,
+                trace,
+                conversation,
+                turn,
+                user_message,
+                request_run.id if request_run is not None else None,
+                budgeted_history,
+            )
+        if intent.intent == "direct":
+            return await self.prepare_direct_response(
+                db,
+                request,
+                trace,
+                conversation,
+                turn,
+                user_message,
+                request_run.id if request_run is not None else None,
+                budgeted_history,
+            )
+        if intent.intent == "refuse":
+            return await self.prepare_refusal_response(
+                db,
+                request,
+                trace,
+                conversation,
+                turn,
+                user_message,
+                request_run.id if request_run is not None else None,
+                budgeted_history,
+            )
+
         # 收集本请求的 agent 进度事件（prepare 内部 seq 统一递增），
         # 并透传给外层 sink（stream 层会再次统一编号，最外层编号生效）。
         # 定义在 rewrite 阶段之前：rewrite/planning/tool/review/replan/
@@ -474,6 +720,9 @@ class RagChatService:
                 actorUserId=actor_user_id,
                 dataOwnerId=data_owner_id,
                 rewritten_query=rewrite.rewritten_query,
+                original_question=request.question,
+                resolved_question=rewrite.rewritten_query,
+                intent="research",
                 fallback=rewrite.used_fallback,
                 skip_reason=rewrite.skip_reason,
                 history_messages=len(budgeted_history),
@@ -495,6 +744,7 @@ class RagChatService:
                     actor_user_id=actor_user_id,
                     data_owner_id=data_owner_id,
                     question=rewrite.rewritten_query,
+                    original_question=request.question,
                     knowledge_base_ids=tuple(request.knowledge_base_ids),
                     progress_sink=collect,
                 )
@@ -693,21 +943,13 @@ class RagChatService:
                 for item in documents
             ]
             # 生成阶段的 system prompt 按 agent 终态选择（complete/stream 共用
-            # 同一策略）：direct 与 refused/escalated 不拼接检索证据上下文；
+            # 同一策略）：direct 与 refused/escalated 不拼接检索证据上下文
+            # （普通零售运营助手 prompt，复用意图层 direct 分支的同一构造）；
             # refused/escalated 的 model_request 仅占位保持类型完整，生成阶段
             # 不会调用模型（直接输出固定文案）。
-            if agent_terminal_state == "direct":
+            if agent_terminal_state in ("direct", "refused", "escalated"):
+                model_request = self._plain_assistant_prompt(request, budgeted_history)
                 context = ""
-                system_prompt = (
-                    "你是邻里鲜选 AI 运营助手，可以协助查询商品经营、订单、"
-                    "售后与知识库相关问题。请用中文简洁友好地回复。"
-                )
-            elif agent_terminal_state in ("refused", "escalated"):
-                context = ""
-                system_prompt = (
-                    "你是邻里鲜选 AI 运营助手，可以协助查询商品经营、订单、"
-                    "售后与知识库相关问题。请用中文简洁友好地回复。"
-                )
             else:
                 context = "\n\n".join(
                     f"[资料 {index}] {item.content}"
@@ -718,30 +960,33 @@ class RagChatService:
                     " observed/derived/synthetic；资料不足时明确说明，不得编造"
                     "来源、销量、价格或政策。"
                 )
-            user_content = request.question
-            if context:
-                user_content = f"用户问题：{request.question}\n\n可用资料：\n{context}"
-            messages = [ChatMessage("system", system_prompt)]
-            messages.extend(budgeted_history)
-            messages.append(ChatMessage("user", user_content))
+                user_content = request.question
+                if context:
+                    user_content = f"用户问题：{request.question}\n\n可用资料：\n{context}"
+                messages = [ChatMessage("system", system_prompt)]
+                messages.extend(budgeted_history)
+                messages.append(ChatMessage("user", user_content))
+                model_request = ModelChatRequest(
+                    messages=messages,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    metadata={
+                        "deep_thinking": request.deep_thinking,
+                        "requested_mode": "thinking" if request.deep_thinking else "normal",
+                    },
+                )
             attributes.update(
+                intent="research",
+                original_question=request.question,
+                resolved_question=rewrite.rewritten_query,
                 context_count=len(documents),
                 context_chars=len(context),
                 context_tokens=count_tokens(context),
                 history_messages_used=len(budgeted_history),
                 history_tokens=sum(count_tokens(item.content) for item in budgeted_history),
-                prompt_messages=len(messages),
+                prompt_messages=len(model_request.messages),
                 requested_mode="thinking" if request.deep_thinking else "normal",
                 reasoning_enabled=request.deep_thinking,
-            )
-            model_request = ModelChatRequest(
-                messages=messages,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                metadata={
-                    "deep_thinking": request.deep_thinking,
-                    "requested_mode": "thinking" if request.deep_thinking else "normal",
-                },
             )
         return PreparedChat(
             conversation.id,
@@ -756,6 +1001,8 @@ class RagChatService:
             agent_mode,
             agent_terminal_state,
             agent_execution_events=collected,
+            intent="research",
+            execution_mode="research",
         )
 
     @staticmethod
@@ -842,7 +1089,10 @@ class RagChatService:
             terminal = prepared.agent_terminal_state
             with self.traces.node(db, prepared.trace, "generation") as attributes:
                 attributes["terminal_mode"] = terminal
-                if terminal in ("refused", "escalated"):
+                if prepared.prebuilt_answer is not None:
+                    # history_reference / refuse：不调用模型，直接输出确定性文本
+                    answer = prepared.prebuilt_answer
+                elif terminal in ("refused", "escalated"):
                     # terminal 状态：不调用模型，直接输出固定文案
                     answer = build_terminal_response(terminal)
                 else:
@@ -857,24 +1107,27 @@ class RagChatService:
                 ),
                 default=1,
             )
-            # generation 阶段事件：running → completed（seq 接续 prepare 编号）
-            for generation_status, generation_title in (
-                ("running", phase_text("generation", "running")),
-                ("completed", phase_text("generation", "completed")),
-            ):
-                prepared.agent_execution_events.append(
-                    {
-                        "seq": len(prepared.agent_execution_events) + 1,
-                        "phase": "generation",
-                        "status": generation_status,
-                        "agent": "generator",
-                        "plan": final_plan,
-                        "title": generation_title,
-                        "timestamp": round(time.time() * 1000, 3),
-                    }
-                )
-            # complete 阶段事件携带 terminal，供 summary 持久化 terminalState
-            # （与 stream() 成功路径的 complete 事件同一契约）。
+            # generation 阶段事件：running → completed（seq 接续 prepare 编号）。
+            # direct/history_reference 的 Timeline 对用户隐藏（前端 steps 为空），
+            # 不发送 generation 事件；refuse 保留（展示「请求无法执行」状态）。
+            if self._emit_generation_progress(prepared):
+                for generation_status, generation_title in (
+                    ("running", phase_text("generation", "running")),
+                    ("completed", phase_text("generation", "completed")),
+                ):
+                    prepared.agent_execution_events.append(
+                        {
+                            "seq": len(prepared.agent_execution_events) + 1,
+                            "phase": "generation",
+                            "status": generation_status,
+                            "agent": "generator",
+                            "plan": final_plan,
+                            "title": generation_title,
+                            "timestamp": round(time.time() * 1000, 3),
+                        }
+                    )
+            # complete 阶段事件携带 terminal + intent，供 summary 持久化
+            # terminalState / intent（与 stream() 成功路径的 complete 事件同一契约）。
             prepared.agent_execution_events.append(
                 {
                     "seq": len(prepared.agent_execution_events) + 1,
@@ -884,6 +1137,7 @@ class RagChatService:
                     "title": phase_text("complete", "completed"),
                     "detail": "回答生成完成",
                     "terminal": terminal,
+                    "intent": prepared.intent,
                     "timestamp": round(time.time() * 1000, 3),
                 }
             )
@@ -1079,18 +1333,36 @@ class RagChatService:
             first_token_at: float | None = None
             thinking_started_at: float | None = None
             thinking_finished_at: float | None = None
-            async for item in emit_event(
-                {
-                    "phase": "generation",
-                    "status": "running",
-                    "agent": "generator",
-                    "plan": final_plan,
-                    "title": phase_text("generation", "running"),
-                }
-            ):
-                yield item
+            # direct/history_reference 的 Timeline 对用户隐藏（前端 steps 为空），
+            # 不发送 generation running；research/refuse 保持现有事件流
+            # （refuse 需展示「请求无法执行」状态）。
+            if self._emit_generation_progress(prepared):
+                async for item in emit_event(
+                    {
+                        "phase": "generation",
+                        "status": "running",
+                        "agent": "generator",
+                        "plan": final_plan,
+                        "title": phase_text("generation", "running"),
+                    }
+                ):
+                    yield item
             with self.traces.node(db, prepared.trace, "generation") as attributes:
-                if terminal in ("refused", "escalated"):
+                if prepared.prebuilt_answer is not None:
+                    # history_reference / refuse：不进入 router.stream 循环
+                    # （不调用模型）。固定文案在 generation running 之后按句子
+                    # 作为 token 输出（不变量：正文不得出现在「回答生成完成」
+                    # 之后），answer_parts 累计保持一致，SSE 生命周期正常完结。
+                    text = prepared.prebuilt_answer
+                    answer_parts.append(text)
+                    attributes.update(
+                        answer_chars=len(text),
+                        interrupted=False,
+                        terminal_mode=terminal,
+                    )
+                    for part in _split_terminal_text(text):
+                        yield {"type": "token", "data": part}
+                elif terminal in ("refused", "escalated"):
                     # terminal 状态：不进入 router.stream 循环（不调用模型）。
                     # 固定文案在 generation running 之后立即按句子作为 token
                     # 输出（不变量：conversation < generation running < token
@@ -1120,17 +1392,19 @@ class RagChatService:
                         if first_token_at is None:
                             first_token_at = time.perf_counter()
                             thinking_finished_at = first_token_at
-                            async for item in emit_event(
-                                {
-                                    "phase": "generation",
-                                    "status": "running",
-                                    "agent": "generator",
-                                    "plan": final_plan,
-                                    "title": "正在生成回答",
-                                    "detail": "回答内容正在生成中",
-                                }
-                            ):
-                                yield item
+                            # direct 不发 generation 进度事件（Timeline 隐藏）
+                            if self._emit_generation_progress(prepared):
+                                async for item in emit_event(
+                                    {
+                                        "phase": "generation",
+                                        "status": "running",
+                                        "agent": "generator",
+                                        "plan": final_plan,
+                                        "title": "正在生成回答",
+                                        "detail": "回答内容正在生成中",
+                                    }
+                                ):
+                                    yield item
                         answer_parts.append(token)
                         yield {"type": "token", "data": token}
                     interrupted = bool(cancel_event is not None and cancel_event.is_set())
@@ -1149,17 +1423,19 @@ class RagChatService:
                     )
             answer = "".join(answer_parts)
             if not interrupted:
-                # 回答生成完成（generation completed）先于 complete 事件下发
-                async for item in emit_event(
-                    {
-                        "phase": "generation",
-                        "status": "completed",
-                        "agent": "generator",
-                        "plan": final_plan,
-                        "title": phase_text("generation", "completed"),
-                    }
-                ):
-                    yield item
+                # 回答生成完成（generation completed）先于 complete 事件下发；
+                # direct/history_reference 不发 generation 事件（Timeline 隐藏）
+                if self._emit_generation_progress(prepared):
+                    async for item in emit_event(
+                        {
+                            "phase": "generation",
+                            "status": "completed",
+                            "agent": "generator",
+                            "plan": final_plan,
+                            "title": phase_text("generation", "completed"),
+                        }
+                    ):
+                        yield item
                 async for item in emit_event(
                     {
                         "phase": "complete",
@@ -1168,6 +1444,7 @@ class RagChatService:
                         "title": phase_text("complete", "completed"),
                         "detail": "回答生成完成",
                         "terminal": terminal,
+                        "intent": prepared.intent,
                     }
                 ):
                     yield item

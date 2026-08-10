@@ -3,6 +3,7 @@ import type {
   AgentExecutionStatus,
   AgentExecutionStep,
   AgentExecutionSummary,
+  AgentIntent,
   AgentProgressStatus,
   AgentTerminalState
 } from "@/types";
@@ -49,15 +50,16 @@ export interface AgentTimelineViewModel {
   hasRunning: boolean;
   /**
    * 是否渲染 Timeline：
-   * - direct（mode 或 terminalState）且无工具/审查/重规划执行 → false：
-   *   普通直接对话隐藏执行过程（新后端 trivial direct 不发任何 planning 事件、steps 为空，
-   *   running 期间同样不显示）
+   * - direct / history_reference（mode / terminalState / intent）且无工具/审查/重规划执行 → false：
+   *   普通直接对话与历史引用对话隐藏执行过程（新后端 trivial direct / history_reference 不发任何
+   *   planning/tool/review/generation progress 事件、steps 为空，running 期间同样不显示；
+   *   intent 是历史恢复与完整性的兜底）
    * - running 且已有任何用户可见步骤（rewrite/planning/tool/review/replan/generation）→ true：
    *   planning/rewrite running 一到就立即出现。以前 AI 处理过程晚出现的原因：旧规则只认
    *   tool/review/replan，planning running 阶段 Timeline 一直隐藏，要等第一个 tool running
    *   才冒出来（对 research 查询表现为「停顿后才出现」）
    * - 完成态按是否有工具/审查/重规划步骤或 refuse/escalate/failed/cancelled 计算；
-   *   旧数据（无 mode/terminalState 且仅 planning+generation）→ false（绝大多数是 direct 老数据）
+   *   旧数据（无 mode/terminalState/intent 且仅 planning+generation）→ false（绝大多数是 direct 老数据）
    */
   shouldShowTimeline: boolean;
 }
@@ -209,6 +211,8 @@ export function buildAgentTimelineViewModel(
     mode?: AgentExecutionMode;
     /** 最终终止状态（complete 事件 / 持久化 summary；旧数据缺失） */
     terminalState?: AgentTerminalState;
+    /** 本轮请求意图（complete 事件 / 持久化 summary.intent；旧数据缺失） */
+    intent?: AgentIntent;
   }
 ): AgentTimelineViewModel {
   const all = steps ?? [];
@@ -270,8 +274,12 @@ export function buildAgentTimelineViewModel(
     if (options.status === "running") return "正在分析并查询相关数据…";
     // refuse/escalate 的用户文案优先于 failed/cancelled/completed：
     // REJECTED/ESCALATED 是「正常完成的受限结果」（映射为 completed），
-    // 拒绝/升级文案由 mode/terminalState 驱动，避免显示「处理失败」
-    if (options.mode === "refuse" || options.terminalState === "refused") {
+    // 拒绝/升级文案由 mode/terminalState/intent 驱动，避免显示「处理失败」
+    if (
+      options.mode === "refuse" ||
+      options.terminalState === "refused" ||
+      options.intent === "refuse"
+    ) {
       return "该请求无法协助执行";
     }
     if (options.mode === "escalate" || options.terminalState === "escalated") {
@@ -299,19 +307,26 @@ export function buildAgentTimelineViewModel(
     return text;
   })();
 
-  // direct 且无执行 → 隐藏；running 且已有任何用户可见步骤 → 立即显示（planning/rewrite
-  // running 一到就出现，不再等第一个 tool running——旧规则只认 tool/review/replan，
-  // 这是「AI 处理过程以前晚出现」的根因）；
+  // direct / history_reference 且无执行 → 隐藏；running 且已有任何用户可见步骤 → 立即显示
+  // （planning/rewrite running 一到就出现，不再等第一个 tool running——旧规则只认
+  // tool/review/replan，这是「AI 处理过程以前晚出现」的根因）；
   // 完成态按 hasExecution / isBlocked / failed / cancelled 判定；
   // refused/escalated 虽无工具步骤也显示（用户需理解状态）；
-  // 旧数据无 mode/terminalState 且只有 planning+generation 时按 false 处理（绝大多数是 direct 老数据）
+  // intent=direct/history_reference 与现有 direct 判定合并隐藏：新后端这两种意图不发任何
+  // planning/tool/review/generation progress 事件（steps 为空），running 期间同样隐藏；
+  // intent 字段是历史恢复与完整性的兜底（仅新数据持久化；旧数据缺失时按 mode/terminalState 判定）；
+  // 旧数据无 mode/terminalState/intent 且只有 planning+generation 时按 false 处理（绝大多数是 direct 老数据）
   const isDirect =
-    options.mode === "direct" || options.terminalState === "direct";
+    options.mode === "direct" ||
+    options.terminalState === "direct" ||
+    options.intent === "direct" ||
+    options.intent === "history_reference";
   const isBlocked =
     options.mode === "refuse" ||
     options.mode === "escalate" ||
     options.terminalState === "refused" ||
-    options.terminalState === "escalated";
+    options.terminalState === "escalated" ||
+    options.intent === "refuse";
   const hasExecution = rows.some(
     (row) => row.phase === "tool" || row.phase === "review" || row.phase === "replan"
   );

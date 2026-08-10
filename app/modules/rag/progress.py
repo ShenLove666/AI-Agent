@@ -192,7 +192,9 @@ def build_execution_summary(
     final_status 提供时（"failed"/"cancelled"）把合并后仍为 running 的步骤
     强制改为该状态。无执行事件时返回 None。
     summary 额外捕获 phase=="complete" 且带 "terminal" 字段的事件写入
-    terminalState（direct/grounded/refused/escalated；缺省不写）。
+    terminalState（direct/grounded/refused/escalated；缺省不写），带
+    "intent" 字段的事件写入 intent（direct/history_reference/research/
+    refuse；缺省不写）。
     """
     merged: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
     order: list[tuple[Any, Any, Any]] = []
@@ -201,10 +203,14 @@ def build_execution_summary(
     # 终态来自 phase=="complete" 且带 "terminal" 的事件（complete 阶段本身
     # 不进 steps，只用于向 summary 写入 terminalState；无该字段时不写）。
     terminal_state: str | None = None
+    # 意图路由结果来自 phase=="complete" 且带 "intent" 的事件（缺省不写）。
+    intent: str | None = None
     for event in events:
         phase = event.get("phase")
         if phase == "complete" and event.get("terminal"):
             terminal_state = str(event["terminal"])
+        if phase == "complete" and event.get("intent"):
+            intent = str(event["intent"])
         if phase not in _EXECUTION_PHASES:
             continue
         tool = event.get("tool") or {}
@@ -284,6 +290,8 @@ def build_execution_summary(
     }
     if terminal_state is not None:
         summary["terminalState"] = terminal_state
+    if intent is not None:
+        summary["intent"] = intent
     return {
         "summary": summary,
         "steps": steps,

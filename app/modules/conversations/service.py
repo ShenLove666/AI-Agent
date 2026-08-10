@@ -168,7 +168,10 @@ class ConversationService:
             if (
                 user_message is not None
                 and assistant_message is not None
-                and assistant_message.message_status == "NORMAL"
+                # REJECTED/ESCALATED 是「正常完成的受限结果」（拒绝/资料不足的
+                # 确定性回答），同样进入历史上下文，供后续轮次回溯
+                and assistant_message.message_status
+                in ("NORMAL", "REJECTED", "ESCALATED")
             ):
                 history.append((user_message, assistant_message))
         if turns:
@@ -181,7 +184,7 @@ class ConversationService:
                 pending_user = message
             elif (
                 message.role == "assistant"
-                and message.message_status == "NORMAL"
+                and message.message_status in ("NORMAL", "REJECTED", "ESCALATED")
                 and pending_user is not None
             ):
                 history.append((pending_user, message))
@@ -222,7 +225,9 @@ class ConversationService:
             turn_id=turn.id,
             version=version,
         )
-        if message_status == "NORMAL":
+        # REJECTED/ESCALATED 是「正常完成的受限结果」（拒绝/资料不足的确定性回答），
+        # 同样视为完成态：turn 进入历史，后续轮次可回溯上下文。
+        if message_status in ("NORMAL", "REJECTED", "ESCALATED"):
             turn.active_assistant_message_id = message.id
             turn.status = "completed"
         elif turn.active_assistant_message_id is None:

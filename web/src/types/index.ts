@@ -30,6 +30,9 @@ export type AgentExecutionMode = "direct" | "research" | "refuse" | "escalate";
 /** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧数据缺失） */
 export type AgentTerminalState = "direct" | "grounded" | "refused" | "escalated";
 
+/** 本轮请求意图（complete 事件 / 持久化 summary.intent；旧数据缺失；escalated 时 intent="research"） */
+export type AgentIntent = "direct" | "history_reference" | "research" | "refuse";
+
 /** Agent 工具调用进度（phase=tool 时携带） */
 export interface AgentToolProgress {
   name: string;
@@ -59,6 +62,8 @@ export interface AgentProgressPayload {
   mode?: AgentExecutionMode;
   /** complete 时携带：最终终止状态（direct/grounded/refused/escalated） */
   terminal?: AgentTerminalState;
+  /** complete 时携带：本轮请求意图（direct 直接回答 / history_reference 历史引用 / research 检索 / refuse 拒绝；escalated 时为 research） */
+  intent?: AgentIntent;
 }
 
 /** 时间线中的单步执行记录（stepId 由前端构造，保证 running→completed 原地更新） */
@@ -83,6 +88,8 @@ export interface AgentExecutionSummary {
   durationMs?: number;
   /** 最终终止状态（仅新数据持久化；旧消息缺失） */
   terminalState?: AgentTerminalState;
+  /** 本轮请求意图（仅新数据持久化；旧消息缺失） */
+  intent?: AgentIntent;
 }
 
 export type AgentExecutionStatus = "running" | "completed" | "failed" | "cancelled";
@@ -138,6 +145,8 @@ export interface AnswerVersion {
   agentExecutionMode?: AgentExecutionMode;
   /** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧消息缺失） */
   agentTerminalState?: AgentTerminalState;
+  /** 本轮请求意图（complete 事件 / 持久化 summary.intent；旧消息缺失） */
+  agentIntent?: AgentIntent;
 }
 
 export interface Message {
@@ -168,6 +177,8 @@ export interface Message {
   agentExecutionMode?: AgentExecutionMode;
   /** 最终终止状态（complete 事件 / 持久化 summary.terminalState；旧消息缺失） */
   agentTerminalState?: AgentTerminalState;
+  /** 本轮请求意图（complete 事件 / 持久化 summary.intent；旧消息缺失） */
+  agentIntent?: AgentIntent;
 }
 
 export type RecommendedQuestionStatus = "SUCCESS" | "EMPTY" | "FAILED";

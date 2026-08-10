@@ -367,6 +367,37 @@ describe("AgentExecutionTimeline", () => {
     expect(container.querySelector('[class*="overflow-auto"]')).toBeNull();
   });
 
+  it("intent=history_reference 且无工具步骤：不渲染（隐藏 AI 处理过程）", () => {
+    const { container } = render(
+      <AgentExecutionTimeline
+        status="completed"
+        summary={null}
+        intent="history_reference"
+        steps={[
+          makeStep({ stepId: "plan-1-planning-1", seq: 1, phase: "planning", title: "制定计划" }),
+          makeStep({ stepId: "plan-1-generation-1", seq: 2, phase: "generation", title: "生成回答" })
+        ]}
+      />
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("intent=refuse 无工具步骤：渲染折叠态并显示拒绝文案", () => {
+    render(
+      <AgentExecutionTimeline
+        status="completed"
+        summary={null}
+        intent="refuse"
+        steps={[
+          makeStep({ stepId: "plan-1-planning-1", seq: 1, phase: "planning", title: "制定计划" }),
+          makeStep({ stepId: "plan-1-generation-1", seq: 2, phase: "generation", title: "生成回答" })
+        ]}
+      />
+    );
+    expect(screen.getByText("该请求无法协助执行")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /查看处理过程/ })).toBeInTheDocument();
+  });
+
   it("空 steps 不渲染任何内容（旧消息/旧后端向后兼容）", () => {
     const { container: emptyContainer } = render(
       <AgentExecutionTimeline status="completed" steps={[]} summary={null} />

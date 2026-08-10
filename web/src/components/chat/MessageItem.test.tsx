@@ -202,6 +202,52 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     expect(screen.queryByRole("button", { name: /查看处理过程/ })).not.toBeInTheDocument();
   });
 
+  it("agentIntent=history_reference 且无执行步骤的完成消息：Timeline 不渲染（隐藏 AI 处理过程）", () => {
+    const plainSteps: AgentExecutionStep[] = [
+      { stepId: "plan-1-planning-1", seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+      { stepId: "plan-1-generation-1", seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+    ];
+    const message: Message = {
+      id: "history-ref-msg",
+      role: "assistant",
+      content: "基于历史对话的回答",
+      status: "done",
+      messageStatus: "NORMAL",
+      agentSteps: plainSteps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: summary,
+      agentIntent: "history_reference"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).toBeNull();
+    expect(screen.queryByText("AI 处理过程")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /查看处理过程/ })).not.toBeInTheDocument();
+  });
+
+  it("agentIntent=refuse：无工具步骤也渲染 Timeline，并显示拒绝文案", () => {
+    const plainSteps: AgentExecutionStep[] = [
+      { stepId: "plan-1-planning-1", seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+      { stepId: "plan-1-generation-1", seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+    ];
+    const message: Message = {
+      id: "refuse-intent-msg",
+      role: "assistant",
+      content: "抱歉，我无法处理这个请求。",
+      status: "done",
+      messageStatus: "NORMAL",
+      agentSteps: plainSteps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: { planCount: 1, toolCallCount: 0, evidenceCount: 0, replanCount: 0 },
+      agentIntent: "refuse"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).not.toBeNull();
+    // 折叠态头部显示拒绝文案
+    expect(screen.getByText("该请求无法协助执行")).toBeInTheDocument();
+  });
+
   it("agentExecutionMode=direct 但带工具步骤（矛盾旧数据）：按规格显示执行过程", () => {
     const message: Message = {
       id: "direct-with-tools-msg",

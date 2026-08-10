@@ -364,6 +364,44 @@ describe("buildAgentTimelineViewModel", () => {
       expect(vm.shouldShowTimeline).toBe(false);
     });
 
+    it("intent=direct（仅 generation 步骤或空 steps）：隐藏 Timeline", () => {
+      // 新后端 trivial direct 不发任何 planning/tool/review/generation 事件（只发 complete），
+      // 仅 generation 步骤或空 steps 是典型形状
+      const withGeneration = buildAgentTimelineViewModel(
+        [makeStep("plan-1-generation-1", 1, "generation", "completed", 1, "生成回答")],
+        { status: "completed", intent: "direct" }
+      );
+      expect(withGeneration.shouldShowTimeline).toBe(false);
+      expect(
+        buildAgentTimelineViewModel([], { status: "completed", intent: "direct" }).shouldShowTimeline
+      ).toBe(false);
+    });
+
+    it("intent=history_reference（仅 generation 步骤）：隐藏 Timeline", () => {
+      const vm = buildAgentTimelineViewModel(
+        [makeStep("plan-1-generation-1", 1, "generation", "completed", 1, "生成回答")],
+        { status: "completed", intent: "history_reference" }
+      );
+      expect(vm.shouldShowTimeline).toBe(false);
+    });
+
+    it("intent=refuse（无工具步骤）：强制显示且 summaryText 为拒绝文案", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        intent: "refuse"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
+      expect(vm.summaryText).toBe("该请求无法协助执行");
+    });
+
+    it("intent=research、planning running：立即显示（现有 running 规则）", () => {
+      const vm = buildAgentTimelineViewModel(
+        [makeStep("plan-1-planning-1", 1, "planning", "running", 1, "正在制定查询计划")],
+        { status: "running", intent: "research" }
+      );
+      expect(vm.shouldShowTimeline).toBe(true);
+    });
+
     it("direct（terminalState=direct，无工具步骤）：隐藏 Timeline", () => {
       const vm = buildAgentTimelineViewModel(plainSteps, {
         status: "completed",

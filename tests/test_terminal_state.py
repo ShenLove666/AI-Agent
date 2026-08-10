@@ -152,6 +152,19 @@ def _prepare_app(answer: str = "模型不该被调用的回答"):
     return app, generation_router
 
 
+class _ResearchIntentRouter:
+    """强制 research 意图：让测试直达 agentic 层（Planner/Tools/Reviewer）。
+
+    意图路由前置后，refuse/escalate 等场景默认被路由层拦截；这些测试要验证
+    agentic 层的终态分流，因此注入固定 research 的意图替身。
+    """
+
+    async def classify(self, question, history=None):
+        from app.modules.rag.intent_router import IntentDecision
+
+        return IntentDecision("research", "测试固定 research")
+
+
 async def _register(app, username: str) -> None:
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):
@@ -175,6 +188,7 @@ def test_planner_refuse_blocks_normal_generation():
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _RefusePlanner()
             await _register(app, "refuse-user")
             service = app.state.container.chat
@@ -213,6 +227,7 @@ def test_planner_escalate_no_fabricated_answer():
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _EscalatePlanner()
             await _register(app, "escalate-user")
             service = app.state.container.chat
@@ -246,6 +261,7 @@ def test_stream_refused_terminates_normally():
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _RefusePlanner()
             await _register(app, "refuse-stream-user")
             service = app.state.container.chat
@@ -330,6 +346,7 @@ def test_stream_escalated_token_before_completed_and_status():
             from app.modules.users.repository import UserRepository
 
             app, generation_router = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _EscalatePlanner()
             await _register(app, "escalate-stream-user")
             service = app.state.container.chat
@@ -393,6 +410,7 @@ def test_direct_generation_no_evidence_context():
             from app.modules.users.repository import UserRepository
 
             app, _ = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             # agentic 协调器不配置模型路由 → 普通问候走确定性短路 direct
             await _register(app, "direct-user")
             service = app.state.container.chat
@@ -430,6 +448,7 @@ def test_planning_event_carries_mode_and_summary_terminal_state():
             from app.modules.users.repository import UserRepository
 
             app, _ = _prepare_app()
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             app.state.container.agentic.model_router = _RefusePlanner()
             await _register(app, "mode-user")
             service = app.state.container.chat

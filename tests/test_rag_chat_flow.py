@@ -10,6 +10,16 @@ from app.infra_ai.contracts import ChatRequest as ModelChatRequest, ModelStreamC
 from app.modules.rag.schemas import ChatRequest as RagChatRequest
 
 
+class _ResearchIntentRouter:
+    """强制 research 意图：意图路由前置后，需要验证 agentic/generation 流程的
+    测试注入固定 research，避免分类器消费模型调用或改变执行路径。"""
+
+    async def classify(self, question, history=None):
+        from app.modules.rag.intent_router import IntentDecision
+
+        return IntentDecision("research", "测试固定 research")
+
+
 class FakeChatRouter:
     def __init__(self):
         self.last_request: ModelChatRequest | None = None
@@ -38,6 +48,7 @@ def test_rag_chat_returns_citations_and_persists_messages():
             app = create_app()
             fake_router = FakeChatRouter()
             app.state.container.chat.model_router = fake_router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             transport = httpx.ASGITransport(app=app)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(
@@ -190,6 +201,7 @@ def test_cancelled_request_is_not_cached_and_abnormal_history_is_filtered():
             app = create_app()
             fake_router = FakeChatRouter()
             app.state.container.chat.model_router = fake_router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             async with app.router.lifespan_context(app):
                 with app.state.container.database.session_factory() as db:
                     from app.modules.users.models import User
@@ -288,6 +300,7 @@ def test_failed_request_retry_does_not_duplicate_question_in_prompt():
             app = create_app()
             router = FailOnceRouter()
             app.state.container.chat.model_router = router
+            app.state.container.chat.intent_router = _ResearchIntentRouter()
             transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
             async with app.router.lifespan_context(app):
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

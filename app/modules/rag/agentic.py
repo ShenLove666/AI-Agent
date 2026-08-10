@@ -133,6 +133,9 @@ class AgenticRun:
 class _State(TypedDict, total=False):
     # run() 初始状态保证以下 key 恒存在，允许安全下标访问
     question: Required[str]
+    # 用户原始问题（未改写）：Planner 决策看原始+解析两个版本，避免第二轮
+    # 改写污染意图；工具参数仍由 planner 基于解析后问题生成。
+    original_question: str | None
     # 会话/请求归属（谁在问）；user_id 保留为兼容别名
     actor_user_id: Required[int]
     # 业务数据归属（查谁的商家数据）；工具一律使用 data_owner_id
@@ -216,6 +219,7 @@ class AgenticRagCoordinator:
         data_owner_id: int | None = None,
         user_id: int | None = None,
         question: str,
+        original_question: str | None = None,
         knowledge_base_ids: tuple[int, ...] = (),
         progress_sink: ProgressSink | None = None,
     ) -> AgenticRun:
@@ -232,6 +236,7 @@ class AgenticRagCoordinator:
         state = await self._compile_graph(progress_sink).ainvoke(
             {
                 "question": question,
+                "original_question": original_question,
                 "actor_user_id": actor_user_id,
                 "data_owner_id": data_owner_id,
                 "user_id": actor_user_id,
@@ -449,7 +454,14 @@ class AgenticRagCoordinator:
                     '证据不足重规划时必须改变工具或参数，否则结束。当上一轮工具成功但返回 0 条结果时，重新规划必须扩大召回、修改实体表达、降低合理过滤条件或更换数据源；禁止仅通过提高 min_lift、min_confidence、threshold 等过滤条件重复调用同一工具。工具选择说明：commerce 工具用于真实经营数据（商品指标、销售记录、购物篮、关联规则、订单事实）；knowledge 工具用于知识库/SOP/商品知识/推荐指南/政策/规则/操作说明；一个问题同时需要「业务数据 + 推荐依据」时，允许同时调用 commerce 与 knowledge 工具；不要把 knowledge.search 仅理解成政策搜索。可用工具：'
                     + tool_text,
                 ),
-                ChatMessage("user", f"问题：{question}\n先前状态：{prior}"),
+                ChatMessage(
+                    "user",
+                    # Planner 决策看原始问题 + 解析后问题：避免第二轮改写（replan
+                    # 时 question 已被上一轮改写污染）影响意图判断；工具参数仍由
+                    # planner 基于解析后问题（question）生成。
+                    f"原始问题：{state.get('original_question') or question}\n"
+                    f"解析后问题：{question}\n先前状态：{prior}",
+                ),
             ],
             temperature=0,
             max_tokens=500,

@@ -2,6 +2,7 @@ import type {
   AgentExecutionStatus,
   AgentExecutionStep,
   AgentExecutionSummary,
+  AgentIntent,
   AgentProgressPhase,
   AgentProgressStatus,
   AgentTerminalState,
@@ -50,6 +51,12 @@ const AGENT_TERMINAL_STATES: AgentTerminalState[] = [
 
 function isAgentTerminalState(value: unknown): value is AgentTerminalState {
   return typeof value === "string" && (AGENT_TERMINAL_STATES as string[]).includes(value);
+}
+
+const AGENT_INTENTS: AgentIntent[] = ["direct", "history_reference", "research", "refuse"];
+
+function isAgentIntent(value: unknown): value is AgentIntent {
+  return typeof value === "string" && (AGENT_INTENTS as string[]).includes(value);
 }
 
 export function toNumber(value: unknown, fallback: number): number {
@@ -120,6 +127,7 @@ export function restoreAgentExecution(
   | "agentExecutionSummary"
   | "agentExecutionMode"
   | "agentTerminalState"
+  | "agentIntent"
 > {
   if (!json || typeof json !== "object") return {};
   const raw = json as Record<string, unknown>;
@@ -203,7 +211,9 @@ export function restoreAgentExecution(
           // 仅新数据持久化 terminalState；缺失时省略，页面按旧行为降级
           ...(isAgentTerminalState(summaryRaw.terminalState)
             ? { terminalState: summaryRaw.terminalState }
-            : {})
+            : {}),
+          // 仅新数据持久化 intent；缺失时省略（非法值同样忽略），页面按旧行为降级
+          ...(isAgentIntent(summaryRaw.intent) ? { intent: summaryRaw.intent } : {})
         }
       : computeAgentExecutionSummary(steps) ?? {
           planCount: maxPlan,
@@ -215,7 +225,9 @@ export function restoreAgentExecution(
     agentSteps: restoredSteps,
     agentExecutionStatus,
     agentExecutionSummary: summary,
-    // planning 的 mode 无持久化来源，不恢复（省略）；terminalState 仅新数据存在
-    ...(summary.terminalState ? { agentTerminalState: summary.terminalState } : {})
+    // planning 的 mode 无持久化来源，不恢复（省略）；terminalState / intent 仅新数据存在
+    ...(summary.terminalState ? { agentTerminalState: summary.terminalState } : {}),
+    // summary 存在 intent 且为合法值（四值之一）时恢复 agentIntent；非法/缺失忽略
+    ...(summary.intent ? { agentIntent: summary.intent } : {})
   };
 }
