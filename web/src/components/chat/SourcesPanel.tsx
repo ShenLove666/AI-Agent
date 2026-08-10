@@ -25,6 +25,21 @@ export function SourcesPanel() {
     lastSourcesRef.current = sources;
   }
   const shownSources = open ? sources : lastSourcesRef.current;
+  // 分类计数：内部经营数据 vs 其余知识/文档资料，副标题按类别展示更专业
+  const sourceGroups = React.useMemo(() => {
+    const groups: Array<{ label: string; count: number }> = [];
+    for (const source of shownSources) {
+      const isBusiness = (source.sourceType || "").toLowerCase() === "internal_data";
+      const label = isBusiness ? "经营数据" : "知识资料";
+      const existing = groups.find((group) => group.label === label);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        groups.push({ label, count: 1 });
+      }
+    }
+    return groups;
+  }, [shownSources]);
 
   // 面板打开时按 Esc 关闭
   React.useEffect(() => {
@@ -60,7 +75,12 @@ export function SourcesPanel() {
                   参考来源
                 </span>
                 <p className="mt-0.5 text-xs text-[var(--merchant-text-muted)]">
-                  本次回答引用 {shownSources.length} 条知识证据
+                  {sourceGroups.map((group, index) => (
+                    <span key={group.label}>
+                      {index > 0 ? " · " : null}
+                      {group.label} {group.count}
+                    </span>
+                  ))}
                 </p>
               </div>
               <button

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { BRAND_SHORT_NAME } from "@/config/brand";
 import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
+import { shortenSessionTitle } from "@/lib/title";
 
 interface HeaderProps {
   onToggleSidebar: () => void;
@@ -40,7 +41,7 @@ export function Header({ onToggleSidebar }: HeaderProps) {
               商家 AI 工作区
             </p>
             <p className="truncate text-sm font-semibold text-[var(--merchant-text)] sm:text-base">
-              {currentSession?.title || "新建 AI 咨询"}
+              {shortenSessionTitle(currentSession?.title) || "新建 AI 咨询"}
             </p>
           </div>
         </div>

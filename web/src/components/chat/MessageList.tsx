@@ -244,7 +244,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
       ({ className, ...props }, ref) => (
         <div
           ref={ref}
-          className={cn("mx-auto max-w-[960px] px-4 pt-8 sm:px-6 lg:pt-10", className)}
+          className={cn("mx-auto max-w-[960px] px-4 pt-4 sm:px-6 lg:pt-5", className)}
           {...props}
         />
       )
@@ -311,7 +311,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           type="button"
           aria-label="回到底部"
           onClick={scrollToLatest}
-          className="absolute bottom-5 right-6 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+          className="absolute bottom-5 right-[max(1.5rem,calc(50%_-_464px))] z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
         >
           <ArrowDown className="h-4 w-4" />
         </button>

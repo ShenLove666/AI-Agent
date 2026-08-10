@@ -66,7 +66,8 @@ export function ChatPage() {
     <MainLayout>
       <div className="merchant-chat-shell relative flex h-full min-h-0 min-w-0 overflow-hidden bg-white lg:rounded-xl lg:border lg:border-[#dce5e9]">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[#f8fafb]">
-          <div className="min-h-0 flex-1">
+          {/* 固定顶部呼吸区：Header 下边线与首条消息之间的安全间距（不随滚动消失） */}
+          <div className="min-h-0 flex-1 pt-3 lg:pt-4">
             {showEmptyLoading ? (
               <div className="flex h-full min-h-[240px] items-center justify-center bg-[var(--merchant-surface-subtle)] px-4" role="status">
                 <div className="text-center text-sm text-[var(--merchant-text-muted)]">

@@ -150,7 +150,7 @@ export function DataSourcesView() {
                       <span>
                         来源版本 {quality.version} · 转换 {quality.transformVersion}
                       </span>
-                      <Badge className="bg-emerald-600">observed</Badge>
+                      <Badge className="bg-emerald-600">历史交易观测数据</Badge>
                     </div>
                   </div>
                   <Button

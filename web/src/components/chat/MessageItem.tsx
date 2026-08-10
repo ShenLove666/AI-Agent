@@ -104,7 +104,9 @@ export const MessageItem = React.memo(function MessageItem({
   const thinkingDuration = renderedMessage.thinkingDuration ? `${renderedMessage.thinkingDuration}秒` : "";
   return (
     <div className="group flex">
-      <div className="min-w-0 flex-1 space-y-3">
+      <div className="min-w-0 flex-1">
+        {/* 过程区（头部/Timeline/深度思考）：紧凑 8px 间距，属于「AI 正在做什么」 */}
+        <div className="space-y-2">
         {/* 平正文头部：紧凑单行（小头像 + 名称），无整卡边框/阴影/分隔线；AI 身份由 Timeline 的 Sparkles 承担 */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--merchant-navy)] text-white">
@@ -163,7 +165,9 @@ export const MessageItem = React.memo(function MessageItem({
             ) : null}
           </div>
         ) : null}
-        <div className="space-y-2">
+        </div>
+        {/* 结果区（等待/正文/状态/操作）：与过程区之间 20px 视觉断点 */}
+        <div className="mt-5 space-y-2">
           {isWaiting ? (
             <div className="ai-wait" aria-label="思考中">
               <span className="ai-wait-dots" aria-hidden="true">
@@ -174,11 +178,13 @@ export const MessageItem = React.memo(function MessageItem({
             </div>
           ) : null}
           {hasContent ? (
-            <MarkdownRenderer
-              content={renderedMessage.content}
-              messageId={renderedMessage.id}
-              sources={renderedMessage.sources}
-            />
+            <div className="max-w-[820px]">
+              <MarkdownRenderer
+                content={renderedMessage.content}
+                messageId={renderedMessage.id}
+                sources={renderedMessage.sources}
+              />
+            </div>
           ) : null}
           {renderedMessage.messageStatus === "INTERRUPTED" ? (
             <p className="text-xs font-medium text-amber-600">已停止生成</p>
@@ -193,7 +199,7 @@ export const MessageItem = React.memo(function MessageItem({
             <p className="text-xs font-medium text-amber-600">当前资料不足，暂无法可靠确认</p>
           ) : null}
           {showFeedback || hasSources || canRecommend || Boolean(message.turnId) ? (
-            <div className="flex flex-wrap items-center gap-2 border-t border-[#edf1f3] pt-3">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-t border-[#edf1f3] pt-3">
               {showFeedback ? (
                 <FeedbackButtons
                   messageId={renderedMessage.id}
@@ -202,10 +208,16 @@ export const MessageItem = React.memo(function MessageItem({
                   alwaysVisible
                 />
               ) : null}
+              {hasSources || canRecommend ? (
+                <span aria-hidden="true" className="h-4 w-px bg-slate-200" />
+              ) : null}
               {hasSources ? (
                 <SourcesButton messageId={renderedMessage.id} sources={renderedMessage.sources!} />
               ) : null}
               {canRecommend ? <RecommendedQuestionsButton message={renderedMessage} /> : null}
+              {versions.length > 1 || (message.turnId && message.status !== "streaming") ? (
+                <span aria-hidden="true" className="h-4 w-px bg-slate-200" />
+              ) : null}
               {versions.length > 1 ? (
                 <div className="flex items-center gap-1 text-xs text-slate-500">
                   <button type="button" aria-label="上一版答案" disabled={versionIndex === 0} onClick={() => setVersionIndex((value) => Math.max(0, value - 1))} className="rounded p-1 hover:bg-slate-100 disabled:opacity-30"><ChevronLeft className="h-3.5 w-3.5" /></button>

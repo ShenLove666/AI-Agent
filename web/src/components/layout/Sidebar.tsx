@@ -35,6 +35,7 @@ import { BRAND_NAME, BRAND_SHORT_NAME } from "@/config/brand";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
+import { shortenSessionTitle } from "@/lib/title";
 
 interface SidebarProps {
   isOpen: boolean;
@@ -347,8 +348,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                                 className="h-7 flex-1 rounded-md border border-[var(--merchant-cyan)] bg-[var(--merchant-navy)] px-2 text-sm leading-[22px] text-white focus:outline-none focus:ring-2 focus:ring-[var(--merchant-focus)]"
                               />
                             ) : (
-                              <span className="min-w-0 flex-1 truncate font-normal">
-                                {session.title || "新对话"}
+                              <span
+                                className="min-w-0 flex-1 truncate font-normal"
+                                title={session.title || "新对话"}
+                              >
+                                {shortenSessionTitle(session.title)}
                               </span>
                             )}
                             <DropdownMenu>
