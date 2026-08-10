@@ -43,6 +43,15 @@ def serialize_message(item: Message, versions: list[Message] | None = None) -> d
         raw = json.loads(citations_json) if citations_json else []
         return [source_ref(citation, index) for index, citation in enumerate(raw, 1)]
 
+    def agent_execution(message: Message) -> dict | None:
+        raw = getattr(message, "agent_execution_json", None)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+
     return {
         "id": item.id,
         "conversationId": item.conversation_id,
@@ -52,6 +61,7 @@ def serialize_message(item: Message, versions: list[Message] | None = None) -> d
         "content": item.content,
         "citations": item.citations_json,
         "sources": sources(item.citations_json),
+        "agentExecutionJson": agent_execution(item),
         "messageStatus": item.message_status or "NORMAL",
         "vote": item.vote,
         "thinkingContent": item.thinking_content,
@@ -66,6 +76,7 @@ def serialize_message(item: Message, versions: list[Message] | None = None) -> d
                 "version": version.version,
                 "content": version.content,
                 "sources": sources(version.citations_json),
+                "agentExecutionJson": agent_execution(version),
                 "messageStatus": version.message_status or "NORMAL",
                 "vote": version.vote,
                 "thinkingContent": version.thinking_content,

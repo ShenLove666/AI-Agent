@@ -662,14 +662,16 @@ class AgenticRagCoordinator:
                     "metrics": review_metrics,
                 }
             )
+            # replan 只发一条瞬时事件（不保留永久 running 的 replan 步骤），
+            # 下一轮 planning 立即接管，前端按 reducer 语义合并。
             await sink(
                 {
                     "phase": "replan",
-                    "status": "running",
+                    "status": "completed",
                     "agent": "evidence_reviewer",
                     "plan": plan + 1,
-                    "title": phase_text("replan", "running"),
-                    "detail": "首次查询信息不足，正在尝试新的数据来源",
+                    "title": phase_text("replan", "completed"),
+                    "detail": "证据不足，已调整查询策略，将补充查询",
                 }
             )
         elif details.decision == "escalate":

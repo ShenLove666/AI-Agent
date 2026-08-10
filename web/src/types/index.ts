@@ -109,6 +109,12 @@ export interface AnswerVersion {
   sources?: SourceRef[];
   messageStatus?: PersistedMessageStatus;
   createdAt?: string;
+  /** 该版本后端持久化的 Agent 执行记录（string 或已解析对象；老消息可能缺失/null） */
+  agentExecutionJson?: unknown;
+  /** 该版本恢复后的 Agent 时间线（与 Message 上同名字段语义一致，随版本切换） */
+  agentSteps?: AgentExecutionStep[];
+  agentExecutionStatus?: AgentExecutionStatus;
+  agentExecutionSummary?: AgentExecutionSummary | null;
 }
 
 export interface Message {
@@ -149,7 +155,8 @@ export interface RecommendedQuestionsPayload {
 }
 
 export interface StreamMetaPayload {
-  conversationId: string;
+  /** 早期 meta 只有 taskId（连接即推送），conversationId 在后续全量 meta 才出现 */
+  conversationId?: string | null;
   taskId: string;
   title?: string | null;
   turnId?: number | null;

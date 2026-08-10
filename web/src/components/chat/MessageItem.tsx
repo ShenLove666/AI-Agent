@@ -39,7 +39,13 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
         thinkingDuration: selectedVersion.thinkingDuration,
         feedback: selectedVersion.feedback,
         sources: selectedVersion.sources,
-        messageStatus: selectedVersion.messageStatus
+        messageStatus: selectedVersion.messageStatus,
+        // 版本切换时同步携带该版本持久化的 Agent 执行记录，Timeline 随版本展示
+        agentSteps: selectedVersion.agentSteps ?? message.agentSteps,
+        agentExecutionStatus:
+          selectedVersion.agentExecutionStatus ?? message.agentExecutionStatus,
+        agentExecutionSummary:
+          selectedVersion.agentExecutionSummary ?? message.agentExecutionSummary
       }
     : message;
   const isUser = message.role === "user";
@@ -79,18 +85,16 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
   const thinkingDuration = renderedMessage.thinkingDuration ? `${renderedMessage.thinkingDuration}秒` : "";
   return (
     <div className="group flex">
-      <div className="min-w-0 flex-1 space-y-3 rounded-[20px] border border-[#dfe7eb] bg-white p-5 shadow-[0_8px_24px_rgba(8,43,69,0.055)] lg:p-6">
-        <div className="flex items-center justify-between gap-4 border-b border-[#edf1f3] pb-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--merchant-navy)] text-white shadow-[0_5px_12px_rgba(8,43,69,0.18)]">
-              <Bot className="h-[18px] w-[18px]" />
-            </span>
-            <div className="min-w-0">
-              <p className="text-sm font-semibold text-[var(--merchant-text)]">邻里售后助手</p>
-              <p className="truncate text-[11px] text-[var(--merchant-text-muted)]">基于已发布规则提供可追溯建议</p>
-            </div>
-          </div>
-          <span className="hidden items-center gap-1.5 rounded-full border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--merchant-cyan-strong)] sm:inline-flex">
+      <div className="min-w-0 flex-1 space-y-3">
+        {/* 平正文头部：紧凑单行（小头像 + 名称 + 内联 AI 徽标），无整卡边框/阴影/分隔线 */}
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--merchant-navy)] text-white">
+            <Bot className="h-4 w-4" />
+          </span>
+          <p className="truncate text-sm font-semibold text-[var(--merchant-text)]">
+            邻里售后助手
+          </p>
+          <span className="hidden items-center gap-1 rounded-full border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--merchant-cyan-strong)] sm:inline-flex">
             <Sparkles className="h-3 w-3" />
             AI 辅助
           </span>

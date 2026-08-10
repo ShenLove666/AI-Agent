@@ -215,6 +215,22 @@ body {
   overscroll-behavior: contain;
 }
 
+/* 聊天工作区 Header 内层与消息列/输入框对齐到同一 960px 列（仅 MainLayout 聊天作用域生效） */
+.merchant-workspace .merchant-main-column > header > div {
+  margin-inline: auto;
+  width: 100%;
+  max-width: 960px;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+@media (min-width: 640px) {
+  .merchant-workspace .merchant-main-column > header > div {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
 .admin-layout .admin-main {
   overflow: auto;
 }

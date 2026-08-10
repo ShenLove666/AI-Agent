@@ -24,6 +24,7 @@ from app.framework.migrations import upgrade_database
 from app.infra_ai.contracts import ModelStreamChunk
 from app.modules.commerce.models import AssociationRule, Basket, BasketItem, Product
 from app.modules.rag.agentic import AgenticRagCoordinator
+from app.modules.rag.progress import build_execution_summary
 from app.modules.users.models import User
 
 
@@ -225,6 +226,16 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                     ]
                     messages = [item for item in parsed if item["event"] == "message"]
                     assert progress and messages
+                    # 0) SSE 一连接即下发 meta（仅 taskId，无 conversationId）；
+                    #    conversation 事件后再补发一次全量 meta
+                    assert parsed[0]["event"] == "meta"
+                    assert parsed[0]["data"]["taskId"] == progress[0]["data"]["taskId"]
+                    assert "conversationId" not in parsed[0]["data"]
+                    meta_full = next(
+                        item
+                        for item in parsed
+                        if item["event"] == "meta" and "conversationId" in item["data"]
+                    )
                     # 1) 第一个 agent_progress 是 planning running，且先于任何 token
                     first = progress[0]["data"]
                     assert first["phase"] == "planning"
@@ -257,8 +268,33 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                         and item["data"]["phase"] == "complete"
                         for item in parsed
                     )
+                    # 4b) generation completed 在 generation running 之后、complete 之前
+                    generation_running = next(
+                        item
+                        for item in parsed
+                        if item["event"] == "agent_progress"
+                        and item["data"]["phase"] == "generation"
+                        and item["data"]["status"] == "running"
+                    )
+                    generation_completed = next(
+                        item
+                        for item in parsed
+                        if item["event"] == "agent_progress"
+                        and item["data"]["phase"] == "generation"
+                        and item["data"]["status"] == "completed"
+                    )
+                    complete_event = next(
+                        item
+                        for item in parsed
+                        if item["event"] == "agent_progress"
+                        and item["data"]["phase"] == "complete"
+                    )
+                    assert parsed.index(generation_running) < parsed.index(
+                        generation_completed
+                    ) < parsed.index(complete_event)
+                    assert generation_completed["data"]["title"] == "回答生成完成"
 
-                    # 5) assistant 消息持久化了 sanitized 执行摘要
+                    # 5) assistant 消息持久化了 sanitized 执行摘要（reducer 合并语义）
                     from sqlalchemy import select
 
                     from app.modules.conversations.models import Message
@@ -277,11 +313,69 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                         assert payload["summary"]["evidenceCount"] == 2
                         assert payload["summary"]["replanCount"] == 0
                         assert payload["summary"]["durationMs"] >= 0
+                        # planning running+completed 合并为 1 条 completed
+                        planning_steps = [
+                            step
+                            for step in payload["steps"]
+                            if step["phase"] == "planning"
+                        ]
+                        assert len(planning_steps) == 1
+                        assert planning_steps[0]["status"] == "completed"
+                        # tool 步骤合并为 2 条，toolKey 稳定且不含内部字段
+                        tool_steps = [
+                            step for step in payload["steps"] if step["phase"] == "tool"
+                        ]
+                        assert len(tool_steps) == 2
+                        for step in tool_steps:
+                            tool = step.get("tool") or {}
+                            assert tool["toolKey"] in {
+                                "commerce_search_association_rules",
+                                "commerce_get_product_metrics",
+                            }
+                            assert "argumentsSummary" not in tool
+                            assert "name" not in tool
+                            assert "arguments" not in step
+                        # generation 两次 running + completed 合并为一条 completed
+                        generation_steps = [
+                            step
+                            for step in payload["steps"]
+                            if step["phase"] == "generation"
+                        ]
+                        assert len(generation_steps) == 1
+                        assert generation_steps[0]["status"] == "completed"
+                        assert generation_steps[0]["title"] == "回答生成完成"
                         for step in payload["steps"]:
                             tool = step.get("tool") or {}
                             assert "argumentsSummary" not in tool
                             assert "name" not in tool
                             assert "arguments" not in step
+
+                    # 6) round-trip：消息接口完整返回 agent 执行数据
+                    messages_resp = await client.get(
+                        f"/api/v1/conversations/{meta_full['data']['conversationId']}/messages",
+                        headers=headers,
+                    )
+                    assert messages_resp.status_code == 200
+                    rows = messages_resp.json()["data"]
+                    assistants = [row for row in rows if row["role"] == "assistant"]
+                    assert assistants
+                    assistant_row = assistants[-1]
+                    assert assistant_row["agentExecutionJson"] is not None
+                    aej = assistant_row["agentExecutionJson"]
+                    assert any(
+                        step["phase"] == "generation" and step["status"] == "completed"
+                        for step in aej["steps"]
+                    )
+                    assert all(
+                        "toolKey" in (step.get("tool") or {})
+                        for step in aej["steps"]
+                        if step["phase"] == "tool"
+                    )
+                    assert assistant_row["answerVersions"]
+                    assert all(
+                        "agentExecutionJson" in version
+                        for version in assistant_row["answerVersions"]
+                    )
 
     asyncio.run(scenario())
 
@@ -421,7 +515,7 @@ def test_zero_result_replan_does_not_just_raise_min_lift(tmp_path: Path):
             )
             assert result.terminal_state == "escalated"
             phases = [(item["phase"], item["status"]) for item in events]
-            assert ("replan", "running") in phases
+            assert ("replan", "completed") in phases
             assert ("review", "warning") in phases
 
     asyncio.run(scenario())
@@ -485,3 +579,88 @@ def test_progress_events_do_not_leak_internal_text(tmp_path: Path):
             assert "rationale" not in event
 
     asyncio.run(scenario())
+
+
+def test_build_execution_summary_reducer_semantics():
+    """同一逻辑步骤 (plan, phase, toolKey) 的多个事件合并为最终一条。"""
+    events: list[dict] = [
+        {
+            "seq": 1, "phase": "planning", "status": "running", "plan": 1,
+            "title": "正在制定查询计划", "detail": "正在判断需要查询哪些业务数据",
+            "timestamp": 1000,
+        },
+        {
+            "seq": 2, "phase": "planning", "status": "completed", "plan": 1,
+            "title": "查询计划已制定", "detail": "准备查询商品关联分析和商品经营指标",
+            "timestamp": 2000,
+        },
+        {
+            "seq": 3, "phase": "tool", "status": "running", "plan": 1,
+            "title": "商品关联分析", "detail": "牛肉",
+            "tool": {
+                "name": "commerce.search_association_rules", "label": "商品关联分析",
+                "status": "running", "argumentsSummary": "牛肉",
+            },
+            "timestamp": 3000,
+        },
+        {
+            "seq": 4, "phase": "tool", "status": "completed", "plan": 1,
+            "title": "商品关联分析", "detail": "找到 1 条可用数据",
+            "tool": {
+                "name": "commerce.search_association_rules", "label": "商品关联分析",
+                "status": "completed", "durationMs": 120, "evidenceCount": 1,
+            },
+            "timestamp": 4000,
+        },
+        {
+            "seq": 5, "phase": "generation", "status": "running", "agent": "generator",
+            "title": "正在根据证据整理回答", "timestamp": 5000,
+        },
+        {
+            "seq": 6, "phase": "generation", "status": "completed", "agent": "generator",
+            "title": "回答生成完成", "timestamp": 6000,
+        },
+    ]
+    payload = build_execution_summary(events)
+    assert payload is not None
+    steps = payload["steps"]
+    assert [step["phase"] for step in steps] == ["planning", "tool", "generation"]
+    # planning running+completed 合并为一条 completed，seq 保留首个事件
+    planning = steps[0]
+    assert planning["status"] == "completed"
+    assert planning["seq"] == 1
+    assert planning["title"] == "查询计划已制定"
+    assert planning["detail"] == "准备查询商品关联分析和商品经营指标"
+    # tool running+completed 合并为一条，只保留最后状态与最新证据指标
+    tool = steps[1]
+    assert tool["status"] == "completed"
+    assert tool["tool"]["toolKey"] == "commerce_search_association_rules"
+    assert tool["tool"]["label"] == "商品关联分析"
+    assert tool["tool"]["evidenceCount"] == 1
+    assert tool["tool"]["durationMs"] == 120
+    assert "name" not in tool["tool"]
+    assert "argumentsSummary" not in tool["tool"]
+    # generation 两次 running + completed 合并为一条 completed（最终 title 回答生成完成）
+    generation = steps[2]
+    assert generation["status"] == "completed"
+    assert generation["title"] == "回答生成完成"
+    assert "detail" not in generation
+    assert payload["summary"]["planCount"] == 1
+    assert payload["summary"]["toolCallCount"] == 1
+    assert payload["summary"]["evidenceCount"] == 1
+    assert payload["summary"]["replanCount"] == 0
+    assert payload["summary"]["durationMs"] == 5000
+    # final_status 把合并后仍 running 的步骤强制改为该状态
+    interrupted = [
+        *events,
+        {
+            "seq": 7, "phase": "generation", "status": "running", "agent": "generator",
+            "title": "正在生成回答", "timestamp": 7000,
+        },
+    ]
+    cancelled = build_execution_summary(interrupted, final_status="cancelled")
+    assert cancelled["steps"][-1]["status"] == "cancelled"
+    assert cancelled["steps"][-1]["title"] == "正在生成回答"
+    assert cancelled["summary"]["planCount"] == 1
+    # 无执行事件时返回 None
+    assert build_execution_summary([]) is None

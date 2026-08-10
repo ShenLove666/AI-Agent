@@ -19,8 +19,8 @@ import type {
   AgentToolProgress
 } from "@/types";
 
-/** Timeline 内部滚动：距底小于该值视为接近底部，自动跟随最新步骤 */
-const TIMELINE_NEAR_BOTTOM_THRESHOLD = 80;
+/** 执行中（running 且展开）最多平铺展示的最近步骤数，更早的折叠为一行提示 */
+const MAX_RUNNING_VISIBLE_STEPS = 5;
 
 interface AgentExecutionTimelineProps {
   steps?: AgentExecutionStep[];
@@ -110,32 +110,18 @@ export function AgentExecutionTimeline({
   const [expanded, setExpanded] = React.useState(() => initialExpanded ?? isRunning);
   const prevStatusRef = React.useRef(status);
   const bodyId = React.useId();
-  // Timeline 内部滚动跟随：执行中新步骤出现时自动滚到最新；用户滚离底部时暂停
-  const timelineScrollRef = React.useRef<HTMLDivElement | null>(null);
-  const timelineNearBottomRef = React.useRef(true);
+  // 执行中展开时默认只看最近几步；点击「已省略更早 N 步」后展示全部
+  const [showAllRunningSteps, setShowAllRunningSteps] = React.useState(false);
 
-  const handleTimelineScroll = React.useCallback(() => {
-    const el = timelineScrollRef.current;
-    if (!el) return;
-    timelineNearBottomRef.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < TIMELINE_NEAR_BOTTOM_THRESHOLD;
-  }, []);
-
-  // 新步骤到达或刚展开（执行中）→ 用户接近底部时跟随到最新步骤
-  React.useEffect(() => {
-    if (status !== "running" || !expanded) return;
-    const el = timelineScrollRef.current;
-    if (!el) return;
-    if (!timelineNearBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [steps, status, expanded]);
-
-  // 执行中 → 完成/失败/取消时自动折叠为摘要行
+  // 执行中 → 完成/失败/取消时自动折叠为摘要行；新一轮执行开始时重置「省略」状态
   React.useEffect(() => {
     const prev = prevStatusRef.current;
     prevStatusRef.current = status;
     if (prev === "running" && status !== "running") {
       setExpanded(false);
+    }
+    if (status === "running" && prev !== "running") {
+      setShowAllRunningSteps(false);
     }
   }, [status]);
 
@@ -143,13 +129,20 @@ export function AgentExecutionTimeline({
   // 空 steps（旧消息/旧后端无 agent_progress）时不渲染任何内容
   if (stepsList.length === 0) return null;
 
+  // 执行中展开：只平铺最近 MAX_RUNNING_VISIBLE_STEPS 步，更早步骤折叠为一行提示；
+  // 非 running（用户主动展开）或点击「展开全部」后展示全部步骤
+  const truncateRunning =
+    isRunning && expanded && !showAllRunningSteps && stepsList.length > MAX_RUNNING_VISIBLE_STEPS;
+  const omittedCount = truncateRunning ? stepsList.length - MAX_RUNNING_VISIBLE_STEPS : 0;
+  const displaySteps = truncateRunning ? stepsList.slice(-MAX_RUNNING_VISIBLE_STEPS) : stepsList;
+
   const runningSteps = stepsList.filter((step) => step.status === "running");
   const lastRunning = runningSteps.length > 0 ? runningSteps[runningSteps.length - 1] : undefined;
 
   const planGroups: Array<{ plan: number; steps: AgentExecutionStep[] }> = [];
   {
     const groups = new Map<number, AgentExecutionStep[]>();
-    for (const step of stepsList) {
+    for (const step of displaySteps) {
       const list = groups.get(step.plan);
       if (list) {
         list.push(step);
@@ -194,7 +187,7 @@ export function AgentExecutionTimeline({
     <section
       aria-label="Agent 执行过程"
       className={cn(
-        "overflow-hidden rounded-xl border border-indigo-100 bg-indigo-50/50",
+        "overflow-hidden rounded-lg border border-indigo-100/70 bg-indigo-50/40",
         className
       )}
     >
@@ -203,7 +196,7 @@ export function AgentExecutionTimeline({
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         aria-controls={bodyId}
-        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-indigo-100/40"
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-indigo-100/30"
       >
         {expanded ? (
           <>
@@ -247,13 +240,17 @@ export function AgentExecutionTimeline({
               </div>
             </div>
           ) : null}
-          {/* 纵向时间线：节点 + 连接线，展开区域可滚动、执行中自动跟随最新步骤 */}
-          <div
-            ref={timelineScrollRef}
-            onScroll={handleTimelineScroll}
-            data-testid="agent-timeline-scroll"
-            className="mt-2.5 max-h-80 overflow-y-auto pr-1"
-          >
+          {/* 纵向时间线：节点 + 连接线；不设独立滚动容器，整个页面只保留 Virtuoso 一个滚动权威 */}
+          <div className="mt-2.5">
+            {omittedCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowAllRunningSteps(true)}
+                className="mb-1 text-[11px] text-slate-400 transition-colors hover:text-indigo-600"
+              >
+                已省略更早 {omittedCount} 步
+              </button>
+            ) : null}
             {planGroups.map(({ plan, steps: planSteps }, groupIndex) => (
               <div key={plan}>
                 {showPlanTitles ? (

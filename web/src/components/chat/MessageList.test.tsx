@@ -41,26 +41,28 @@ function fireScroll(top: number, total: number, client: number) {
 afterEach(cleanup);
 
 describe("MessageList streaming follow behavior", () => {
-  it("keeps following the output while streaming when the user stays near the bottom", async () => {
+  it("pins to the bottom immediately when streaming starts", async () => {
     const messages = [
       makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
       makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
     ];
-    // 先以非流式渲染让会话加载贴底标记过期
+    // 先以非流式渲染让会话加载贴底标记过期，避免布局 effect 干扰
     const { rerender } = render(
       <MessageList messages={messages} isLoading={false} isStreaming={false} />
     );
     await new Promise((resolve) => setTimeout(resolve, 1600));
 
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
     const scroller = findScroller()!;
     Object.defineProperty(scroller, "scrollHeight", { value: 800, configurable: true, writable: true });
     Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true, writable: true });
     Object.defineProperty(scroller, "scrollTop", { value: 500, configurable: true, writable: true });
 
-    // 内容增长（模拟 token 流）：200ms 轮询应把视口推到最新底部
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(scroller.scrollTop).toBe(800);
+    // 流式开始 → 强制贴底一次（发送时的明确贴底时机，此后内容增长由 Virtuoso followOutput 接管）
+    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
+
+    return Promise.resolve().then(() => {
+      expect(scroller.scrollTop).toBe(800);
+    });
   });
 
   it("pauses following while streaming once the user scrolls away", async () => {
@@ -84,7 +86,7 @@ describe("MessageList streaming follow behavior", () => {
     fireScroll(100, 800, 300);
 
     await new Promise((resolve) => setTimeout(resolve, 500));
-    // 流式中滚离后不跟随，位置保持
+    // 流式中滚离后不跟随（无轮询/定时拉回机制），位置保持
     expect(scroller.scrollTop).toBe(100);
   });
 });
@@ -107,7 +109,7 @@ describe("MessageList stream-end scroll behavior", () => {
 
     rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
 
-    // 完成时用户未滚离 → 贴底（scrollTop 被设为 scrollHeight）
+    // 完成时用户未滚离 → 立即贴底（scrollTop 被设为 scrollHeight），单次调用即可
     return Promise.resolve().then(() => {
       expect(scroller!.scrollTop).toBe(800);
     });

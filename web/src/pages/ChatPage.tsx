@@ -81,12 +81,12 @@ export function ChatPage() {
           {showWelcome ? null : (
             <div className="relative z-20 shrink-0 border-t border-[var(--merchant-border)] bg-white/95 shadow-[0_-10px_28px_rgba(8,43,69,0.035)] backdrop-blur-xl">
               {lastMessageFailed ? (
-                <div className="mx-auto flex max-w-[1040px] items-center gap-2 px-3 pt-2 text-xs text-orange-800 sm:px-6" role="status">
+                <div className="mx-auto flex max-w-[960px] items-center gap-2 px-4 pt-2 text-xs text-orange-800 sm:px-6" role="status">
                   <TriangleAlert className="h-3.5 w-3.5 shrink-0 text-[var(--merchant-alert)]" />
                   上次回答未完成，可补充信息后重新发送。
                 </div>
               ) : null}
-              <div className="mx-auto max-w-[1040px] px-3 pb-3 pt-3 sm:px-6 lg:px-10 lg:pb-5">
+              <div className="mx-auto max-w-[960px] px-4 pb-3 pt-3 sm:px-6 lg:pb-5">
                 <ChatInput />
               </div>
             </div>

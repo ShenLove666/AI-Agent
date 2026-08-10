@@ -93,6 +93,9 @@ def create_system_router(settings: Settings) -> APIRouter:
         async def events():
             citations: list[dict] = []
             cancel_event = task_registry.register(task_id, user.id)
+            # SSE 一连接就下发 taskId（仅 taskId），让前端在 prepare 阶段即可停止；
+            # conversation 事件到达后再补发一次全量 meta（含 conversationId）。
+            yield _sse("meta", {"taskId": task_id})
             try:
                 async for event in service.stream(db, user.id, chat_request, cancel_event):
                     event_type = event["type"]

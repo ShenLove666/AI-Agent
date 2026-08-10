@@ -3,6 +3,10 @@
 所有面向用户的文本（title/detail/argumentsSummary/tool label）的中文映射
 以本模块为唯一权威来源；节点与 service 禁止直接向用户透出内部英文工具名、
 Planner rationale 或工具参数的完整 JSON 原文。
+
+build_execution_summary 采用 reducer 语义：同一逻辑步骤（合并键
+(plan, phase, toolKey)）的多个事件合并为最终一条，与前端 live 合并语义一致，
+确保实时展示与历史 restore 看到的步骤一致。
 """
 
 from __future__ import annotations
@@ -94,7 +98,9 @@ PHASE_TEXTS: dict[tuple[Phase, Status], str] = {
     ("review", "completed"): "证据已满足回答要求",
     ("review", "warning"): "当前证据不足",
     ("replan", "running"): "正在调整查询策略",
+    ("replan", "completed"): "已调整查询策略",
     ("generation", "running"): "正在根据证据整理回答",
+    ("generation", "completed"): "回答生成完成",
     ("complete", "completed"): "已完成分析",
 }
 
@@ -154,36 +160,42 @@ def make_counting_sink(inner: ProgressSink | None) -> ProgressSink:
     return emit
 
 
-# 属于“Agent 执行”的阶段（持久化摘要只保留这些）。
-_EXECUTION_PHASES = {"planning", "tool", "review", "replan"}
+# 属于“Agent 执行”的阶段（持久化摘要只保留这些；complete 排除）。
+_EXECUTION_PHASES = {"planning", "tool", "review", "replan", "generation"}
 
 
-def build_execution_summary(events: list[AgentProgressEvent]) -> dict[str, Any] | None:
-    """从收集的 progress 事件派生持久化用的精简执行摘要。
+def _event_tool_key(event: AgentProgressEvent) -> str | None:
+    """派生稳定且不敏感的 toolKey（commerce.search_association_rules →
+    commerce_search_association_rules）；无工具名时返回 None。"""
+    name = (event.get("tool") or {}).get("name")
+    if not name:
+        return None
+    return str(name).replace(".", "_")
 
-    steps 只保留 seq/phase/status/plan/title/detail/tool.label，
-    不含 arguments 原文与内部英文工具名；无执行事件时返回 None。
+
+def build_execution_summary(
+    events: list[AgentProgressEvent], final_status: str | None = None
+) -> dict[str, Any] | None:
+    """从收集的 progress 事件派生持久化用的精简执行摘要（reducer 语义）。
+
+    同一逻辑步骤（合并键 (plan, phase, toolKey)）的多个事件合并为最终一条：
+    后续事件覆盖 status/title/detail/tool（保留最新 evidenceCount/durationMs，
+    只保留工具最后状态）；step["seq"] 保留该 key 首个事件的 seq。
+    steps 只保留 seq/phase/status/plan/title/detail/tool.label/toolKey/
+    evidenceCount/durationMs，不含 arguments 原文、rationale 与内部英文工具名；
+    final_status 提供时（"failed"/"cancelled"）把合并后仍为 running 的步骤
+    强制改为该状态。无执行事件时返回 None。
     """
-    steps: list[dict[str, Any]] = []
-    plan_count = 0
-    tool_call_count = 0
-    evidence_count = 0
-    replan_count = 0
+    merged: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    order: list[tuple[Any, Any, Any]] = []
     first_ts: float | None = None
     last_ts: float | None = None
     for event in events:
         phase = event.get("phase")
         if phase not in _EXECUTION_PHASES:
             continue
-        status = event.get("status")
-        if phase == "planning" and status == "running":
-            plan_count += 1
-        if phase == "tool" and status == "running":
-            tool_call_count += 1
-        if phase == "tool" and status == "completed":
-            evidence_count += int((event.get("tool") or {}).get("evidenceCount") or 0)
-        if phase == "replan":
-            replan_count += 1
+        tool_key = _event_tool_key(event)
+        key = (event.get("plan"), phase, tool_key)
         ts = event.get("timestamp")
         if isinstance(ts, (int, float)):
             if first_ts is None or ts < first_ts:
@@ -191,24 +203,59 @@ def build_execution_summary(events: list[AgentProgressEvent]) -> dict[str, Any] 
             if last_ts is None or ts > last_ts:
                 last_ts = ts
         tool = event.get("tool") or {}
-        step: dict[str, Any] = {
-            "seq": event.get("seq"),
-            "phase": phase,
-            "status": status,
-            "plan": event.get("plan"),
-            "title": event.get("title"),
-        }
+        if key not in merged:
+            merged[key] = {
+                "seq": event.get("seq"),
+                "phase": phase,
+                "status": event.get("status"),
+                "plan": event.get("plan"),
+                "title": event.get("title"),
+            }
+            if tool_key is not None:
+                merged[key]["tool"] = {"label": tool.get("label"), "toolKey": tool_key}
+            order.append(key)
+        step = merged[key]
+        # 后续事件覆盖 status/title/detail/tool；无 detail 的新事件清掉旧 detail
+        step["status"] = event.get("status")
+        step["title"] = event.get("title")
         if event.get("detail") is not None:
             step["detail"] = event["detail"]
-        if tool.get("label"):
-            step["tool"] = {"label": tool["label"]}
-        steps.append(step)
-    if not steps:
+        else:
+            step.pop("detail", None)
+        if tool_key is not None:
+            tool_step = step.setdefault(
+                "tool", {"label": tool.get("label"), "toolKey": tool_key}
+            )
+            tool_step["label"] = tool.get("label")
+            tool_step["toolKey"] = tool_key
+            if tool.get("evidenceCount") is not None:
+                tool_step["evidenceCount"] = tool["evidenceCount"]
+            if tool.get("durationMs") is not None:
+                tool_step["durationMs"] = tool["durationMs"]
+    if not merged:
         return None
+    steps: list[dict[str, Any]] = []
+    for key in order:
+        step = merged[key]
+        if final_status is not None and step.get("status") == "running":
+            step["status"] = final_status
+        steps.append(step)
+    plan_count = max(
+        (step["plan"] for step in steps if step.get("plan") is not None), default=1
+    )
+    tool_call_count = sum(
+        1
+        for step in steps
+        if step["phase"] == "tool" and step.get("status") in {"completed", "failed"}
+    )
+    evidence_count = sum(
+        int((step.get("tool") or {}).get("evidenceCount") or 0)
+        for step in steps
+        if step["phase"] == "tool" and step.get("status") == "completed"
+    )
+    replan_count = sum(1 for step in steps if step["phase"] == "replan")
     duration_ms = (
-        round((last_ts - first_ts) * 1000)
-        if first_ts is not None and last_ts is not None
-        else 0
+        last_ts - first_ts if first_ts is not None and last_ts is not None else 0
     )
     return {
         "summary": {

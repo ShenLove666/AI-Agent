@@ -1,4 +1,5 @@
 import { api } from "@/services/api";
+import { restoreAgentExecution } from "@/utils/agentExecution";
 import type { AnswerVersion, PersistedMessageStatus, SourceRef } from "@/types";
 
 export interface ConversationVO {
@@ -92,17 +93,34 @@ export async function listMessages(conversationId: string): Promise<Conversation
         return raw && typeof raw === "object" ? raw : null;
       })(),
       answerVersions: Array.isArray(row.answerVersions)
-        ? (row.answerVersions as Array<Record<string, unknown>>).map((version) => ({
-            id: String(version.id),
-            version: Number(version.version || 1),
-            content: String(version.content || ""),
-            thinking: (version.thinkingContent as string | null) || undefined,
-            thinkingDuration: (version.thinkingDuration as number | null) || undefined,
-            feedback: version.vote === 1 ? "like" : version.vote === -1 ? "dislike" : null,
-            sources: Array.isArray(version.sources) ? (version.sources as SourceRef[]) : [],
-            messageStatus: (version.messageStatus as PersistedMessageStatus) || "NORMAL",
-            createdAt: version.createdAt as string
-          }))
+        ? (row.answerVersions as Array<Record<string, unknown>>).map((version) => {
+            // 兼容 string 与已解析对象两种形态；解析失败或缺失则保持 null（前端优雅降级）
+            const parsedExecution = (() => {
+              const raw = version.agent_execution_json ?? version.agentExecutionJson;
+              if (typeof raw === "string") {
+                try {
+                  return JSON.parse(raw);
+                } catch {
+                  return null;
+                }
+              }
+              return raw && typeof raw === "object" ? raw : null;
+            })();
+            const messageStatus = (version.messageStatus as PersistedMessageStatus) || "NORMAL";
+            return {
+              id: String(version.id),
+              version: Number(version.version || 1),
+              content: String(version.content || ""),
+              thinking: (version.thinkingContent as string | null) || undefined,
+              thinkingDuration: (version.thinkingDuration as number | null) || undefined,
+              feedback: version.vote === 1 ? "like" : version.vote === -1 ? "dislike" : null,
+              sources: Array.isArray(version.sources) ? (version.sources as SourceRef[]) : [],
+              messageStatus,
+              createdAt: version.createdAt as string,
+              // 每个版本恢复自己的 Agent 时间线（agentSteps/agentExecutionStatus/agentExecutionSummary）
+              ...restoreAgentExecution(parsedExecution, messageStatus)
+            };
+          })
         : undefined
     };
   });

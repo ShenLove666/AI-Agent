@@ -84,7 +84,7 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
 
   const scrollToBottom = React.useCallback(() => {
     // 只用直接赋值：scrollToIndex（Virtuoso 内部异步状态机）与 scrollTop 赋值同时驱动
-    // 会互相竞争，在 200ms 轮询下表现为视口上下闪动。scrollHeight 已含底部 padding/footer，
+    // 会互相竞争造成视口上下闪动。scrollHeight 已含底部 padding/footer，
     // 直接赋值即可精确贴底。
     const scroller = scrollerRef.current;
     if (scroller) {
@@ -146,46 +146,29 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     const wasStreaming = prevStreamingRef.current;
     prevStreamingRef.current = isStreaming;
     if (!wasStreaming && isStreaming) {
-      // 刚发送消息时用户位于底部：重置滚离标记并强制贴底一次；此后的内容增长只接近底部才跟随
+      // 刚发送消息时用户位于底部：重置滚离标记并强制贴底一次；此后的内容增长由
+      // Virtuoso followOutput 原生平滑跟随接管，只在接近底部时跟随。
+      // 120ms 的二次 force 仅作为首帧布局补偿，不做更多。
       userScrolledAwayRef.current = false;
       stickToBottom({ force: true });
       const timer = window.setTimeout(() => stickToBottom({ force: true }), 120);
       return () => window.clearTimeout(timer);
-    }    if (wasStreaming && !isStreaming) {
-      // 流式结束：流式期间用户未滚离 → 无条件贴底展示完整回答。
-      // 多阶段重试覆盖 Timeline 折叠等后续布局变化；流式期间滚离过则不抢。
+    }
+    if (wasStreaming && !isStreaming) {
+      // 流式结束：流式期间用户未滚离 → 立即贴底展示完整回答。
+      // 单次调用即可；额外保留一个 120ms 的延迟贴底，用于补偿 Timeline 折叠等
+      // 紧随其后的布局变化。流式期间滚离过则不抢滚动。
       if (!userScrolledAwayRef.current) {
         scrollToBottom();
         const timer = window.setTimeout(scrollToBottom, 120);
-        const lateTimer = window.setTimeout(scrollToBottom, 360);
-        const settleTimer = window.setTimeout(scrollToBottom, 900);
-        return () => {
-          window.clearTimeout(timer);
-          window.clearTimeout(lateTimer);
-          window.clearTimeout(settleTimer);
-        };
+        return () => window.clearTimeout(timer);
       }
-      return;
     }
     return;
   }, [isStreaming, stickToBottom, scrollToBottom]);
 
-  // 流式期间跟随兜底：Virtuoso 的 followOutput 在 token 流中可能只触发一次，
-  // 这里每 200ms 检查一次；仅当明显偏离底部（gap > 30px）才拉回，避免与
-  // Virtuoso 内部布局/平滑动画互相拉扯造成闪动
-  React.useEffect(() => {
-    if (!isStreaming) return;
-    const interval = window.setInterval(() => {
-      if (userScrolledAwayRef.current) return;
-      const scroller = scrollerRef.current;
-      if (!scroller) return;
-      const gap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (gap > 30) {
-        scroller.scrollTop = scroller.scrollHeight;
-      }
-    }, 200);
-    return () => window.clearInterval(interval);
-  }, [isStreaming]);
+  // 流式期间不再做定时轮询：Virtuoso 的 followOutput（isAtBottom → "smooth"）
+  // 是唯一的内容增长跟随机制，手动赋值只发生在发送/完成两个明确的贴底时机。
 
   React.useLayoutEffect(() => {
     if (!pendingScrollRef.current || isStreaming || isLoading || messages.length === 0) {
@@ -289,7 +272,7 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       ({ className, ...props }, ref) => (
         <div
           ref={ref}
-          className={cn("mx-auto max-w-[1040px] space-y-7 px-6 pb-3 pt-8 md:px-10 lg:pt-10", className)}
+          className={cn("mx-auto max-w-[960px] space-y-7 px-4 pb-3 pt-8 sm:px-6 lg:pt-10", className)}
           {...props}
         />
       )

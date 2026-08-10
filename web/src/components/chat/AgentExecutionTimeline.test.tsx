@@ -17,11 +17,9 @@ function makeStep(overrides: Partial<AgentExecutionStep> = {}): AgentExecutionSt
   };
 }
 
-function rerenderSteps(container: HTMLElement, steps: AgentExecutionStep[]) {
-  // 重新渲染同 props 的新数组，触发跟随 effect（steps 引用变化）
-  render(
-    <AgentExecutionTimeline status="running" steps={steps} summary={null} />,
-    { container }
+function makeManySteps(count: number): AgentExecutionStep[] {
+  return Array.from({ length: count }, (_, i) =>
+    makeStep({ stepId: `step-${i + 1}`, seq: i + 1, title: `步骤 ${i + 1}` })
   );
 }
 
@@ -80,6 +78,52 @@ describe("AgentExecutionTimeline", () => {
     );
 
     expect(screen.getByText("正在分析问题…")).toBeInTheDocument();
+  });
+
+  it("running 态只展示最近 5 步，更早步骤折叠为「已省略更早 N 步」", () => {
+    render(
+      <AgentExecutionTimeline status="running" steps={makeManySteps(8)} summary={null} />
+    );
+
+    // 最近 5 步（seq 4~8）可见
+    for (const seq of [4, 5, 6, 7, 8]) {
+      expect(screen.getByText(`步骤 ${seq}`)).toBeInTheDocument();
+    }
+    // 更早步骤（seq 1~3）被折叠
+    for (const seq of [1, 2, 3]) {
+      expect(screen.queryByText(`步骤 ${seq}`)).not.toBeInTheDocument();
+    }
+    expect(
+      screen.getByRole("button", { name: "已省略更早 3 步" })
+    ).toBeInTheDocument();
+  });
+
+  it("running 态点击「已省略更早 N 步」后展示全部步骤", () => {
+    render(
+      <AgentExecutionTimeline status="running" steps={makeManySteps(8)} summary={null} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "已省略更早 3 步" }));
+
+    for (let seq = 1; seq <= 8; seq += 1) {
+      expect(screen.getByText(`步骤 ${seq}`)).toBeInTheDocument();
+    }
+    expect(
+      screen.queryByRole("button", { name: "已省略更早 3 步" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("非 running（用户主动展开）时展示全部步骤，不出现省略行", () => {
+    render(
+      <AgentExecutionTimeline status="completed" steps={makeManySteps(8)} summary={null} />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /查看执行过程/ }));
+
+    for (let seq = 1; seq <= 8; seq += 1) {
+      expect(screen.getByText(`步骤 ${seq}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByText(/已省略更早/)).not.toBeInTheDocument();
   });
 
   it("completed 后默认折叠为一行摘要（含查询次数与证据数），不展示步骤", () => {
@@ -208,7 +252,7 @@ describe("AgentExecutionTimeline", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("从 running 转为 completed 时自动折叠为摘要行", () => {
+  it("从 running 转为 completed 时自动折叠为单行摘要", () => {
     const { rerender } = render(
       <AgentExecutionTimeline
         status="running"
@@ -225,48 +269,14 @@ describe("AgentExecutionTimeline", () => {
       />
     );
 
+    // 自动折叠：只保留单行摘要（icon + 文案 + 查看执行过程 + chevron），步骤与动态状态行均消失
     expect(screen.getByText("已完成 Agent 分析 · 1 次查询 · 6 条证据")).toBeInTheDocument();
-    expect(screen.queryByText("查询商品关联数据")).not.toBeInTheDocument();
-  });
-
-  it("执行中自动跟随最新步骤，用户滚离后暂停跟随", () => {
-    const { container } = render(
-      <AgentExecutionTimeline
-        status="running"
-        steps={[makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "running", title: "正在制定查询计划" })]}
-        summary={null}
-      />
+    expect(screen.getByRole("button", { name: /查看执行过程/ })).toHaveAttribute(
+      "aria-expanded",
+      "false"
     );
-
-    const scrollBox = container.querySelector(
-      '[data-testid="agent-timeline-scroll"]'
-    ) as HTMLElement;
-    expect(scrollBox).not.toBeNull();
-
-    // 用户在容器底部附近：新步骤到达 → 跟随到底（scrollTop 被设为 scrollHeight）
-    Object.defineProperty(scrollBox, "scrollHeight", { value: 400, configurable: true, writable: true });
-    Object.defineProperty(scrollBox, "clientHeight", { value: 200, configurable: true, writable: true });
-    Object.defineProperty(scrollBox, "scrollTop", { value: 0, configurable: true, writable: true });
-    rerenderSteps(container, [
-      makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "completed", title: "查询计划已制定" }),
-      makeStep({ stepId: "s2", seq: 2, phase: "tool", status: "running", title: "正在查询商品关联数据" })
-    ]);
-    // effect 异步触发，等待微任务
-    return Promise.resolve().then(() => {
-      expect(scrollBox.scrollTop).toBe(400);
-
-      // 用户滚离底部（距底 > 80）：新步骤到达 → 不跟随
-      Object.defineProperty(scrollBox, "scrollTop", { value: 100, configurable: true, writable: true });
-      fireEvent.scroll(scrollBox);
-      rerenderSteps(container, [
-        makeStep({ stepId: "s1", seq: 1, phase: "planning", status: "completed", title: "查询计划已制定" }),
-        makeStep({ stepId: "s2", seq: 2, phase: "tool", status: "completed", title: "商品关联分析完成" }),
-        makeStep({ stepId: "s3", seq: 3, phase: "review", status: "running", title: "正在核验证据" })
-      ]);
-      return Promise.resolve().then(() => {
-        expect(scrollBox.scrollTop).toBe(100);
-      });
-    });
+    expect(screen.queryByText("查询商品关联数据")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent 正在调用业务工具并核验证据")).not.toBeInTheDocument();
   });
 
   it("空 steps 不渲染任何内容（旧消息/旧后端向后兼容）", () => {

@@ -6,7 +6,7 @@ import itertools
 import json
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
@@ -45,7 +45,9 @@ class PreparedChat:
     rewritten_query: str
     trace: TraceExecution
     request_run_id: int | None = None
-    agent_execution: dict | None = None
+    # 收集的原始 agent 进度事件（prepare 阶段，seq/timestamp 已编号），
+    # generation 阶段由 complete()/stream() 继续追加，持久化时再做 reducer 合并。
+    agent_execution_events: list[AgentProgressEvent] = field(default_factory=list)
 
 
 class RagChatService:
@@ -372,7 +374,9 @@ class RagChatService:
         async def collect(event: AgentProgressEvent) -> None:
             event = dict(event)
             event["seq"] = next(seq_counter)
-            event["timestamp"] = time.time()
+            # 与计数 sink 的毫秒单位保持一致，保证非流式 complete() 路径的
+            # durationMs 与 SSE 路径同单位
+            event["timestamp"] = round(time.time() * 1000, 3)
             collected.append(event)
             if progress_sink is not None:
                 await progress_sink(event)
@@ -476,23 +480,23 @@ class RagChatService:
             rewrite.rewritten_query,
             trace,
             request_run.id if request_run is not None else None,
-            agent_execution=build_execution_summary(collected),
+            agent_execution_events=collected,
         )
 
     @staticmethod
     def _persist_agent_execution(
         db: Session,
         message: Message,
-        prepared: PreparedChat,
+        events: list[AgentProgressEvent],
         *,
         commit: bool = True,
+        final_status: str | None = None,
     ) -> None:
-        """把 sanitized 执行摘要写回 assistant 消息；无摘要（老消息）时跳过。"""
-        if prepared.agent_execution is None:
+        """把 sanitized 执行摘要（reducer 合并）写回 assistant 消息；无事件时跳过。"""
+        summary = build_execution_summary(events, final_status)
+        if summary is None:
             return
-        message.agent_execution_json = json.dumps(
-            prepared.agent_execution, ensure_ascii=False
-        )
+        message.agent_execution_json = json.dumps(summary, ensure_ascii=False)
         if commit:
             db.commit()
 
@@ -537,6 +541,21 @@ class RagChatService:
             with self.traces.node(db, prepared.trace, "generation") as attributes:
                 answer = await self.require_router().complete(prepared.model_request)
                 attributes["answer_chars"] = len(answer)
+            # generation 阶段事件：running → completed（seq 接续 prepare 编号）
+            for generation_status, generation_title in (
+                ("running", phase_text("generation", "running")),
+                ("completed", phase_text("generation", "completed")),
+            ):
+                prepared.agent_execution_events.append(
+                    {
+                        "seq": len(prepared.agent_execution_events) + 1,
+                        "phase": "generation",
+                        "status": generation_status,
+                        "agent": "generator",
+                        "title": generation_title,
+                        "timestamp": time.time(),
+                    }
+                )
             message = self.conversations.add_assistant_version(
                 db,
                 turn=prepared.turn,
@@ -545,7 +564,7 @@ class RagChatService:
                 citations=prepared.citations,
                 message_status="NORMAL",
             )
-            self._persist_agent_execution(db, message, prepared)
+            self._persist_agent_execution(db, message, prepared.agent_execution_events)
             self.traces.finish(
                 db,
                 prepared.trace,
@@ -621,8 +640,12 @@ class RagChatService:
             return
         trace = self.traces.start(db, user_id=user_id, query=request.question)
         queue: asyncio.Queue[dict] = asyncio.Queue()
+        # 流级事件收集：prepare 与 generation 的全部事件以统一 seq（计数 sink）
+        # 进入 persist_events，流结束（成功/异常）后做 reducer 合并持久化。
+        persist_events: list[AgentProgressEvent] = []
 
         async def enqueue(event: AgentProgressEvent) -> None:
+            persist_events.append(dict(event))
             await queue.put(dict(event))
 
         # prepare 内部与 generation 的事件共享同一计数 sink（seq 全流唯一递增）
@@ -750,6 +773,16 @@ class RagChatService:
                 )
             answer = "".join(answer_parts)
             if not interrupted:
+                # 回答生成完成（generation completed）先于 complete 事件下发
+                async for item in emit_event(
+                    {
+                        "phase": "generation",
+                        "status": "completed",
+                        "agent": "generator",
+                        "title": phase_text("generation", "completed"),
+                    }
+                ):
+                    yield item
                 async for item in emit_event(
                     {
                         "phase": "complete",
@@ -774,7 +807,12 @@ class RagChatService:
                     else None
                 ),
             )
-            self._persist_agent_execution(db, message, prepared)
+            self._persist_agent_execution(
+                db,
+                message,
+                persist_events,
+                final_status="cancelled" if interrupted else None,
+            )
             self.traces.finish(
                 db,
                 prepared.trace,
@@ -817,7 +855,13 @@ class RagChatService:
                     else None
                 ),
             )
-            self._persist_agent_execution(db, message, prepared, commit=False)
+            self._persist_agent_execution(
+                db,
+                message,
+                persist_events,
+                commit=False,
+                final_status="cancelled" if cancelled else "failed",
+            )
             self.traces.finish(
                 db,
                 prepared.trace,
