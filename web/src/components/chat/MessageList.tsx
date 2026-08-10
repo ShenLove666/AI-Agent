@@ -2,37 +2,35 @@ import * as React from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ArrowDown } from "lucide-react";
 
-import { MessageItem } from "@/components/chat/MessageItem";
-import { QuestionRail, type QuestionRailItem } from "@/components/chat/QuestionRail";
+import { ChatTurnItem } from "@/components/chat/ChatTurnItem";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
 import type { Message } from "@/types";
+import { groupMessagesIntoTurns } from "@/utils/chatTurns";
 
-/** 距底部小于该距离视为"接近底部"，自动跟随滚动；用户滚离更远时暂停跟随 */
-const NEAR_BOTTOM_THRESHOLD = 160;
+/** 距底部超过该距离（px）视为用户真实滚离，暂停自动跟随 */
+const DETACH_GAP = 40;
 
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
+  /**
+   * 遗留接口：滚动由 Virtuoso followOutput 单一权威负责，
+   * 本组件不再消费该值（保留在 props 中仅为兼容调用方，禁止在组件内使用）。
+   */
   isStreaming: boolean;
   sessionKey?: string | null;
 }
 
-export function MessageList({ messages, isLoading, isStreaming, sessionKey }: MessageListProps) {
+export function MessageList({ messages, isLoading, sessionKey }: MessageListProps) {
   const virtuosoRef = React.useRef<VirtuosoHandle | null>(null);
   const scrollerRef = React.useRef<HTMLElement | null>(null);
-  const lastSessionRef = React.useRef<string | null>(null);
-  const pendingScrollRef = React.useRef(true);
-  const settleTimerRef = React.useRef<number | null>(null);
-  const prevStreamingRef = React.useRef(false);
   const recommendReveal = useChatStore((state) => state.recommendReveal);
   const initialTopMostItemIndex = React.useMemo(
     () => ({ index: "LAST" as const, align: "end" as const }),
     []
   );
-  const [visibleEnd, setVisibleEnd] = React.useState(0);
-  const [showScrollDown, setShowScrollDown] = React.useState(false);
 
   // 稳定 viewKey：只有「已存在的会话 id → 另一个会话 id」（用户切换历史会话）时才更新。
   // null→UUID（新会话首答落库）与初次加载（null→id）都不重建 Virtuoso，
@@ -49,197 +47,139 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     }
   }, [sessionKey]);
 
-  const isNearBottom = React.useCallback(() => {
+  const turns = React.useMemo(() => groupMessagesIntoTurns(messages), [messages]);
+
+  // 稳定 key：turns 的 key 在 meta 落库时可能从 local-N 变为 turn-M（同一轮）。
+  // 按数组位置保持首次出现的 key——位置不变则 key 不变，首答流式全程 DOM 稳定；
+  // 会话切换时整个 Virtuoso 随 viewKey 重建，无需清理。
+  const stableKeysRef = React.useRef<(string | null)[]>([]);
+  const stableTurns = React.useMemo(
+    () =>
+      turns.map((turn, index) => ({
+        ...turn,
+        key: stableKeysRef.current[index] ?? (stableKeysRef.current[index] = turn.key)
+      })),
+    [turns]
+  );
+
+  // userDetachedFromBottom：只由真实用户输入（wheel / touchmove / 键盘上翻）置 true；
+  // 布局/Timeline 高度变化、Virtuoso 自动调整、程序 scrollToIndex 一律不改。
+  const [detached, setDetached] = React.useState(false);
+  const [atBottom, setAtBottom] = React.useState(true);
+  const detachedRef = React.useRef(false);
+  detachedRef.current = detached;
+
+  const isDetachedFromBottom = React.useCallback(() => {
     const scroller = scrollerRef.current;
-    if (!scroller) return true;
-    return (
-      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
-      NEAR_BOTTOM_THRESHOLD
-    );
+    if (!scroller) return false;
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > DETACH_GAP;
   }, []);
 
-  const userQuestions = React.useMemo<QuestionRailItem[]>(() => {
-    const items: QuestionRailItem[] = [];
-    messages.forEach((msg, flatIndex) => {
-      if (msg.role !== "user") return;
-      const text = msg.content.replace(/\s+/g, " ").trim();
-      if (!text) return;
-      items.push({ id: msg.id, flatIndex, text });
-    });
-    return items;
-  }, [messages]);
+  const isDetachedFromBottomRef = React.useRef(isDetachedFromBottom);
+  isDetachedFromBottomRef.current = isDetachedFromBottom;
 
-  const activeQuestionId = React.useMemo(() => {
-    if (userQuestions.length === 0) return null;
-    let last: string | null = userQuestions[0].id;
-    for (const q of userQuestions) {
-      if (q.flatIndex <= visibleEnd) {
-        last = q.id;
-      } else {
-        break;
+  // 输入监听：只登记 wheel / touch / keydown 等真实输入路径；普通 scroll 事件
+  // （程序滚动、布局变化都会触发）不用于推断「用户滚离」。处理器只依赖 ref 与
+  // 稳定的 setState，一次性创建后跨渲染复用。监听挂在 scroller 上（dataset 去重，
+  // Virtuoso 随 viewKey 重建时新节点会重新挂载）。
+  const handleUserInputRef = React.useRef<((event: Event) => void) | null>(null);
+  if (handleUserInputRef.current === null) {
+    handleUserInputRef.current = (event: Event) => {
+      if (event.type === "keydown") {
+        const e = event as KeyboardEvent;
+        const pageUp = e.key === "PageUp";
+        const home = e.key === "Home";
+        const arrowUp = e.key === "ArrowUp";
+        const shiftSpace = e.key === " " && e.shiftKey;
+        if (!(pageUp || home || arrowUp || shiftSpace)) return;
+      } else if (event.type === "touchstart") {
+        // 轻点不算滚离，位置判断以 touchmove 为准
+        return;
+      } else if (event.type === "wheel") {
+        // passive wheel 在滚动应用前触发，位置判断读到的是滚动前的位置：
+        // 明确上翻（deltaY < 0）即视为用户向上浏览；下翻仍按位置判断
+        if ((event as WheelEvent).deltaY < 0) {
+          setDetached(true);
+          return;
+        }
+      } else if (event.type !== "touchmove") {
+        return;
       }
-    }
-    return last;
-  }, [userQuestions, visibleEnd]);
+      if (isDetachedFromBottomRef.current()) {
+        setDetached(true);
+      }
+    };
+  }
 
-  const handleSelectQuestion = React.useCallback((flatIndex: number) => {
+  const attachScroller = React.useCallback((node: HTMLElement | null) => {
+    scrollerRef.current = node;
+    if (node && !node.dataset.userInputAttached) {
+      node.dataset.userInputAttached = "1";
+      node.addEventListener("wheel", handleUserInputRef.current!, { passive: true });
+      node.addEventListener("touchstart", handleUserInputRef.current!, { passive: true });
+      node.addEventListener("touchmove", handleUserInputRef.current!, { passive: true });
+      node.addEventListener("keydown", handleUserInputRef.current!);
+    }
+  }, []);
+
+  // Virtuoso 是唯一滚动权威：仅当用户位于底部且未滚离时跟随内容增长。
+  // detached 用 ref 同步，避免闭包过期；程序滚动/布局变化不影响 detached。
+  const followOutput = React.useCallback((isAtBottom: boolean) => {
+    return !detachedRef.current && isAtBottom ? "auto" : false;
+  }, []);
+
+  const handleAtBottomChange = React.useCallback((isAtBottom: boolean) => {
+    setAtBottom(isAtBottom);
+    // 回到底部即重新附着（该回调由真实滚动驱动）
+    if (isAtBottom) setDetached(false);
+  }, []);
+
+  // 新消息发送（turns 数量增长且新 turn 含 user）：重置滚离标记并立即贴底一次，
+  // 只执行一次、无任何 timer；此后的内容增长由 followOutput 接管。
+  // 历史加载贴底仅依赖 initialTopMostItemIndex LAST（Virtuoso 在 messages 非空时才挂载）。
+  const prevTurnsCountRef = React.useRef(stableTurns.length);
+  React.useEffect(() => {
+    const prevCount = prevTurnsCountRef.current;
+    prevTurnsCountRef.current = stableTurns.length;
+    if (stableTurns.length > prevCount && stableTurns[stableTurns.length - 1]?.user) {
+      setDetached(false);
+      virtuosoRef.current?.scrollToIndex({ index: stableTurns.length - 1, align: "end" });
+    }
+  }, [stableTurns.length]);
+
+  const scrollToLatest = React.useCallback(() => {
     virtuosoRef.current?.scrollToIndex({
-      index: flatIndex,
-      align: "start",
+      index: stableTurns.length - 1,
+      align: "end",
       behavior: "smooth"
     });
+    setDetached(false);
+  }, [stableTurns.length]);
+
+  const List = React.useMemo(() => {
+    const Comp = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+      ({ className, ...props }, ref) => (
+        <div
+          ref={ref}
+          className={cn("mx-auto max-w-[960px] space-y-7 px-4 pb-3 pt-8 sm:px-6 lg:pt-10", className)}
+          {...props}
+        />
+      )
+    );
+    Comp.displayName = "MessageList";
+    return Comp;
   }, []);
 
-  const handleRangeChanged = React.useCallback(
-    (range: { startIndex: number; endIndex: number }) => {
-      setVisibleEnd(range.endIndex);
-    },
-    []
-  );
-
-  const scrollToBottom = React.useCallback(() => {
-    // 只用直接赋值：scrollToIndex（Virtuoso 内部异步状态机）与 scrollTop 赋值同时驱动
-    // 会互相竞争造成视口上下闪动。scrollHeight 已含底部 padding/footer，
-    // 直接赋值即可精确贴底。
-    const scroller = scrollerRef.current;
-    if (scroller) {
-      scroller.scrollTop = scroller.scrollHeight;
-    }
-  }, []);
-
-  /**
-   * 流式输出期间的贴底：默认仅在用户接近底部时跟随，
-   * 用户滚离底部（往上翻历史）时暂停，避免抢滚动。
-   * 传 { force: true } 用于明确的"回到底部"意图。
-   */
-  const stickToBottom = React.useCallback(
-    (opts?: { force?: boolean }) => {
-      const scroller = scrollerRef.current;
-      if (!scroller) return;
-      if (!opts?.force && !isNearBottom()) return;
-      scroller.scrollTop = scroller.scrollHeight;
-    },
-    [isNearBottom]
-  );
-
-  // 滚动监听：用户滚离底部时显示"回到底部"浮动按钮
-  // 滚离标记只在流式期间更新——输出结束后（Timeline 折叠等）的布局滚动不污染标记
-  const userScrolledAwayRef = React.useRef(false);
-  const isStreamingRef = React.useRef(isStreaming);
-  isStreamingRef.current = isStreaming;
-  const handleScrollerScrollRef = React.useRef<((event: Event) => void) | null>(null);
-  if (handleScrollerScrollRef.current === null) {
-    handleScrollerScrollRef.current = () => {
-      const near = isNearBottomRef.current();
-      setShowScrollDown((prev) => (prev === !near ? prev : !near));
-      if (isStreamingRef.current) {
-        userScrolledAwayRef.current = !near;
-      }
-    };
-  }
-  const isNearBottomRef = React.useRef(isNearBottom);
-  isNearBottomRef.current = isNearBottom;
-
-  React.useEffect(() => {
-    const nextKey = sessionKey ?? "empty";
-    if (lastSessionRef.current !== nextKey) {
-      lastSessionRef.current = nextKey;
-      pendingScrollRef.current = true;
-      if (settleTimerRef.current) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
-      // 会话加载贴底标记独立过期（不受后续 rerender 的 cleanup 干扰）
-      settleTimerRef.current = window.setTimeout(() => {
-        pendingScrollRef.current = false;
-        settleTimerRef.current = null;
-      }, 1500);
-    }
-  }, [sessionKey]);
-
-  React.useEffect(() => {
-    const wasStreaming = prevStreamingRef.current;
-    prevStreamingRef.current = isStreaming;
-    if (!wasStreaming && isStreaming) {
-      // 刚发送消息时用户位于底部：重置滚离标记并强制贴底一次；此后的内容增长由
-      // Virtuoso followOutput 原生平滑跟随接管，只在接近底部时跟随。
-      // 120ms 的二次 force 仅作为首帧布局补偿，不做更多。
-      userScrolledAwayRef.current = false;
-      stickToBottom({ force: true });
-      const timer = window.setTimeout(() => stickToBottom({ force: true }), 120);
-      return () => window.clearTimeout(timer);
-    }
-    if (wasStreaming && !isStreaming) {
-      // 流式结束：流式期间用户未滚离 → 立即贴底展示完整回答。
-      // 单次调用即可；额外保留一个 120ms 的延迟贴底，用于补偿 Timeline 折叠等
-      // 紧随其后的布局变化。流式期间滚离过则不抢滚动。
-      if (!userScrolledAwayRef.current) {
-        scrollToBottom();
-        const timer = window.setTimeout(scrollToBottom, 120);
-        return () => window.clearTimeout(timer);
-      }
-    }
-    return;
-  }, [isStreaming, stickToBottom, scrollToBottom]);
-
-  // 流式期间不再做定时轮询：Virtuoso 的 followOutput（isAtBottom → "smooth"）
-  // 是唯一的内容增长跟随机制，手动赋值只发生在发送/完成两个明确的贴底时机。
-
-  React.useLayoutEffect(() => {
-    if (!pendingScrollRef.current || isStreaming || isLoading || messages.length === 0) {
-      return;
-    }
-    let attempts = 0;
-    let rafId = 0;
-    let active = true;
-    const run = () => {
-      scrollToBottom();
-      attempts += 1;
-      if (attempts < 3) {
-        rafId = window.requestAnimationFrame(run);
-      }
-    };
-    run();
-    const timer = window.setTimeout(scrollToBottom, 240);
-    const lateTimer = window.setTimeout(scrollToBottom, 900);
-    const handleLoad = () => {
-      if (active) {
-        scrollToBottom();
-      }
-    };
-    if (document.readyState === "complete") {
-      handleLoad();
-    } else {
-      window.addEventListener("load", handleLoad, { once: true });
-    }
-    if (document.fonts?.ready) {
-      document.fonts.ready.then(() => {
-      if (active) {
-        scrollToBottom();
-      }
-    });
-  }
-    return () => {
-      active = false;
-      window.cancelAnimationFrame(rafId);
-      window.clearTimeout(timer);
-      window.clearTimeout(lateTimer);
-      window.removeEventListener("load", handleLoad);
-    };
-  }, [messages.length, isStreaming, isLoading, sessionKey]);
-
-  React.useEffect(() => {
-    return () => {
-      if (settleTimerRef.current) {
-        window.clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = null;
-      }
-    };
+  const Footer = React.useMemo(() => {
+    const Comp = () => <div aria-hidden="true" className="h-8" />;
+    Comp.displayName = "MessageListFooter";
+    return Comp;
   }, []);
 
   // 展开推荐面板后把该条滚入视口：直接量真实 DOM 几何 不依赖 Virtuoso 的尺寸缓存
   // 缓存滞后会按面板展开前的旧高度欠滚 使变高的面板落到折叠线下 被输入框遮挡
   // 面板从骨架→问题会再次变高 故 ready 时会重新触发本效果按最终高度对齐 并在淡入动画结束后补一次精确贴齐
+  // 只由用户点击推荐问题触发，保留原实现。
   React.useEffect(() => {
     if (!recommendReveal) return;
     const revealId = recommendReveal.id;
@@ -263,45 +203,6 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
     };
   }, [recommendReveal]);
 
-  // Intercept triple-click at mousedown phase to prevent browser from
-  // extending paragraph selection across sibling message boundaries.
-  // preventDefault() stops the default selection, then we manually select
-  // only the clicked block-level element's contents.
-  const handleTripleClickDown = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.detail < 3) return;
-    e.preventDefault();
-    const target = e.target as HTMLElement;
-    const block = target.closest("p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th");
-    const container = block && e.currentTarget.contains(block) ? block : e.currentTarget;
-    const sel = window.getSelection();
-    if (sel) {
-      const range = document.createRange();
-      range.selectNodeContents(container);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }, []);
-
-  const List = React.useMemo(() => {
-    const Comp = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-      ({ className, ...props }, ref) => (
-        <div
-          ref={ref}
-          className={cn("mx-auto max-w-[960px] space-y-7 px-4 pb-3 pt-8 sm:px-6 lg:pt-10", className)}
-          {...props}
-        />
-      )
-    );
-    Comp.displayName = "MessageList";
-    return Comp;
-  }, []);
-
-  const Footer = React.useMemo(() => {
-    const Comp = () => <div aria-hidden="true" className="h-8" />;
-    Comp.displayName = "MessageListFooter";
-    return Comp;
-  }, []);
-
   if (messages.length === 0) {
     if (isLoading) {
       return <div className="h-full" />;
@@ -314,45 +215,23 @@ export function MessageList({ messages, isLoading, isStreaming, sessionKey }: Me
       <Virtuoso
         key={virtuosoKey}
         ref={virtuosoRef}
-        data={messages}
+        data={stableTurns}
         initialTopMostItemIndex={initialTopMostItemIndex}
-        // 原生平滑跟随：仅当用户位于底部时，内容增长（token/timeline）由 Virtuoso 平滑推入视口，
-        // 避免手动赋值与内部布局互相拉扯导致的闪动；用户滚离后 isAtBottom=false 不再跟随。
-        // 会话加载贴底由布局 effect 负责；发送/完成贴底由 streaming effect 负责。
-        followOutput={(isAtBottom) => (isAtBottom ? "smooth" : false)}
-        scrollerRef={(node) => {
-          scrollerRef.current = node as HTMLElement | null;
-          if (node && !node.dataset.scrollListenerAttached) {
-            node.dataset.scrollListenerAttached = "1";
-            node.addEventListener("scroll", handleScrollerScrollRef.current!, {
-              passive: true
-            });
-          }
-        }}
-        rangeChanged={handleRangeChanged}
+        followOutput={followOutput}
+        atBottomStateChange={handleAtBottomChange}
+        scrollerRef={attachScroller}
         className="h-full"
         components={{ List, Footer }}
-        itemContent={(index, message) => (
-          <div
-            data-message-id={message.id}
-            className={cn(index === messages.length - 1 && "animate-fade-up")}
-            onMouseDown={handleTripleClickDown}
-          >
-            <MessageItem message={message} />
-          </div>
+        itemContent={(index, turn) => (
+          <ChatTurnItem turn={turn} isLatestTurn={index === stableTurns.length - 1} />
         )}
       />
-      <QuestionRail
-        items={userQuestions}
-        activeId={activeQuestionId}
-        onSelect={handleSelectQuestion}
-      />
-      {showScrollDown ? (
+      {detached && !atBottom ? (
         <button
           type="button"
-          aria-label="滚动到底部"
-          onClick={() => scrollToBottom()}
-          className="absolute bottom-4 right-5 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+          aria-label="回到底部"
+          onClick={scrollToLatest}
+          className="absolute bottom-5 right-6 z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
         >
           <ArrowDown className="h-4 w-4" />
         </button>

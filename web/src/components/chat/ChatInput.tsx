@@ -63,7 +63,7 @@ export function ChatInput() {
     <div className="space-y-2">
       <div
         className={cn(
-          "relative flex min-w-0 flex-col rounded-[20px] border bg-white px-3 pb-2 pt-3 shadow-[0_10px_30px_rgba(8,43,69,0.075)] transition-all duration-200 sm:px-5 sm:pt-4",
+          "relative flex min-w-0 flex-col rounded-xl border bg-white px-3 pb-2 pt-2.5 shadow-sm transition-all duration-200 sm:px-4",
           isFocused
             ? "border-[var(--merchant-cyan)] shadow-[var(--merchant-shadow-md)]"
             : "border-[var(--merchant-border)] hover:border-[var(--merchant-cyan-border)]"
@@ -75,9 +75,9 @@ export function ChatInput() {
             value={value}
             onChange={(event) => setValue(event.target.value)}
             placeholder={
-              deepThinkingEnabled ? "输入需要深入核对的售后场景..." : "继续补充订单与售后信息..."
+              deepThinkingEnabled ? "输入需要深入分析的问题..." : "输入商品经营、订单、售后或知识问题..."
             }
-            className="max-h-40 min-h-[52px] w-full resize-none border-0 bg-transparent px-1 pb-3 pt-2 text-sm leading-6 text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
+            className="max-h-40 min-h-[44px] w-full resize-none border-0 bg-transparent px-1 pb-2 pt-1.5 text-sm leading-6 text-[var(--merchant-text)] shadow-none placeholder:text-[var(--merchant-text-muted)] focus-visible:ring-0 sm:px-2 sm:text-[15px]"
             rows={1}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
@@ -161,15 +161,6 @@ export function ChatInput() {
           </span>
         </p>
       ) : null}
-      <p className="hidden text-center text-xs text-[var(--merchant-text-muted)] min-[390px]:block">
-        <kbd className="rounded bg-[var(--merchant-surface-subtle)] px-1.5 py-0.5">Enter</kbd> 发送
-        <span className="px-1.5">·</span>
-        <kbd className="rounded bg-[var(--merchant-surface-subtle)] px-1.5 py-0.5">
-          Shift + Enter
-        </kbd>{" "}
-        换行
-        {isStreaming ? <span className="ml-2 animate-pulse-soft">生成中...</span> : null}
-      </p>
     </div>
   );
 }

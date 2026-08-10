@@ -29,6 +29,11 @@ import {
   computeAgentExecutionSummary,
   restoreAgentExecution
 } from "@/utils/agentExecution";
+import {
+  disposeAgentProgressScheduler,
+  getAgentProgressScheduler,
+  hasAgentProgressScheduler
+} from "@/utils/agentProgressPresentation";
 import { storage } from "@/utils/storage";
 
 interface ChatState {
@@ -81,35 +86,6 @@ function mapPersistedMessageStatus(status?: Message["messageStatus"] | null): Me
   if (status === "INTERRUPTED") return "cancelled";
   if (status === "ERROR" || status === "REJECTED") return "error";
   return "done";
-}
-
-/**
- * 构造稳定 stepId：
- * - 新后端带 callId：优先用 callId 构造 `plan-${plan}-${phase}-${callId}`，
- *   同一工具调用的 running→completed 共享 callId 可原地更新，
- *   同一 plan 内同工具的不同调用（不同 callId）各自成步，不再互相覆盖。
- * - 旧后端无 callId：保持原有按 (plan, phase, toolName) 合并的兼容行为，
- *   同 key 步骤已存在时复用其 stepId，否则按出现次数 +1 编号。
- */
-function buildAgentStepId(payload: AgentProgressPayload, steps: AgentExecutionStep[]): string {
-  const plan = payload.plan ?? 1;
-  const callId = payload.tool?.callId;
-  if (callId) {
-    // 同一工具调用的 running→completed 共享 callId，原地更新；不同调用（不同 callId）各自成步
-    const existing = steps.find(
-      (step) => step.tool?.callId === callId && step.plan === plan
-    );
-    if (existing) return existing.stepId;
-    return `plan-${plan}-${payload.phase}-${callId}`;
-  }
-  // 旧后端无 callId：保持原有按 (plan, phase, toolName) 合并的行为
-  const toolName = payload.tool?.name ?? "";
-  const key = `${plan}|${payload.phase}|${toolName}`;
-  const keyOf = (step: AgentExecutionStep) =>
-    `${step.plan}|${step.phase}|${step.tool?.name ?? ""}`;
-  const sameKey = steps.filter((step) => keyOf(step) === key);
-  if (sameKey.length > 0) return sameKey[0].stepId;
-  return `plan-${plan}-${payload.phase}-${toolName}-${sameKey.length + 1}`;
 }
 
 function failLastRunningStep(steps?: AgentExecutionStep[]): AgentExecutionStep[] | undefined {
@@ -204,10 +180,10 @@ export const useChatStore = create<ChatState>((set, get) => {
   /**
    * 应用单条 agent_progress 事件到当前流式消息。
    * - 仅更新 streamingMessageId 对应的 assistant 消息（老请求不污染新请求）
-   * - seq 全局递增去重
-   * - stepId 由前端构造，running→completed 原地更新
-   * - phase=complete 是收尾标记：不进入时间线，只把仍 running 的步骤 finalize 为
-   *   completed（兜底「输出已结束但时间线仍显示进行中」），finish 事件负责收尾
+   * - 逻辑合并（stepId 原地更新/seq 去重/complete 收尾）统一由 AgentProgressScheduler
+   *   完成：running 立即可见，终态按 minRunningVisibleMs 延迟揭示，
+   *   保证 running 至少有一次独立 paint（避免一次 reader.read() 多事件同 tick 批量渲染）
+   * - scheduler 与 streamingMessageId 一一对应（request-scoped），流收尾时 dispose
    */
   const handleAgentProgress = (payload: AgentProgressPayload) => {
     const { streamingMessageId } = get();
@@ -216,44 +192,16 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 消息已被替换（会话切换/重新加载）或已结束（取消/失败）时忽略后续事件
     if (!target || target.role !== "assistant") return;
     if (target.agentExecutionStatus !== "running") return;
-    const steps = target.agentSteps ?? [];
-    if (steps.some((step) => step.seq === payload.seq)) return;
-    if (payload.phase === "complete") {
-      const completedSteps = steps.map((step) =>
-        step.status === "running" ? { ...step, status: "completed" as const } : step
-      );
-      set((state) => ({
-        messages: state.messages.map((message) =>
-          message.id === state.streamingMessageId
-            ? { ...message, agentSteps: completedSteps }
-            : message
-        )
-      }));
-      return;
-    }
-    const stepId = buildAgentStepId(payload, steps);
-    const existingIndex = steps.findIndex((step) => step.stepId === stepId);
-    const nextStep: AgentExecutionStep = {
-      stepId,
-      seq: payload.seq,
-      phase: payload.phase,
-      status: payload.status,
-      plan: payload.plan ?? 1,
-      title: payload.title,
-      detail: payload.detail,
-      tool: payload.tool ?? undefined
-    };
-    const nextSteps =
-      existingIndex >= 0
-        ? steps.map((step, index) => (index === existingIndex ? { ...step, ...nextStep } : step))
-        : [...steps, nextStep];
-    set((state) => ({
-      messages: state.messages.map((message) =>
-        message.id === state.streamingMessageId
-          ? { ...message, agentSteps: nextSteps }
-          : message
-      )
-    }));
+    const scheduler = getAgentProgressScheduler(streamingMessageId, {
+      onChange: (steps) =>
+        set((state) => ({
+          // 用 state.streamingMessageId 判断：streamingMessageId 已被清空/切换时不再写入
+          messages: state.messages.map((message) =>
+            message.id === state.streamingMessageId ? { ...message, agentSteps: steps } : message
+          )
+        }))
+    });
+    scheduler.push(payload);
   };
 
   /**
@@ -354,6 +302,15 @@ export const useChatStore = create<ChatState>((set, get) => {
             })
           }));
         }
+        // 规范 §49：finish 时若仍有 running 步骤（如 complete 事件丢失），先统一收尾为
+        // completed，summary 基于收尾后的步骤计算，避免 toolCallCount 漏计
+        const targetMessage = get().messages.find(
+          (message) => message.id === get().streamingMessageId
+        );
+        const finalizedSteps =
+          targetMessage?.agentSteps?.map((step) =>
+            step.status === "running" ? { ...step, status: "completed" as const } : step
+          ) ?? targetMessage?.agentSteps;
         set((state) => ({
           messages: state.messages.map((message) =>
             message.id === state.streamingMessageId
@@ -371,15 +328,13 @@ export const useChatStore = create<ChatState>((set, get) => {
                   thinkingDuration:
                     message.thinkingDuration ?? computeThinkingDuration(state.thinkingStartAt),
                   agentExecutionStatus: "completed",
-                  // 兜底：finish 时若仍有 running 步骤（如 complete 事件丢失），一并收尾为 completed
-                  agentSteps: message.agentSteps?.map((step) =>
-                    step.status === "running" ? { ...step, status: "completed" as const } : step
-                  ),
-                  agentExecutionSummary: computeAgentExecutionSummary(message.agentSteps)
+                  agentSteps: finalizedSteps,
+                  agentExecutionSummary: computeAgentExecutionSummary(finalizedSteps)
                 }
               : message
           )
         }));
+        disposeAgentProgressScheduler(assistantId);
       },
       onCancel: (cancelPayload: CompletionPayload) => {
         if (get().streamingMessageId !== assistantId) return;
@@ -415,6 +370,8 @@ export const useChatStore = create<ChatState>((set, get) => {
           streamingMessageId: null,
           cancelRequested: false
         }));
+        // SSE cancel 事件 = 流已结束：释放 request-scoped 调度器（幂等）
+        disposeAgentProgressScheduler(assistantId);
       },
       onDone: () => {
         if (get().streamingMessageId !== assistantId) return;
@@ -458,6 +415,8 @@ export const useChatStore = create<ChatState>((set, get) => {
           )
         }));
         toast.error(error.message || "生成失败");
+        // 流已失败：释放 request-scoped 调度器（幂等）
+        disposeAgentProgressScheduler(assistantId);
       }
     };
 
@@ -495,6 +454,9 @@ export const useChatStore = create<ChatState>((set, get) => {
           cancelRequested: false
         });
       }
+      // 流已收尾（无论 streamingMessageId 是否已被清空/切换），释放 request-scoped
+      // 调度器：杜绝定时器/注册表残留（onFinish/onCancel/onError 已 dispose 时幂等）
+      disposeAgentProgressScheduler(assistantId);
     }
   }
 
@@ -735,6 +697,11 @@ export const useChatStore = create<ChatState>((set, get) => {
             : message
         )
       }));
+      // 如 request-scoped 调度器存在：同步收敛内部 pending/running（running → cancelled），
+      // 避免其定时器在取消后仍触发 emit；不在此 dispose，流最终收尾（finally）统一处理
+      if (hasAgentProgressScheduler(streamingMessageId)) {
+        getAgentProgressScheduler(streamingMessageId, { onChange: () => {} }).cancel();
+      }
     }
     if (streamTaskId) {
       stopTask(streamTaskId).catch(() => null);

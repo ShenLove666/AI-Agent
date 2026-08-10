@@ -70,7 +70,7 @@ export function WelcomeScreen() {
               今天要处理哪类即时零售问题？
             </h1>
             <p className="mt-2 max-w-xl text-sm leading-6 text-[var(--merchant-text-muted)]">
-              结合活动规则、购物篮洞察与服务知识，回答推荐、配送和售后问题。
+              结合经营数据、购物篮洞察与知识库，回答商品经营、订单履约、配送和售后问题。
             </p>
           </div>
           <div className="flex flex-wrap gap-2" aria-label="当前模型配置">
@@ -111,7 +111,7 @@ export function WelcomeScreen() {
             ref={textareaRef}
             value={value}
             onChange={(event) => setValue(event.target.value)}
-            placeholder={deepThinkingEnabled ? "描述需要深入核对的售后场景..." : "输入订单场景、商品状态或顾客诉求..."}
+            placeholder={deepThinkingEnabled ? "输入需要深入分析的问题..." : "输入商品经营、订单、售后或知识问题..."}
             className="max-h-36 min-h-[72px] w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-6 text-[var(--merchant-text)] placeholder:text-[var(--merchant-text-muted)] focus:outline-none sm:text-[15px]"
             rows={2}
             onFocus={() => setIsFocused(true)}

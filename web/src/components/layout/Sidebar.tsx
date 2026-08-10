@@ -235,7 +235,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                     <Plus className="h-4 w-4" />
                   </span>
                   <span className="flex-1">
-                    <span className="block text-sm">新建售后咨询</span>
+                    <span className="block text-sm">新建 AI 咨询</span>
                     <span className="block text-[11px] font-normal opacity-70">
                       核对规则与处理边界
                     </span>

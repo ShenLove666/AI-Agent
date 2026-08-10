@@ -1,25 +1,54 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList } from "@/components/chat/MessageList";
 import { useChatStore } from "@/stores/chatStore";
-import type { Message } from "@/types";
+import type { AgentExecutionStep, Message } from "@/types";
 
-function makeMessage(id: string, role: "user" | "assistant", content: string): Message {
+// jsdom 没有 Element.scrollTo / scrollBy。Virtuoso 的 scrollToIndex 落地依赖它们，
+// 这里补最小实现，供 mockScrollMetrics 之外的路径（如回到底部按钮）使用。
+if (typeof Element.prototype.scrollTo !== "function") {
+  Element.prototype.scrollTo = function (this: Element, options?: ScrollToOptions) {
+    const top = typeof options === "object" && options ? options.top ?? 0 : 0;
+    (this as HTMLElement).scrollTop = top;
+  };
+}
+if (typeof Element.prototype.scrollBy !== "function") {
+  Element.prototype.scrollBy = function (this: Element, options?: ScrollToOptions) {
+    const top = typeof options === "object" && options ? options.top ?? 0 : 0;
+    (this as HTMLElement).scrollTop += top;
+  };
+}
+
+// 注意：jsdom 无真实布局，Virtuoso 不会渲染虚拟化条目（条目渲染由 ChatTurnItem.test
+// 直接覆盖）；本文件只验证 MessageList 的滚动模型（detach/按钮/效果），
+// 全部通过 mockScrollMetrics 在 scroller 实例上注入度量完成。
+
+function makeMessage(
+  id: string,
+  role: "user" | "assistant",
+  content: string,
+  extra: Partial<Message> = {}
+): Message {
   return {
     id,
     role,
     content,
     status: role === "user" ? "sent" : "done",
     createdAt: "2026-08-09T12:00:00Z",
-    updatedAt: "2026-08-09T12:00:00Z"
+    updatedAt: "2026-08-09T12:00:00Z",
+    ...extra
   } as Message;
 }
 
-function renderList(messages: Message[], isStreaming = false) {
+function makeStep(seq: number, status: AgentExecutionStep["status"]): AgentExecutionStep {
+  return { stepId: `s-${seq}`, seq, phase: "tool", status, plan: 1, title: `步骤${seq}` };
+}
+
+function renderList(messages: Message[], extraProps: Partial<{ sessionKey: string | null }> = {}) {
   useChatStore.setState({ recommendReveal: null });
   return render(
-    <MessageList messages={messages} isLoading={false} isStreaming={isStreaming} />
+    <MessageList messages={messages} isLoading={false} isStreaming={false} {...extraProps} />
   );
 }
 
@@ -27,168 +56,220 @@ function findScroller(): HTMLElement | null {
   return document.querySelector('[data-testid="virtuoso-scroller"]');
 }
 
-function fireScroll(top: number, total: number, client: number) {
-  const scroller = findScroller();
-  if (!scroller) throw new Error("scroller not found");
-  Object.defineProperty(scroller, "scrollTop", { value: top, configurable: true });
-  Object.defineProperty(scroller, "scrollHeight", { value: total, configurable: true });
-  Object.defineProperty(scroller, "clientHeight", { value: client, configurable: true });
-  act(() => {
-    scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+async function settle(ms = 300) {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
   });
 }
 
-afterEach(cleanup);
+/**
+ * 接管 scroller 的滚动度量（jsdom 无布局，全为 0）。
+ * 返回 { setTop, getTop, writes }：writes 记录一切程序对 scrollTop 的写入。
+ */
+function mockScrollMetrics(
+  scroller: HTMLElement,
+  opts: { scrollHeight: number; clientHeight: number; offsetHeight?: number; initialTop?: number }
+) {
+  let top = opts.initialTop ?? 0;
+  const writes: number[] = [];
+  Object.defineProperty(scroller, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (v: number) => {
+      writes.push(v);
+      top = v;
+    }
+  });
+  Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: opts.scrollHeight });
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: opts.clientHeight });
+  if (opts.offsetHeight !== undefined) {
+    Object.defineProperty(scroller, "offsetHeight", { configurable: true, value: opts.offsetHeight });
+  }
+  return {
+    setTop: (v: number) => {
+      top = v;
+    },
+    getTop: () => top,
+    writes
+  };
+}
 
-describe("MessageList streaming follow behavior", () => {
-  it("pins to the bottom immediately when streaming starts", async () => {
-    const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
-    ];
-    // 先以非流式渲染让会话加载贴底标记过期，避免布局 effect 干扰
-    const { rerender } = render(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} />
-    );
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
+describe("MessageList 用户滚离", () => {
+  it("wheel 向上滚离 → 出现「回到底部」；同轮内容增长不重新贴底", async () => {
+    const u1 = makeMessage("u1", "user", "牛肉和什么商品适合搭配推荐？");
+    const a1 = makeMessage("a1", "assistant", "推荐根茎类蔬菜。");
+    const { rerender } = renderList([u1, a1]);
     const scroller = findScroller()!;
-    Object.defineProperty(scroller, "scrollHeight", { value: 800, configurable: true, writable: true });
-    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true, writable: true });
-    Object.defineProperty(scroller, "scrollTop", { value: 500, configurable: true, writable: true });
+    expect(scroller).not.toBeNull();
+    // 等 Virtuoso 初始 LAST 定位（jsdom 中为 no-op）完成，再接管滚动度量
+    await settle();
 
-    // 流式开始 → 强制贴底一次（发送时的明确贴底时机，此后内容增长由 Virtuoso followOutput 接管）
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
 
-    return Promise.resolve().then(() => {
-      expect(scroller.scrollTop).toBe(800);
+    // 真实用户输入：wheel 向上滚 → 距底 800-100-300=400 > 40 → detached；
+    // 随后浏览器产生 scroll 事件 → Virtuoso 报 atBottom=false
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
+    await settle(80); // atBottomStateChange 有 50ms 节流
+
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 同轮内容增长（token 原地更新，turns 数不变）：不贴底、不重新附着
+    m.writes.length = 0;
+    rerender(
+      <MessageList
+        messages={[u1, { ...a1, content: `${a1.content}（回答继续变长……）` }]}
+        isLoading={false}
+        isStreaming={false}
+      />
+    );
+    await settle(120);
+
+    expect(m.writes).toEqual([]);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
   });
 
-  it("pauses following while streaming once the user scrolls away", async () => {
+  it("touchmove 与键盘上翻同样是真实滚离输入；点击「回到底部」后重新附着", async () => {
     const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+      makeMessage("u1", "user", "问题"),
+      makeMessage("a1", "assistant", "回答")
     ];
-    const { rerender } = render(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} />
-    );
-    await new Promise((resolve) => setTimeout(resolve, 1600));
-
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
-    // 等发送时的强制贴底（120ms）完成
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    renderList(messages);
     const scroller = findScroller()!;
-    Object.defineProperty(scroller, "scrollHeight", { value: 800, configurable: true, writable: true });
-    Object.defineProperty(scroller, "clientHeight", { value: 300, configurable: true, writable: true });
-    Object.defineProperty(scroller, "scrollTop", { value: 100, configurable: true, writable: true });
-    // 用户滚离底部（距底 400 > 160）
-    fireScroll(100, 800, 300);
+    await settle();
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    // 流式中滚离后不跟随（无轮询/定时拉回机制），位置保持
-    expect(scroller.scrollTop).toBe(100);
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // touchmove 滚离
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new Event("touchmove", { bubbles: true }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 点击回到底部 → detached 重置（滚动由 scrollToIndex smooth 负责）→ 按钮隐藏
+    fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
+    await settle(50);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+
+    // 键盘 PageUp 再次滚离（atBottom 仍为 false，无需再派发 scroll）
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }));
+    });
+    await settle(30);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
   });
 });
 
-describe("MessageList stream-end scroll behavior", () => {
-  it("force-scrolls to the bottom when the stream ends if the user never scrolled away", () => {
-    const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
-    ];
-    const { rerender } = render(
-      <MessageList messages={messages} isLoading={false} isStreaming={true} />
+describe("MessageList 程序布局变化 ≠ 滚离", () => {
+  it("仅更新 assistant 的 agentSteps（Timeline 高度变化）不触发滚离", async () => {
+    const u1 = makeMessage("u1", "user", "问题");
+    const a1 = makeMessage("a1", "assistant", "回答", { agentSteps: [] });
+    const { rerender } = renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+
+    const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+    rerender(
+      <MessageList
+        messages={[
+          u1,
+          { ...a1, agentSteps: [makeStep(1, "completed"), makeStep(2, "completed"), makeStep(3, "running")] }
+        ]}
+        isLoading={false}
+        isStreaming={false}
+      />
     );
+    await settle(120);
+
+    // 无 wheel/touch/keydown → detached 保持 false → 按钮不出现
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+    expect(scrollToSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageList 新消息发送", () => {
+  it("turns 增长（新 user turn）→ 重置滚离并贴底（无 timer）", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    const u2 = makeMessage("u2", "user", "问题二");
+    const a2 = makeMessage("a2", "assistant", "回答二");
+    const { rerender } = renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+
+    // offsetHeight 让 Virtuoso 的 scrollTo 落地路径（jsdom 中默认 0 会提前 return）可执行
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300, offsetHeight: 300 });
+
+    // 先滚离
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 发送新消息 → turns 1→2：detached 重置（按钮消失）+ 立即贴底一次（scrollToIndex，无 timer）
+    rerender(<MessageList messages={[u1, a1, u2, a2]} isLoading={false} isStreaming={false} />);
+    await settle(50);
+
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+  });
+});
+
+describe("MessageList 历史加载", () => {
+  it("渲染 20 轮初始位于底部，无遗留 120/240/900ms 补滚 timer", async () => {
+    const messages: Message[] = [];
+    for (let i = 0; i < 20; i++) {
+      messages.push(makeMessage(`u${i}`, "user", `问题${i}`, { turnId: i + 1 }));
+      messages.push(makeMessage(`a${i}`, "assistant", `回答${i}`, { turnId: i + 1 }));
+    }
+
+    const spy = vi.spyOn(window, "setTimeout");
+    renderList(messages);
+    // jsdom 无布局，Virtuoso 初始 LAST 定位不依赖我们的代码；
+    // 验证旧版 120/240/900ms 多段补滚 timer 已删除（Virtuoso 内部仅剩其自身的节流/防抖 timer）
+    await settle(50);
+
+    const delays = spy.mock.calls.map(([, delay]) => (typeof delay === "number" ? delay : NaN));
+    expect(delays.some((d) => d === 120 || d === 240 || d === 900)).toBe(false);
+    spy.mockRestore();
+
+    // 初始 atBottom：挂载即报到底（不出现「回到底部」按钮）
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+    // 无任何 scrollTop 直赋补滚（jsdom 下 Virtuoso 初始定位不写 scrollTop）
     const scroller = findScroller();
     expect(scroller).not.toBeNull();
-    Object.defineProperty(scroller!, "scrollHeight", { value: 800, configurable: true, writable: true });
-    Object.defineProperty(scroller!, "clientHeight", { value: 300, configurable: true, writable: true });
-    // 用户在底部（距底 0）
-    Object.defineProperty(scroller!, "scrollTop", { value: 500, configurable: true, writable: true });
-
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
-
-    // 完成时用户未滚离 → 立即贴底（scrollTop 被设为 scrollHeight），单次调用即可
-    return Promise.resolve().then(() => {
-      expect(scroller!.scrollTop).toBe(800);
-    });
-  });
-
-  it("does not yank the viewport when the user scrolled away during streaming", async () => {
-    const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
-    ];
-    // 先以非流式渲染让会话加载贴底标记（1500ms）注册并过期，避免布局 effect 干扰
-    const { rerender } = render(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} />
-    );
-    await new Promise((resolve) => setTimeout(resolve, 1600));
-
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={true} />);
-    const scroller = findScroller();
-    Object.defineProperty(scroller!, "scrollHeight", { value: 800, configurable: true, writable: true });
-    Object.defineProperty(scroller!, "clientHeight", { value: 300, configurable: true, writable: true });
-    Object.defineProperty(scroller!, "scrollTop", { value: 100, configurable: true, writable: true });
-    // 用户滚离底部（距底 800-100-300=400 > 160）
-    fireScroll(100, 800, 300);
-    rerender(<MessageList messages={messages} isLoading={false} isStreaming={false} />);
-
-    // 用户滚离过 → 完成时不抢滚动，位置保持
-    return Promise.resolve().then(() => {
-      expect(scroller!.scrollTop).toBe(100);
-    });
+    expect(scroller!.scrollTop).toBe(0);
   });
 });
 
-describe("MessageList scroll-follow behavior", () => {
-  it("shows the scroll-to-bottom button once the user scrolls away from the bottom", () => {
+describe("MessageList QuestionRail 已移除", () => {
+  it("渲染后无 rail 相关节点", async () => {
     const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二"),
+      makeMessage("u3", "user", "问题三"),
+      makeMessage("a3", "assistant", "回答三")
     ];
-    renderList(messages, true);
+    renderList(messages);
+    await settle(50);
 
-    // 用户在底部时按钮不出现（距底 0 < 160）
-    fireScroll(200, 500, 300);
-    expect(screen.queryByRole("button", { name: "滚动到底部" })).not.toBeInTheDocument();
-
-    // 用户滚离底部（距底 200 > 160 阈值）→ 按钮出现
-    fireScroll(0, 500, 300);
-    expect(screen.getByRole("button", { name: "滚动到底部" })).toBeInTheDocument();
-
-    // 回到底部 → 按钮消失
-    fireScroll(200, 500, 300);
-    expect(screen.queryByRole("button", { name: "滚动到底部" })).not.toBeInTheDocument();
-  });
-});
-
-describe("MessageList stable viewKey", () => {
-  it("sessionKey 从 null 变为会话 id（新会话首答落库）时不重建 Virtuoso；已存在 id → 另一 id 才重建", () => {
-    const messages = [
-      makeMessage("m1", "user", "牛肉和什么商品适合搭配推荐？"),
-      makeMessage("m2", "assistant", "根据购物篮证据，推荐根茎类蔬菜（提升度 3.04）。")
-    ];
-    useChatStore.setState({ recommendReveal: null });
-    const { rerender } = render(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} />
-    );
-    const scrollerBefore = findScroller();
-    expect(scrollerBefore).not.toBeNull();
-
-    // null → uuid（新会话首答落库）：Virtuoso 不重建，scroller 仍是同一 DOM 节点
-    rerender(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} sessionKey="uuid-1" />
-    );
-    expect(findScroller()).toBe(scrollerBefore);
-
-    // 已存在会话 id → 另一个 id（用户切换历史会话）：Virtuoso 重建，scroller 被替换
-    rerender(
-      <MessageList messages={messages} isLoading={false} isStreaming={false} sessionKey="uuid-2" />
-    );
-    const scrollerAfter = findScroller();
-    expect(scrollerAfter).not.toBeNull();
-    expect(scrollerAfter).not.toBe(scrollerBefore);
+    // QuestionRail 的滚动列表类与「问题文本 aria-label」按钮均不应存在
+    expect(document.querySelector(".sidebar-scroll")).toBeNull();
+    expect(document.querySelector('[aria-label="问题一"]')).toBeNull();
   });
 });

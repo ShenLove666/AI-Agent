@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamHandlers } from "@/hooks/useStreamResponse";
+import { disposeAgentProgressScheduler } from "@/utils/agentProgressPresentation";
 
 const { createStreamResponseMock } = vi.hoisted(() => ({
   createStreamResponseMock: vi.fn()
@@ -59,7 +60,7 @@ function toolProgress(
   };
 }
 
-describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
+describe("chatStore agent_progress（经 Presentation Scheduler）", () => {
   beforeEach(() => {
     createStreamResponseMock.mockReset();
     useChatStore.setState({
@@ -75,9 +76,21 @@ describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
       deepThinkingEnabled: false,
       knowledgeBaseIds: []
     });
+    // 终态 reveal 依赖 minRunningVisibleMs（150ms）定时器
+    vi.useFakeTimers();
+    // scheduler 的 DEV 调试日志不参与断言，静音避免刷屏（源代码行为不改）
+    vi.spyOn(console, "debug").mockImplementation(() => {});
   });
 
-  it("同 plan 同工具不同 callId 各自成步，第二条 completed 按 callId 原地更新", async () => {
+  afterEach(() => {
+    // 释放本测试创建的消息级 scheduler（start 永不 resolve，finally 不会执行）
+    const streamingMessageId = useChatStore.getState().streamingMessageId;
+    if (streamingMessageId) disposeAgentProgressScheduler(streamingMessageId);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("同 plan 同工具不同 callId 各自成步，第二条 completed 按 callId 原地更新（running 先行，推进定时器后终态 reveal）", () => {
     const getHandlers = setupCapturedHandlers();
     // 不 await：流式 start 永不 resolve，sendMessage 保持进行中；
     // createStreamResponse 在 sendMessage 的同步段内被调用，返回时 handlers 已捕获
@@ -96,9 +109,14 @@ describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
     expect(steps[0].tool?.callId).toBe("call-1");
     expect(steps[1].tool?.callId).toBe("call-2");
 
-    // 第二条调用 completed：共享 callId 原地更新，仍保持两条
+    // 第二条调用 completed：终态被 hold（running 先行），推进 minRunningVisibleMs 后原地更新
     handlers.onAgentProgress?.(toolProgress(3, "completed", "call-2"));
 
+    steps = useChatStore.getState().messages[1].agentSteps!;
+    expect(steps).toHaveLength(2);
+    expect(steps[1].status).toBe("running");
+
+    vi.advanceTimersByTime(200);
     steps = useChatStore.getState().messages[1].agentSteps!;
     expect(steps).toHaveLength(2);
     expect(steps[1].stepId).toBe("plan-1-tool-call-2");
@@ -108,7 +126,7 @@ describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
     expect(steps[0].status).toBe("running");
   });
 
-  it("同 plan 同工具不同 callId 且 callId 跨 plan 复用时按 plan 隔离", async () => {
+  it("同 plan 同工具不同 callId 且 callId 跨 plan 复用时按 plan 隔离", () => {
     const getHandlers = setupCapturedHandlers();
     // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
     useChatStore.getState().sendMessage("查询商品关联数据");
@@ -128,7 +146,7 @@ describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
     ]);
   });
 
-  it("旧后端无 callId：保持按 (plan, phase, toolName) 合并的兼容行为", async () => {
+  it("旧后端无 callId：保持按 (plan, phase, toolName) 合并的兼容行为", () => {
     const getHandlers = setupCapturedHandlers();
     // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
     useChatStore.getState().sendMessage("查询商品关联数据");
@@ -136,13 +154,51 @@ describe("chatStore agent_progress stepId 构造（callId 契约）", () => {
 
     // 无 callId 的 running→completed 同 key 事件合并为一条
     handlers.onAgentProgress?.(toolProgress(1, "running", undefined));
+    // 终态先被 hold：仍是 running 一行
     handlers.onAgentProgress?.(toolProgress(2, "completed", undefined));
 
-    const steps = useChatStore.getState().messages[1].agentSteps!;
+    let steps = useChatStore.getState().messages[1].agentSteps!;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].status).toBe("running");
+    expect(steps[0].stepId).toBe("plan-1-tool-commerce_search_association_rules-1");
+
+    vi.advanceTimersByTime(200);
+    steps = useChatStore.getState().messages[1].agentSteps!;
     expect(steps).toHaveLength(1);
     expect(steps[0].status).toBe("completed");
-    expect(steps[0].stepId).toBe(
-      "plan-1-tool-commerce_search_association_rules-1"
-    );
+    expect(steps[0].stepId).toBe("plan-1-tool-commerce_search_association_rules-1");
+  });
+
+  it("phase=complete 收尾：pending 收敛 + 仍 running 的步骤立即 finalize 为 completed（无需推进定时器）", () => {
+    const getHandlers = setupCapturedHandlers();
+    // 不 await：流式 start 永不 resolve，sendMessage 保持进行中
+    useChatStore.getState().sendMessage("查询商品关联数据");
+    const handlers = getHandlers();
+
+    handlers.onAgentProgress?.(toolProgress(1, "running", "call-1"));
+    handlers.onAgentProgress?.(toolProgress(2, "running", "call-2"));
+    // call-1 的 completed 被 hold（running 先行）
+    handlers.onAgentProgress?.(toolProgress(3, "completed", "call-1"));
+    expect(useChatStore.getState().messages[1].agentSteps![0].status).toBe("running");
+
+    // complete 是收尾标记：不创建步骤，一次性收敛
+    handlers.onAgentProgress?.({
+      seq: 4,
+      phase: "complete",
+      status: "completed",
+      title: "完成"
+    });
+
+    const steps = useChatStore.getState().messages[1].agentSteps!;
+    expect(steps).toHaveLength(2);
+    expect(steps[0].status).toBe("completed");
+    expect(steps[1].status).toBe("completed");
+    expect(steps[0].stepId).toBe("plan-1-tool-call-1");
+    expect(steps[1].stepId).toBe("plan-1-tool-call-2");
+
+    // 定时器已清空：推进时间不再有变化
+    const before = useChatStore.getState().messages[1].agentSteps;
+    vi.advanceTimersByTime(300);
+    expect(useChatStore.getState().messages[1].agentSteps).toBe(before);
   });
 });

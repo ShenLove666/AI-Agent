@@ -14,9 +14,14 @@ import { useChatStore } from "@/stores/chatStore";
 
 interface MessageItemProps {
   message: Message;
+  /** 是否属于当前最新一轮（驱动 Timeline 展开生命周期：最新轮执行时展开、新轮开始后收起） */
+  isLatestTurn?: boolean;
 }
 
-export const MessageItem = React.memo(function MessageItem({ message }: MessageItemProps) {
+export const MessageItem = React.memo(function MessageItem({
+  message,
+  isLatestTurn = true
+}: MessageItemProps) {
   const regenerateTurn = useChatStore((state) => state.regenerateTurn);
   const isLoading = useChatStore((state) => state.isLoading);
   const versions = message.answerVersions ?? [];
@@ -70,7 +75,13 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
   const [thinkingExpanded, setThinkingExpanded] = React.useState(false);
   const hasThinking = Boolean(renderedMessage.thinking && renderedMessage.thinking.trim().length > 0);
   const hasContent = renderedMessage.content.trim().length > 0;
-  const isWaiting = renderedMessage.status === "streaming" && !isThinking && !hasContent;
+  // 仅在 Agent Progress 尚未到达（agentSteps 为空）时才显示传统等待点，
+  // 避免 Timeline 已在实时执行时下方还有 loading dots 的信息重复
+  const isWaiting =
+    renderedMessage.status === "streaming" &&
+    !isThinking &&
+    !hasContent &&
+    !(renderedMessage.agentSteps?.length ?? 0);
 
   if (isUser) {
     return (
@@ -86,18 +97,14 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
   return (
     <div className="group flex">
       <div className="min-w-0 flex-1 space-y-3">
-        {/* 平正文头部：紧凑单行（小头像 + 名称 + 内联 AI 徽标），无整卡边框/阴影/分隔线 */}
+        {/* 平正文头部：紧凑单行（小头像 + 名称），无整卡边框/阴影/分隔线；AI 身份由 Timeline 的 Sparkles 承担 */}
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--merchant-navy)] text-white">
             <Bot className="h-4 w-4" />
           </span>
           <p className="truncate text-sm font-semibold text-[var(--merchant-text)]">
-            邻里售后助手
+            邻里鲜选 AI 助手
           </p>
-          <span className="hidden items-center gap-1 rounded-full border border-[var(--merchant-cyan-border)] bg-[var(--merchant-cyan-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--merchant-cyan-strong)] sm:inline-flex">
-            <Sparkles className="h-3 w-3" />
-            AI 辅助
-          </span>
         </div>
         <AgentExecutionTimeline
           steps={renderedMessage.agentSteps}
@@ -106,7 +113,7 @@ export const MessageItem = React.memo(function MessageItem({ message }: MessageI
             (renderedMessage.status === "streaming" ? "running" : "completed")
           }
           summary={renderedMessage.agentExecutionSummary}
-          initialExpanded={renderedMessage.status === "streaming"}
+          isCurrentTurn={isLatestTurn}
         />
         {isThinking ? (
           <ThinkingIndicator content={renderedMessage.thinking} duration={renderedMessage.thinkingDuration} />

@@ -17,6 +17,18 @@ const steps: AgentExecutionStep[] = [
   }
 ];
 
+const runningSteps: AgentExecutionStep[] = [
+  {
+    stepId: "plan-1-tool-call-1",
+    seq: 1,
+    phase: "tool",
+    status: "running",
+    plan: 1,
+    title: "业务数据查询",
+    tool: { name: "t", label: "工具A", status: "running" }
+  }
+];
+
 const summary = { planCount: 1, toolCallCount: 1, evidenceCount: 1, replanCount: 0 };
 
 /** message 层带执行记录（当前版本），v1 老版本无任何 Timeline 数据 */
@@ -102,5 +114,68 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     const { container } = render(<MessageItem message={message} />);
 
     expect(queryTimelineSection(container)).not.toBeNull();
+  });
+
+  it("助手头部文案为「邻里鲜选 AI 助手」，不渲染 AI 徽标", () => {
+    const { container } = render(<MessageItem message={makeVersionedMessage()} />);
+
+    expect(screen.getByText("邻里鲜选 AI 助手")).toBeInTheDocument();
+    // AI 身份强调只由 Timeline 的 Sparkles 承担，不再有独立徽标
+    expect(screen.queryByText("AI 辅助")).not.toBeInTheDocument();
+    expect(screen.queryByText("AI")).not.toBeInTheDocument();
+    expect(container.querySelector(".ai-wait")).toBeNull();
+  });
+
+  it("streaming 且已有 agentSteps 时不再渲染等待点（Timeline 已在实时执行）", () => {
+    const message: Message = {
+      id: "stream-msg",
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      messageStatus: "NORMAL",
+      agentSteps: runningSteps,
+      agentExecutionStatus: "running"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(container.querySelector(".ai-wait")).toBeNull();
+  });
+
+  it("streaming 且尚无 agentSteps 时仍渲染等待点", () => {
+    const message: Message = {
+      id: "stream-msg",
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      messageStatus: "NORMAL"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(container.querySelector(".ai-wait")).not.toBeNull();
+  });
+
+  it("isLatestTurn 透传：最新轮执行时 Timeline 展开，非最新轮默认折叠", () => {
+    const message: Message = {
+      id: "stream-msg",
+      role: "assistant",
+      content: "",
+      status: "streaming",
+      messageStatus: "NORMAL",
+      agentSteps: runningSteps,
+      agentExecutionStatus: "running"
+    };
+    const { container, rerender } = render(<MessageItem message={message} />);
+
+    // 默认 isLatestTurn=true：最新轮执行 → 展开（头部显示动态活动标题）
+    expect(queryTimelineSection(container)).not.toBeNull();
+    expect(screen.getByText("正在查询工具A…")).toBeInTheDocument();
+
+    rerender(<MessageItem message={message} isLatestTurn={false} />);
+
+    expect(screen.queryByText("正在查询工具A…")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /查看处理过程/ })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
   });
 });

@@ -37,10 +37,10 @@ export function Header({ onToggleSidebar }: HeaderProps) {
           </div>
           <div className="min-w-0 border-l border-[var(--merchant-border)] pl-3 lg:border-l-0 lg:pl-0">
             <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--merchant-text-muted)]">
-              商家售后工作区
+              商家 AI 工作区
             </p>
             <p className="truncate text-sm font-semibold text-[var(--merchant-text)] sm:text-base">
-              {currentSession?.title || "新建售后咨询"}
+              {currentSession?.title || "新建 AI 咨询"}
             </p>
           </div>
         </div>
