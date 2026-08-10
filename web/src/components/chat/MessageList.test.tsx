@@ -96,6 +96,7 @@ vi.mock("react-virtuoso", async () => {
     scrollerRef?: (el: HTMLElement | null) => void;
     followOutput?: (isAtBottom: boolean) => false | "auto";
     atBottomStateChange?: (isAtBottom: boolean) => void;
+    rangeChanged?: (range: { startIndex: number; endIndex: number }) => void;
     className?: string;
   }
 
@@ -110,6 +111,7 @@ vi.mock("react-virtuoso", async () => {
       scrollerRef,
       followOutput,
       atBottomStateChange,
+      rangeChanged,
       className
     } = props;
 
@@ -130,7 +132,8 @@ vi.mock("react-virtuoso", async () => {
       [handle, scrollerRef]
     );
 
-    // atBottomStateChange / followOutput：scroll 事件 + 50ms 节流（与真实 Virtuoso 一致）
+    // atBottomStateChange / followOutput / rangeChanged：scroll 事件 + 50ms 节流
+    // （与真实 Virtuoso 一致；rangeChanged 的 startIndex 模拟为 scrollTop/100）
     const lastAtBottomRef = React.useRef(true);
     React.useEffect(() => {
       const el = scrollerDomRef.current;
@@ -141,6 +144,10 @@ vi.mock("react-virtuoso", async () => {
         if (timer !== null) clearTimeout(timer);
         timer = setTimeout(() => {
           timer = null;
+          rangeChanged?.({
+            startIndex: Math.round(el.scrollTop / 100),
+            endIndex: Math.round(el.scrollTop / 100) + 5
+          });
           if (isAtBottom !== lastAtBottomRef.current) {
             lastAtBottomRef.current = isAtBottom;
             atBottomStateChange?.(isAtBottom);
@@ -153,7 +160,7 @@ vi.mock("react-virtuoso", async () => {
         el.removeEventListener("scroll", onScroll);
         if (timer !== null) clearTimeout(timer);
       };
-    }, [atBottomStateChange, followOutput, scrollerRef]);
+    }, [atBottomStateChange, followOutput, rangeChanged, scrollerRef]);
 
     const ListComp = (components?.List ?? undefined) as React.ComponentType | undefined;
     const FooterComp = (components?.Footer ?? undefined) as React.ComponentType | undefined;
@@ -828,5 +835,107 @@ describe("MessageList 推荐问题展开（Virtuoso scrollIntoView）", () => {
     });
 
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageList 对话导航 Minimap", () => {
+  function renderFourTurns() {
+    return renderList([
+      makeMessage("u1", "user", "牛肉和什么商品适合搭配推荐？"),
+      makeMessage("a1", "assistant", "推荐根茎类蔬菜。"),
+      makeMessage("u2", "user", "那土豆呢？"),
+      makeMessage("a2", "assistant", "土豆适合与牛肉炖煮。"),
+      makeMessage("u3", "user", "周末有活动吗？"),
+      makeMessage("a3", "assistant", "有周末生鲜专场。"),
+      makeMessage("u4", "user", "怎么参加？"),
+      makeMessage("a4", "assistant", "打开 App 首页即可参与。")
+    ]);
+  }
+
+  it("turns < 4 不渲染 minimap；≥ 4 渲染一根线一轮", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二")
+    ]);
+    await settle(50);
+    // 2 轮 → 隐藏；再 append 到 4 轮 → 出现
+    const { rerender } = renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一")
+    ]);
+    await settle(50);
+    expect(screen.queryByRole("navigation", { name: "对话导航" })).not.toBeInTheDocument();
+
+    rerender(
+      <MessageList
+        messages={[
+          makeMessage("u1", "user", "问题一"),
+          makeMessage("a1", "assistant", "回答一"),
+          makeMessage("u2", "user", "问题二"),
+          makeMessage("a2", "assistant", "回答二"),
+          makeMessage("u3", "user", "问题三"),
+          makeMessage("a3", "assistant", "回答三"),
+          makeMessage("u4", "user", "问题四"),
+          makeMessage("a4", "assistant", "回答四")
+        ]}
+        isLoading={false}
+        isStreaming={false}
+      />
+    );
+    await settle(50);
+    expect(screen.getByRole("navigation", { name: "对话导航" })).toBeInTheDocument();
+    // 每轮一根线（4 轮 4 个跳转按钮，aria-label 带轮次）
+    expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "跳转到第 4 轮对话" })).toBeInTheDocument();
+  });
+
+  it("点击某根线 → detached=true（回到底部按钮出现）+ scrollToIndex(start, smooth)", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // 制造 atBottom=false（滚动事件节流后上报），但 detached 仍 false → 按钮不显示
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    // 点击「跳转到第 3 轮对话」（index 2）
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+
+    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "smooth" });
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+
+  it("activeIndex 随 rangeChanged 更新（当前轮线高亮）", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // 初始：第 1 根线 active
+    expect(
+      screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")
+    ).toBe("true");
+
+    // 滚动到 startIndex≈2（scrollTop 200 → rangeChanged startIndex 2）→ 第 3 根线高亮
+    act(() => {
+      m.setTop(200);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(
+      screen.getByRole("button", { name: "跳转到第 3 轮对话" }).getAttribute("aria-current")
+    ).toBe("true");
+    expect(
+      screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")
+    ).not.toBe("true");
   });
 });

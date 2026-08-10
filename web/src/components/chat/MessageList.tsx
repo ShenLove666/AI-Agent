@@ -3,6 +3,7 @@ import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { ArrowDown } from "lucide-react";
 
 import { ChatTurnItem } from "@/components/chat/ChatTurnItem";
+import { ConversationMinimap } from "@/components/chat/ConversationMinimap";
 import { WelcomeScreen } from "@/components/chat/WelcomeScreen";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chatStore";
@@ -150,6 +151,22 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, []);
 
+  // 可见范围（供 Minimap 高亮当前轮）：activeIndex 取 startIndex，
+  // 只经 rangeChanged 更新——Virtuoso 是唯一滚动权威，这里只做展示不做滚动
+  const [visibleRange, setVisibleRange] = React.useState({ startIndex: 0, endIndex: 0 });
+  const handleRangeChanged = React.useCallback(
+    (range: { startIndex: number; endIndex: number }) => setVisibleRange(range),
+    []
+  );
+
+  // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
+  // 语义同 wheel/键盘输入），随后由 Virtuoso 执行平滑滚动
+  const handleMinimapNavigate = React.useCallback((index: number) => {
+    detachedRef.current = true;
+    setDetached(true);
+    virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+  }, []);
+
   // 新消息发送（turns 数量增长且新 turn 含 user）：重置滚离标记并立即贴底一次，
   // 只执行一次、无任何 timer；此后的内容增长由 followOutput 与
   // Latest Turn ResizeObserver → scrollToIndex 接管。
@@ -289,6 +306,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         initialTopMostItemIndex={initialTopMostItemIndex}
         followOutput={followOutput}
         atBottomStateChange={handleAtBottomChange}
+        rangeChanged={handleRangeChanged}
         scrollerRef={attachScroller}
         className="h-full"
         components={{ List }}
@@ -306,6 +324,20 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           />
         )}
       />
+      {/* 对话导航 minimap：≥4 轮时显示，桌面端（lg）渲染；垂直居中于阅读列右缘
+          （右侧 20-32px），与回到底部按钮（右下角）不重叠；导航是显式用户动作，
+          点击置 detached 后由 Virtuoso 平滑滚动，不抢占自动跟随 */}
+      {stableTurns.length >= 4 ? (
+        <div className="pointer-events-none absolute top-1/2 right-[max(1.5rem,calc(50%_-_456px))] z-10 hidden -translate-y-1/2 lg:block">
+          <div className="pointer-events-auto">
+            <ConversationMinimap
+              turns={stableTurns}
+              activeIndex={visibleRange.startIndex}
+              onNavigate={handleMinimapNavigate}
+            />
+          </div>
+        </div>
+      ) : null}
       {detached && !atBottom ? (
         <button
           type="button"
