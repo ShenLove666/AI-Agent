@@ -260,7 +260,7 @@ def test_stream_refused_terminates_normally():
                     async for event in service.stream(db, user.id, user.id, request)
                 ]
             types = [event["type"] for event in events]
-            # prepare 阶段事件实时转发：第一条是 planning running（agent_progress），
+            # prepare 阶段事件实时转发：第一条是 rewrite running（agent_progress），
             # conversation 在其后；生成阶段顺序：running → token → completed → complete
             assert types[0] == "agent_progress"
             assert types[-1] == "done"

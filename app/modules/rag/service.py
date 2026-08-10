@@ -441,11 +441,29 @@ class RagChatService:
         )
         budgeted_history = self._budget_history(history)
 
+        # 收集本请求的 agent 进度事件（prepare 内部 seq 统一递增），
+        # 并透传给外层 sink（stream 层会再次统一编号，最外层编号生效）。
+        # 定义在 rewrite 阶段之前：rewrite/planning/tool/review/replan/
+        # generation 全部走同一条 collect 流（seq 唯一递增，不重复创建）。
+        collected: list[AgentProgressEvent] = []
+        seq_counter = itertools.count(1)
+
+        async def collect(event: AgentProgressEvent) -> None:
+            event = dict(event)
+            event["seq"] = next(seq_counter)
+            # 与计数 sink 的毫秒单位保持一致，保证非流式 complete() 路径的
+            # durationMs 与 SSE 路径同单位
+            event["timestamp"] = round(time.time() * 1000, 3)
+            collected.append(event)
+            if progress_sink is not None:
+                await progress_sink(event)
+
         with self.traces.node(db, trace, "rewrite") as attributes:
             rewrite = (
                 await self.rewrite.rewrite(
                     request.question,
                     [(item.role, item.content) for item in budgeted_history],
+                    progress=collect,
                 )
                 if request.rag_enabled
                 else RewriteResult(
@@ -467,21 +485,6 @@ class RagChatService:
         # 简化处理，不按 0 条结果细分 escalate）。
         agent_mode: str = "research"
         agent_terminal_state: str = "grounded"
-        # 收集本请求的 agent 进度事件（prepare 内部 seq 统一递增），
-        # 并透传给外层 sink（stream 层会再次统一编号，最外层编号生效）。
-        collected: list[AgentProgressEvent] = []
-        seq_counter = itertools.count(1)
-
-        async def collect(event: AgentProgressEvent) -> None:
-            event = dict(event)
-            event["seq"] = next(seq_counter)
-            # 与计数 sink 的毫秒单位保持一致，保证非流式 complete() 路径的
-            # durationMs 与 SSE 路径同单位
-            event["timestamp"] = round(time.time() * 1000, 3)
-            collected.append(event)
-            if progress_sink is not None:
-                await progress_sink(event)
-
         with self.traces.node(db, trace, "retrieval") as attributes:
             kb_diagnostics = self._knowledge_diagnostics(
                 db, data_owner_id, request.knowledge_base_ids

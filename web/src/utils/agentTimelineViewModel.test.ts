@@ -364,12 +364,21 @@ describe("buildAgentTimelineViewModel", () => {
       expect(vm.shouldShowTimeline).toBe(false);
     });
 
-    it("direct（terminalState=direct，含工具步骤仍隐藏）", () => {
-      const vm = buildAgentTimelineViewModel(toolSteps, {
+    it("direct（terminalState=direct，无工具步骤）：隐藏 Timeline", () => {
+      const vm = buildAgentTimelineViewModel(plainSteps, {
         status: "completed",
         terminalState: "direct"
       });
       expect(vm.shouldShowTimeline).toBe(false);
+    });
+
+    it("direct + 工具步骤（完成态）：按 hasExecution 显示（新规则 direct 只豁免「无执行」）", () => {
+      // 新后端 direct 响应不发任何 planning 事件、steps 为空，此分支仅防御旧数据
+      const vm = buildAgentTimelineViewModel(toolSteps, {
+        status: "completed",
+        terminalState: "direct"
+      });
+      expect(vm.shouldShowTimeline).toBe(true);
     });
 
     it("research（mode=research 含 tool 步骤）：显示 Timeline", () => {
@@ -452,15 +461,61 @@ describe("buildAgentTimelineViewModel", () => {
       expect(vm.summaryText).toBe("正在分析并查询相关数据…");
     });
 
-    it("direct 隐藏不依赖步骤形状（含 tool 也隐藏）；无 mode 的空 rows 按 status 计算", () => {
+    it("direct 隐藏只豁免「无执行」：mode=direct 无工具步骤隐藏、含 tool 步骤显示；无 mode 的空 rows 按 status 计算", () => {
+      // direct + 仅 planning/generation（无执行）→ 隐藏
+      expect(
+        buildAgentTimelineViewModel(plainSteps, { status: "completed", mode: "direct" })
+          .shouldShowTimeline
+      ).toBe(false);
+      // direct + tool 执行（完成态）→ 按 hasExecution 显示（新规则；direct 只豁免「无执行」）
       expect(
         buildAgentTimelineViewModel(toolSteps, { status: "completed", mode: "direct" })
           .shouldShowTimeline
-      ).toBe(false);
+      ).toBe(true);
       // 空 rows + completed + 无 mode/terminalState：hasExecution 为 false → 隐藏
       expect(
         buildAgentTimelineViewModel([], { status: "completed" }).shouldShowTimeline
       ).toBe(false);
+    });
+
+    it("planning running 立即显示（无 mode）：planning 阶段 Timeline 即出现", () => {
+      const vm = buildAgentTimelineViewModel(
+        [makeStep("plan-1-planning-1", 1, "planning", "running", 1, "正在制定查询计划")],
+        { status: "running" }
+      );
+      expect(vm.shouldShowTimeline).toBe(true);
+    });
+
+    it("rewrite running 立即显示：正在理解问题阶段 Timeline 即出现", () => {
+      const vm = buildAgentTimelineViewModel(
+        [makeStep("plan-1-rewrite-1", 1, "rewrite", "running", 1, "正在理解问题")],
+        { status: "running" }
+      );
+      expect(vm.shouldShowTimeline).toBe(true);
+    });
+
+    it("direct（mode+terminalState 均 direct，无 tool/review/replan）：running/完成态均隐藏", () => {
+      const running = buildAgentTimelineViewModel(plainSteps, {
+        status: "running",
+        mode: "direct",
+        terminalState: "direct"
+      });
+      expect(running.shouldShowTimeline).toBe(false);
+      const completed = buildAgentTimelineViewModel(plainSteps, {
+        status: "completed",
+        mode: "direct",
+        terminalState: "direct"
+      });
+      expect(completed.shouldShowTimeline).toBe(false);
+    });
+
+    it("running 但 steps 为空/缺失：不显示（无任何用户可见步骤）", () => {
+      expect(buildAgentTimelineViewModel([], { status: "running" }).shouldShowTimeline).toBe(
+        false
+      );
+      expect(buildAgentTimelineViewModel(undefined, { status: "running" }).shouldShowTimeline).toBe(
+        false
+      );
     });
   });
 });

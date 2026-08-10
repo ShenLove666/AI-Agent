@@ -8,9 +8,9 @@ interface ChatTurnItemProps {
   turn: ChatTurn;
   isLatestTurn: boolean;
   /**
-   * 透传到最外层容器（MessageList 传 "pb-7"）。Turn 间距用 item padding
-   * 而非 List 容器上的 margin（space-y-*）：margin 会破坏 Virtuoso 的
-   * item 测量，导致滚到底/跳动。
+   * 透传到最外层容器（MessageList 传 "pb-7"，最后一轮 "pb-8" 兼作底部呼吸空间）。
+   * Turn 间距用 item padding 而非 List 容器上的 margin（space-y-*）：margin 会
+   * 破坏 Virtuoso 的 item 测量，导致滚到底/跳动。
    */
   className?: string;
   /**

@@ -92,6 +92,8 @@ def tool_label(name: str) -> str:
 
 # 各阶段状态的标准中文文案（唯一权威来源）。
 PHASE_TEXTS: dict[tuple[Phase, Status], str] = {
+    ("rewrite", "running"): "正在理解问题",
+    ("rewrite", "completed"): "问题理解完成",
     ("planning", "running"): "正在制定查询计划",
     ("planning", "completed"): "查询计划已制定",
     ("tool", "running"): "正在查询数据",

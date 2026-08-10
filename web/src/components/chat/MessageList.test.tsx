@@ -24,9 +24,10 @@ if (typeof Element.prototype.scrollBy !== "function") {
 // ChatTurnItem.test 直接覆盖）。本文件把 react-virtuoso 替换为可控 mock：
 // 渲染全部条目（复用 itemContent，Latest Turn ResizeObserver 因此能拿到
 // 真实 DOM 节点）、提供 data-testid="virtuoso-scroller"、可 spy 的
-// VirtuosoHandle（scrollToIndex / autoscrollToBottom / scrollIntoView）以及
-// atBottomStateChange / followOutput 回调（scroll 事件 + 50ms 节流，
-// 与真实行为一致）。滚动度量仍通过 mockScrollMetrics 在 scroller 实例上注入。
+// VirtuosoHandle（scrollToIndex / scrollIntoView；autoscrollToBottom 已废弃
+// 不再被调用，stub 仅保留兼容）以及 atBottomStateChange / followOutput 回调
+// （scroll 事件 + 50ms 节流，与真实行为一致）。滚动度量仍通过 mockScrollMetrics
+// 在 scroller 实例上注入。
 
 // ---- 可手动触发的 ResizeObserver stub ----
 // jsdom 无真实 ResizeObserver 回调：stub 记录 observe/disconnect 并暴露 trigger()
@@ -469,9 +470,9 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     rerender(<MessageList messages={[u1, a1, u2, a2]} isLoading={false} isStreaming={false} />);
     await settle();
 
-    // 新消息发送：恰好一次 scrollToIndex 贴底（behavior 默认 auto，无 timer）
+    // 新消息发送：恰好一次 scrollToIndex 贴底（behavior auto，无 timer）
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "end" });
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "end", behavior: "auto" });
 
     // 最新 Turn 元素变化 → 旧 observer disconnect，新 observer 观察新元素
     const latestObserver = lastObserver();
@@ -482,13 +483,13 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     expect(latestObserver.els[0]).not.toBe(firstEl);
   });
 
-  it("最新 Turn 高度变化（未滚离）→ rAF 合并后调用 autoscrollToBottom", async () => {
+  it("最新 Turn 高度变化（未滚离）→ rAF 合并后 scrollToIndex(last, end, auto)", async () => {
     renderList([makeMessage("u1", "user", "问题一"), makeMessage("a1", "assistant", "回答一")]);
     await settle();
 
     const observer = lastObserver();
     const { spy: rAFSpy, captured } = spyRaf();
-    const autoSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "autoscrollToBottom");
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
 
     // Timeline/正文高度增长（observer 回调）→ 调度一帧
     act(() => {
@@ -496,20 +497,21 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     });
     expect(rAFSpy).toHaveBeenCalledTimes(1);
 
-    // 帧回调执行 → Virtuoso.autoscrollToBottom 被调用
+    // 帧回调执行 → scrollToIndex(last, align: end, behavior: auto)
     act(() => {
       captured[0](0);
     });
-    expect(autoSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 0, align: "end", behavior: "auto" });
   });
 
-  it("同一帧多次高度变化 → rAF 合并，autoscrollToBottom 每帧只调用一次", async () => {
+  it("同一帧多次高度变化 → rAF 合并，scrollToIndex 每帧只调用一次", async () => {
     renderList([makeMessage("u1", "user", "问题一"), makeMessage("a1", "assistant", "回答一")]);
     await settle();
 
     const observer = lastObserver();
     const { spy: rAFSpy, captured } = spyRaf();
-    const autoSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "autoscrollToBottom");
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
 
     // 同一帧内多次 resize（Timeline 每步 + 正文每 chunk）→ 只调度一次 rAF
     act(() => {
@@ -522,7 +524,7 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     act(() => {
       captured[0](0);
     });
-    expect(autoSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
 
     // 下一帧再次增长 → 重新调度并再次触发
     act(() => {
@@ -532,10 +534,54 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     act(() => {
       captured[1](0);
     });
-    expect(autoSpy).toHaveBeenCalledTimes(2);
+    expect(scrollSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("wheel 上翻滚离后，Turn 高度增长不再触发 autoscrollToBottom；按钮出现", async () => {
+  it("上一轮 detached=true → 发送 Turn 2：detachedRef 同步复位（不等 render），首个 ResizeObserver 回调即恢复 scrollToIndex", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    const u2 = makeMessage("u2", "user", "问题二");
+    const a2 = makeMessage("a2", "assistant", "回答二");
+    const { rerender } = renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    // 上一轮真实滚离（wheel 上翻）→ detached=true → 按钮出现
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    // 发送 Turn 2：新 Turn effect 在 act 内同步执行完毕——detachedRef 已被同步
+    // 置 false（不等 render），并立即贴底一次
+    rerender(<MessageList messages={[u1, a1, u2, a2]} isLoading={false} isStreaming={false} />);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "end", behavior: "auto" });
+
+    // 新 Turn 的 ResizeObserver 已重建；触发其高度变化：若 detachedRef 未同步
+    // 复位会被跳过（不调度 rAF）——复位成功则应恢复 scrollToIndex
+    scrollSpy.mockClear();
+    const observer = lastObserver();
+    const { spy: rAFSpy, captured } = spyRaf();
+    act(() => {
+      observer.trigger();
+    });
+    expect(rAFSpy).toHaveBeenCalledTimes(1);
+    act(() => {
+      captured[0](0);
+    });
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "end", behavior: "auto" });
+    // 重新附着：按钮消失
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+  });
+
+  it("wheel 上翻滚离后，Turn 高度增长不再触发 scrollToIndex；按钮出现", async () => {
     renderList([makeMessage("u1", "user", "问题一"), makeMessage("a1", "assistant", "回答一")]);
     const scroller = findScroller()!;
     await settle();
@@ -543,7 +589,7 @@ describe("MessageList Latest Turn ResizeObserver", () => {
 
     const observer = lastObserver();
     const { spy: rAFSpy, captured } = spyRaf();
-    const autoSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "autoscrollToBottom");
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
 
     // 未滚离时：高度变化正常触发
     act(() => {
@@ -553,7 +599,8 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     act(() => {
       captured[0](0);
     });
-    expect(autoSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 0, align: "end", behavior: "auto" });
 
     // 用户向上滚（wheel deltaY < 0）→ detached=true → 按钮出现
     act(() => {
@@ -564,17 +611,18 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     await settle(80);
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
 
-    // 滚离后 Turn 继续增长 → 不调度 rAF、不 autoscroll（按钮保持可见）
+    // 滚离后 Turn 继续增长 → 不调度 rAF、不 scrollToIndex（按钮保持可见）
     rAFSpy.mockClear();
+    scrollSpy.mockClear();
     act(() => {
       observer.trigger();
     });
     expect(rAFSpy).not.toHaveBeenCalled();
-    expect(autoSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
   });
 
-  it("点击「回到底部」重新附着后，Turn 高度增长恢复 autoscrollToBottom", async () => {
+  it("点击「回到底部」→ detachedRef 同步 false + scrollToIndex smooth；重新附着后高度增长恢复 scrollToIndex", async () => {
     renderList([makeMessage("u1", "user", "问题一"), makeMessage("a1", "assistant", "回答一")]);
     const scroller = findScroller()!;
     await settle();
@@ -591,7 +639,7 @@ describe("MessageList Latest Turn ResizeObserver", () => {
 
     const observer = lastObserver();
     const { spy: rAFSpy, captured } = spyRaf();
-    const autoSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "autoscrollToBottom");
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
 
     // detached 期间：高度增长不触发
     act(() => {
@@ -599,12 +647,14 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     });
     expect(rAFSpy).not.toHaveBeenCalled();
 
-    // 点击「回到底部」→ detached=false → 按钮消失
+    // 点击「回到底部」→ detachedRef 同步 false（先于滚动）+ scrollToIndex smooth → 按钮消失
     fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
     await settle(50);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 0, align: "end", behavior: "smooth" });
     expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
 
-    // 重新附着后：高度增长恢复触发 autoscrollToBottom
+    // 重新附着后：高度增长恢复触发 scrollToIndex
+    scrollSpy.mockClear();
     act(() => {
       observer.trigger();
     });
@@ -612,7 +662,8 @@ describe("MessageList Latest Turn ResizeObserver", () => {
     act(() => {
       captured[0](0);
     });
-    expect(autoSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 0, align: "end", behavior: "auto" });
   });
 
   it("组件卸载 → Latest Turn observer 被 disconnect", async () => {
@@ -676,7 +727,7 @@ describe("MessageList followOutput（新语义：只看 detached，不依赖数�
 });
 
 describe("MessageList 间距与 Footer", () => {
-  it("List 容器无 space-y-7（间距改由 item padding 承担），且保留底部呼吸 padding", async () => {
+  it("List 容器无 space-y-7 / pb-8（底部呼吸改由最后 item 承担）", async () => {
     renderList([
       makeMessage("u1", "user", "问题一"),
       makeMessage("a1", "assistant", "回答一"),
@@ -689,11 +740,16 @@ describe("MessageList 间距与 Footer", () => {
     const scroller = findScroller()!;
     const listEl = scroller.firstElementChild as HTMLElement;
     expect(listEl.className).not.toContain("space-y-7");
-    expect(listEl.className).toContain("pb-8");
+    // 底部呼吸空间不再属于 List 容器：容器 padding 不属于任何 item 的可测量高度，
+    // 会让 scrollToIndex(align: "end") 与真底有偏差
+    expect(listEl.className).not.toContain("pb-8");
 
     // Turn 间距由 ChatTurnItem 最外层 pb-7 承担（item padding 而非 margin）
     const turnBox = document.querySelector('[data-message-id="u1"]')!.parentElement!;
     expect(turnBox.className).toContain("pb-7");
+    // 最后 item 多出 pb-8 作为底部呼吸空间（属于 item 可测量高度）
+    const lastTurnBox = document.querySelector('[data-message-id="a2"]')!.parentElement!;
+    expect(lastTurnBox.className).toContain("pb-8");
   });
 
   it("Footer 已移除（无 h-8 占位）；「回到底部」后重新附着，followOutput 恢复 auto", async () => {
@@ -703,7 +759,7 @@ describe("MessageList 间距与 Footer", () => {
     const scroller = findScroller()!;
     await settle();
 
-    // 无 h-8 占位 Footer（底部呼吸由 List 容器 padding 承担）
+    // 无 h-8 占位 Footer（底部呼吸由最后 item 的 padding 承担）
     expect(scroller.querySelector('[aria-hidden="true"].h-8')).toBeNull();
     expect(scroller.querySelector(".h-8")).toBeNull();
 

@@ -93,6 +93,8 @@ export class AgentProgressScheduler {
   /** 单个定时器：取最早 revealAt，到期批量揭示 */
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  /** DEV：本请求第一个 agent_progress 事件是否已打印（request-scoped，天然 per-message） */
+  private firstEventLogged = false;
 
   constructor(options: AgentProgressSchedulerOptions) {
     this.minRunningVisibleMs = options.minRunningVisibleMs ?? DEFAULT_MIN_RUNNING_VISIBLE_MS;
@@ -105,6 +107,18 @@ export class AgentProgressScheduler {
     if (this.seenSeqs.has(payload.seq)) return;
     this.seenSeqs.add(payload.seq);
     if (import.meta.env.DEV) {
+      // 每个 streaming 消息只打印一次：定位「Timeline 迟迟不出现」时确认首个
+      // 事件到达时刻与阶段（phase/status/title）。scheduler 与消息一一对应
+      // （request-scoped），push 首次调用天然 per-message；Production 不输出
+      if (!this.firstEventLogged) {
+        this.firstEventLogged = true;
+        console.debug("[agent progress first visible]", {
+          receivedAt: Date.now(),
+          phase: payload.phase,
+          status: payload.status,
+          title: payload.title
+        });
+      }
       console.debug("[agent raw]", {
         seq: payload.seq,
         phase: payload.phase,

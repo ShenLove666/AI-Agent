@@ -492,61 +492,69 @@ class AgenticRagCoordinator:
         self, state: _State, sink: ProgressSink
     ) -> dict[str, Any]:
         count = state.get("plan_count", 0) + 1
-        await sink(
-            {
-                "phase": "planning",
-                "status": "running",
-                "agent": "planner",
-                "plan": count,
-                "title": phase_text("planning", "running"),
-                "detail": "正在判断需要查询哪些业务数据",
-            }
-        )
-        decision = await self._decide(state)
-        # Risk Guard：高风险/中风险问题不允许 direct 直答，防止绕过证据审查门禁
-        if decision.mode == "direct":
-            question = state.get("question", "")
-            _, _, risk = self._intent_requirements(question)
-            if risk in {"medium", "high"}:
-                fallback = self._fallback_decision(
-                    question,
-                    state.get("plan_history", []),
-                    "风险门禁：高风险问题禁止直答，强制查证",
-                )
-                if fallback.mode == "research":
-                    decision = AgentDecision(
-                        "research",
-                        fallback.calls,
-                        f"风险门禁拦截 direct：{fallback.rationale}",
-                        "risk_guard",
-                    )
-                else:
-                    decision = AgentDecision(
-                        "escalate",
-                        (),
-                        "风险门禁：高风险问题且无可用的查证路径，转人工",
-                        "risk_guard",
-                    )
-        if decision.mode == "research":
-            labels = [tool_label(call.name) for call in decision.calls]
-            plan_detail = "准备查询" + _join_chinese(labels)
+        if is_trivial_direct(state.get("question", "")):
+            # 普通问候/感谢/自我介绍/笑声等：确定性短路（与 _decide 内的判定
+            # 一致，双保险防御其他调用路径）。不发送任何 planning 事件：
+            # trivial direct 的 Timeline 对用户隐藏（steps 保持为空）。
+            decision = AgentDecision(
+                "direct", (), "普通问候无需调用业务工具", "deterministic_fallback"
+            )
         else:
-            plan_detail = {
-                "direct": "可直接回答",
-                "refuse": "拒绝回答",
-                "escalate": "转人工复核",
-            }[decision.mode]
-        await sink(
-            {
-                "phase": "planning",
-                "status": "completed",
-                "agent": "planner",
-                "plan": count,
-                "title": phase_text("planning", "completed"),
-                "detail": plan_detail,
-                "mode": decision.mode,
-            }
-        )
+            await sink(
+                {
+                    "phase": "planning",
+                    "status": "running",
+                    "agent": "planner",
+                    "plan": count,
+                    "title": phase_text("planning", "running"),
+                    "detail": "正在判断需要查询哪些业务数据",
+                }
+            )
+            decision = await self._decide(state)
+            # Risk Guard：高风险/中风险问题不允许 direct 直答，防止绕过证据审查门禁
+            if decision.mode == "direct":
+                question = state.get("question", "")
+                _, _, risk = self._intent_requirements(question)
+                if risk in {"medium", "high"}:
+                    fallback = self._fallback_decision(
+                        question,
+                        state.get("plan_history", []),
+                        "风险门禁：高风险问题禁止直答，强制查证",
+                    )
+                    if fallback.mode == "research":
+                        decision = AgentDecision(
+                            "research",
+                            fallback.calls,
+                            f"风险门禁拦截 direct：{fallback.rationale}",
+                            "risk_guard",
+                        )
+                    else:
+                        decision = AgentDecision(
+                            "escalate",
+                            (),
+                            "风险门禁：高风险问题且无可用的查证路径，转人工",
+                            "risk_guard",
+                        )
+            if decision.mode == "research":
+                labels = [tool_label(call.name) for call in decision.calls]
+                plan_detail = "准备查询" + _join_chinese(labels)
+            else:
+                plan_detail = {
+                    "direct": "可直接回答",
+                    "refuse": "拒绝回答",
+                    "escalate": "转人工复核",
+                }[decision.mode]
+            await sink(
+                {
+                    "phase": "planning",
+                    "status": "completed",
+                    "agent": "planner",
+                    "plan": count,
+                    "title": phase_text("planning", "completed"),
+                    "detail": plan_detail,
+                    "mode": decision.mode,
+                }
+            )
         history = [
             *state.get("plan_history", []),
             {

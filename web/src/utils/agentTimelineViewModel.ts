@@ -49,9 +49,14 @@ export interface AgentTimelineViewModel {
   hasRunning: boolean;
   /**
    * 是否渲染 Timeline：
-   * - direct（mode 或 terminalState）→ false：普通直接对话隐藏执行过程
-   * - refuse/escalate（mode 或 terminalState）→ true：虽无工具步骤也需展示（用户要理解状态）
-   * - 否则按是否有工具/审查/重规划步骤或 failed/cancelled 状态计算；
+   * - direct（mode 或 terminalState）且无工具/审查/重规划执行 → false：
+   *   普通直接对话隐藏执行过程（新后端 trivial direct 不发任何 planning 事件、steps 为空，
+   *   running 期间同样不显示）
+   * - running 且已有任何用户可见步骤（rewrite/planning/tool/review/replan/generation）→ true：
+   *   planning/rewrite running 一到就立即出现。以前 AI 处理过程晚出现的原因：旧规则只认
+   *   tool/review/replan，planning running 阶段 Timeline 一直隐藏，要等第一个 tool running
+   *   才冒出来（对 research 查询表现为「停顿后才出现」）
+   * - 完成态按是否有工具/审查/重规划步骤或 refuse/escalate/failed/cancelled 计算；
    *   旧数据（无 mode/terminalState 且仅 planning+generation）→ false（绝大多数是 direct 老数据）
    */
   shouldShowTimeline: boolean;
@@ -294,7 +299,11 @@ export function buildAgentTimelineViewModel(
     return text;
   })();
 
-  // direct 隐藏；refuse/escalate 虽无工具步骤也显示（用户需理解状态）；
+  // direct 且无执行 → 隐藏；running 且已有任何用户可见步骤 → 立即显示（planning/rewrite
+  // running 一到就出现，不再等第一个 tool running——旧规则只认 tool/review/replan，
+  // 这是「AI 处理过程以前晚出现」的根因）；
+  // 完成态按 hasExecution / isBlocked / failed / cancelled 判定；
+  // refused/escalated 虽无工具步骤也显示（用户需理解状态）；
   // 旧数据无 mode/terminalState 且只有 planning+generation 时按 false 处理（绝大多数是 direct 老数据）
   const isDirect =
     options.mode === "direct" || options.terminalState === "direct";
@@ -306,12 +315,17 @@ export function buildAgentTimelineViewModel(
   const hasExecution = rows.some(
     (row) => row.phase === "tool" || row.phase === "review" || row.phase === "replan"
   );
+  // running 分支用 steps.length 而非 hasExecution：steps 含 rewrite/planning/generation，
+  // 它们在 rows 里是 kind="step" 但 phase 不是 tool/review/replan，hasExecution 认不出它们
   const shouldShowTimeline =
-    !isDirect &&
-    (hasExecution ||
-      isBlocked ||
-      options.status === "failed" ||
-      options.status === "cancelled");
+    isDirect && !hasExecution
+      ? false
+      : options.status === "running"
+        ? (steps?.length ?? 0) > 0 // running 且已有任何用户可见步骤 → 立即显示
+        : hasExecution ||
+            isBlocked ||
+            options.status === "failed" ||
+            options.status === "cancelled";
 
   return {
     rows,

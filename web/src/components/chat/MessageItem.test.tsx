@@ -179,15 +179,18 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     );
   });
 
-  it("agentExecutionMode=direct 的完成消息：Timeline 不渲染（隐藏 AI 处理过程）", () => {
+  it("agentExecutionMode=direct 且无执行步骤的完成消息：Timeline 不渲染（隐藏 AI 处理过程）", () => {
+    const directSteps: AgentExecutionStep[] = [
+      { stepId: "plan-1-planning-1", seq: 1, phase: "planning", status: "completed", plan: 1, title: "制定计划" },
+      { stepId: "plan-1-generation-1", seq: 2, phase: "generation", status: "completed", plan: 1, title: "生成回答" }
+    ];
     const message: Message = {
       id: "direct-msg",
       role: "assistant",
       content: "直接回答",
       status: "done",
       messageStatus: "NORMAL",
-      // 即便带工具步骤，direct 模式也必须隐藏执行过程
-      agentSteps: steps,
+      agentSteps: directSteps,
       agentExecutionStatus: "completed",
       agentExecutionSummary: summary,
       agentExecutionMode: "direct"
@@ -197,6 +200,24 @@ describe("MessageItem 版本严格绑定 Agent Timeline", () => {
     expect(queryTimelineSection(container)).toBeNull();
     expect(screen.queryByText("AI 处理过程")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /查看处理过程/ })).not.toBeInTheDocument();
+  });
+
+  it("agentExecutionMode=direct 但带工具步骤（矛盾旧数据）：按规格显示执行过程", () => {
+    const message: Message = {
+      id: "direct-with-tools-msg",
+      role: "assistant",
+      content: "直接回答",
+      status: "done",
+      messageStatus: "NORMAL",
+      // direct 只豁免「无 tool/review/replan」；带工具步骤属旧数据矛盾场景，规格要求显示
+      agentSteps: steps,
+      agentExecutionStatus: "completed",
+      agentExecutionSummary: summary,
+      agentExecutionMode: "direct"
+    };
+    const { container } = render(<MessageItem message={message} />);
+
+    expect(queryTimelineSection(container)).not.toBeNull();
   });
 
   it("agentExecutionMode=research：Timeline 正常渲染", () => {

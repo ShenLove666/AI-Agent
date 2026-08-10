@@ -293,12 +293,22 @@ def test_sse_stream_emits_agent_progress_before_tokens():
                         for item in parsed
                         if item["event"] == "meta" and "conversationId" in item["data"]
                     )
-                    # 1) 第一个 agent_progress 是 planning running，且先于任何 token
+                    # 1) 第一个 agent_progress 是 rewrite running（改写阶段实时
+                    #    事件，先于 planning），且先于任何 token
                     first = progress[0]["data"]
-                    assert first["phase"] == "planning"
+                    assert first["phase"] == "rewrite"
                     assert first["status"] == "running"
+                    assert first["title"] == "正在理解问题"
                     assert "taskId" in first
                     assert parsed.index(progress[0]) < parsed.index(messages[0])
+                    # 1b) planning running 紧随 rewrite 事件之后
+                    planning_running = next(
+                        item["data"]
+                        for item in progress
+                        if item["data"]["phase"] == "planning"
+                        and item["data"]["status"] == "running"
+                    )
+                    assert planning_running["seq"] > first["seq"]
                     # 2) planning completed 先于 tool running
                     planning_completed = next(
                         item
@@ -840,6 +850,260 @@ def test_build_execution_summary_splits_repeated_tool_calls_by_call_id():
     assert payload["summary"]["planCount"] == 1
 
 
+# ------------------------------------------------------------------ rewrite
+
+
+class _RewriteTimelineRouter:
+    """rewrite / planner / generation 三路 mock。
+
+    rewrite 的 complete 在进入时与返回时记录时序标记（之间 sleep 0.1s）：
+    若 rewrite running 事件是「真实实时」发出的，消费者收到该事件的时刻
+    必然早于模型返回（rewrite_returned 标记）。
+    """
+
+    def __init__(self):
+        self.timeline: list[str] = []
+        self.rewritten = "改写后的牛肉搭配查询"
+        self.rewrite_calls = 0
+        self.last_planner_request = None
+
+    async def complete(self, request):
+        metadata = getattr(request, "metadata", None) or {}
+        if metadata.get("agent_role") == "planner":
+            self.timeline.append("planner_called")
+            self.last_planner_request = request
+            return '{"mode":"refuse","calls":[],"rationale":"测试规划"}'
+        if request.messages[0].content.startswith("将用户问题改写"):
+            self.rewrite_calls += 1
+            self.timeline.append("rewrite_called")
+            await asyncio.sleep(0.1)
+            self.timeline.append("rewrite_returned")
+            return self.rewritten
+        self.timeline.append("generation_called")
+        return "测试回答"
+
+    async def stream(self, request, cancel_event=None):
+        yield ModelStreamChunk("response", "测试回答")
+
+
+class _CountingPlannerRouter:
+    """只统计 planner 调用次数的 mock（trivial direct 不得调用）。"""
+
+    def __init__(self):
+        self.complete_calls = 0
+
+    async def complete(self, _request):
+        self.complete_calls += 1
+        return '{"mode":"refuse","calls":[],"rationale":"误判"}'
+
+
+def test_rewrite_progress_events_real_time():
+    """有 history 的请求：rewrite 阶段发出真实进度事件，且先于模型返回、
+    先于 planning；rewrite/planning/generation 共享同一条 collect 流。"""
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/rewrite-realtime.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.application import create_app
+            from app.framework.migrations import upgrade_database
+            from app.modules.rag.rewrite import QueryRewriteService
+            from app.modules.rag.schemas import ChatRequest
+
+            app = create_app()
+            upgrade_database(app.state.container.database)
+            router = _RewriteTimelineRouter()
+            app.state.container.chat.model_router = router
+            app.state.container.chat.rewrite = QueryRewriteService(router)
+            app.state.container.agentic.model_router = router
+            with app.state.container.database.session_factory() as db:
+                user = User(username="rewrite-user", password_hash="hash")
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                # 种子：上一轮已完成对话（NORMAL），让 rewrite 走模型分支
+                conversations = app.state.container.conversations
+                conversation = conversations.create(db, user.id, "历史对话")
+                turn, _ = conversations.create_turn(
+                    db,
+                    conversation_id=conversation.id,
+                    user_id=user.id,
+                    question="上一轮问题",
+                    rag_enabled=False,
+                    deep_thinking=False,
+                    knowledge_base_ids=[],
+                )
+                conversations.add_assistant_version(
+                    db,
+                    turn=turn,
+                    user_id=user.id,
+                    content="上一轮回答",
+                    citations=None,
+                    message_status="NORMAL",
+                )
+                request = ChatRequest(
+                    question="牛肉适合搭配什么？",
+                    request_id="request-rewrite-realtime-01",
+                    conversation_id=conversation.id,
+                )
+                events: list[dict] = []
+                async for event in app.state.container.chat.stream(
+                    db, user.id, user.id, request
+                ):
+                    events.append(event)
+                    if (
+                        event["type"] == "agent_progress"
+                        and event["data"]["phase"] == "rewrite"
+                        and event["data"]["status"] == "running"
+                    ):
+                        # 消费者收到 rewrite running 的时刻（对比模型侧时序标记）
+                        router.timeline.append("consumer_saw_rewrite_running")
+
+            progress = [
+                event["data"]
+                for event in events
+                if event["type"] == "agent_progress"
+            ]
+            phases = [(item["phase"], item["status"]) for item in progress]
+            # 1) 事件顺序：rewrite running < rewrite completed < planning running
+            assert phases[0] == ("rewrite", "running")
+            assert phases.index(("rewrite", "completed")) < phases.index(
+                ("planning", "running")
+            )
+            # 2) rewrite 事件结构与文案
+            rewrite_running = progress[0]
+            assert rewrite_running["agent"] == "rewrite"
+            assert rewrite_running["title"] == "正在理解问题"
+            assert rewrite_running["detail"] == "正在结合当前对话整理查询信息"
+            rewrite_completed = next(
+                item
+                for item in progress
+                if item["phase"] == "rewrite" and item["status"] == "completed"
+            )
+            assert rewrite_completed["agent"] == "rewrite"
+            assert rewrite_completed["title"] == "问题理解完成"
+            assert rewrite_completed["detail"] == "已结合上下文整理查询信息"
+            # 3) 实时性：rewrite running 在模型返回（0.1s sleep 结束）前已到达
+            assert router.timeline.index("consumer_saw_rewrite_running") < (
+                router.timeline.index("rewrite_returned")
+            )
+            # 4) rewrite 与 planning/generation 同一条 collect 流：seq 全流唯一递增
+            seqs = [item["seq"] for item in progress]
+            assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+            # 5) planner 收到的是改写后的查询
+            assert router.last_planner_request.messages[-1].content.startswith(
+                "问题：改写后的牛肉搭配查询"
+            )
+            assert events[-1]["type"] == "done"
+
+    asyncio.run(scenario())
+
+
+def test_rewrite_no_history_emits_progress():
+    """无 history 请求：rewrite 发出 running + completed（已完成问题理解），
+    且不调用改写模型；planning 事件仍在（非 trivial 场景）。"""
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/rewrite-nohistory.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.application import create_app
+            from app.framework.migrations import upgrade_database
+            from app.modules.rag.rewrite import QueryRewriteService
+            from app.modules.rag.schemas import ChatRequest
+
+            app = create_app()
+            upgrade_database(app.state.container.database)
+            router = _RewriteTimelineRouter()
+            app.state.container.chat.model_router = router
+            app.state.container.chat.rewrite = QueryRewriteService(router)
+            app.state.container.agentic.model_router = router
+            with app.state.container.database.session_factory() as db:
+                user = User(username="nohistory-user", password_hash="hash")
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                request = ChatRequest(
+                    question="退货政策是什么",
+                    request_id="request-rewrite-nohistory-01",
+                )
+                events = [
+                    event
+                    async for event in app.state.container.chat.stream(
+                        db, user.id, user.id, request
+                    )
+                ]
+
+            progress = [
+                event["data"]
+                for event in events
+                if event["type"] == "agent_progress"
+            ]
+            rewrite_events = [item for item in progress if item["phase"] == "rewrite"]
+            assert [(item["status"], item["detail"]) for item in rewrite_events] == [
+                ("running", "正在结合当前对话整理查询信息"),
+                ("completed", "已完成问题理解"),
+            ]
+            # rewrite 未调用模型（无 history 短路在模型之前）
+            assert router.rewrite_calls == 0
+            # 非 trivial：planning 事件照常发出
+            assert any(
+                item["phase"] == "planning" and item["status"] == "running"
+                for item in progress
+            )
+
+    asyncio.run(scenario())
+
+
+def test_trivial_direct_emits_no_planning_events():
+    """trivial direct（问候）：rewrite 与 planning 阶段完全不发出任何进度事件，
+    complete 事件 terminal 保持 direct；planner 模型不被调用。"""
+    async def scenario():
+        with tempfile.TemporaryDirectory() as directory:
+            os.environ["DB_URL"] = f"sqlite:///{directory}/trivial-direct.db"
+            os.environ["VECTOR_BACKEND"] = "disabled"
+            from app.application import create_app
+            from app.framework.migrations import upgrade_database
+            from app.modules.rag.schemas import ChatRequest
+
+            app = create_app()
+            upgrade_database(app.state.container.database)
+            app.state.container.chat.model_router = _StreamRouter()
+            planner = _CountingPlannerRouter()
+            app.state.container.agentic.model_router = planner
+            with app.state.container.database.session_factory() as db:
+                user = User(username="trivial-user", password_hash="hash")
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+                request = ChatRequest(
+                    question="你好哈哈哈",
+                    request_id="request-trivial-direct-01",
+                )
+                events = [
+                    event
+                    async for event in app.state.container.chat.stream(
+                        db, user.id, user.id, request
+                    )
+                ]
+
+            progress = [
+                event["data"]
+                for event in events
+                if event["type"] == "agent_progress"
+            ]
+            # 无任何 planning / rewrite 事件（trivial direct 完全无事件）
+            assert all(
+                item["phase"] not in {"planning", "rewrite"} for item in progress
+            )
+            # complete 事件 terminal 保持 direct
+            complete = next(item for item in progress if item["phase"] == "complete")
+            assert complete["terminal"] == "direct"
+            # planner 模型未被调用（节点级短路）
+            assert planner.complete_calls == 0
+            assert events[-1]["type"] == "done"
+
+    asyncio.run(scenario())
+
+
 def test_stream_cancel_during_prepare_finishes_request_run():
     """客户端在 prepare 阶段断开：ChatRequestRun 收尾为 cancelled（不再停留
     processing），同 requestId 可立即重试（不被 REQUEST_IN_PROGRESS 拦截），
@@ -890,10 +1154,12 @@ def test_stream_cancel_during_prepare_finishes_request_run():
                     stream_gen = service.stream(
                         db, user.id, user.id, request, cancel_event=None
                     )
-                    # 第一条事件：planning running（假协调器先发事件再 sleep）
+                    # 第一条事件：rewrite running（真实改写阶段实时事件）；
+                    # 假协调器随后发 planning running 并 sleep 模拟长时间 prepare
                     first = await anext(stream_gen)
                     assert first["type"] == "agent_progress"
-                    assert first["data"]["phase"] == "planning"
+                    assert first["data"]["phase"] == "rewrite"
+                    assert first["data"]["status"] == "running"
                     # 模拟客户端断开：关闭生成器 → 服务端 GeneratorExit 路径
                     await stream_gen.aclose()
                     # 请求记录已收尾为 cancelled
