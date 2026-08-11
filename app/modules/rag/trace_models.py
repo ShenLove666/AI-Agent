@@ -24,6 +24,9 @@ class RagTraceRun(Base):
     # 聊天请求去重指纹（ChatRequestRun.request_id）：Trace → Request → Conversation → Turn。
     # 位于末尾：与 migration 0013 的 add_column（SQLite 追加到表尾）列顺序一致。
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # 首 Token 延迟（Generation 开始 → 首个正式回答 Token）。Run 级指标，
+    # 列表 API 直接读取（避免解析 Node JSON 的 N+1）。位于末尾与迁移一致。
+    ttft_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class RagTraceNode(Base):

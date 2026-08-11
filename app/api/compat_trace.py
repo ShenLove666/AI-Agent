@@ -39,7 +39,7 @@ def run_vo(run: RagTraceRun, user_name: str | None = None) -> dict:
         "status": run.status,
         "errorMessage": run.error_message,
         "durationMs": run.elapsed_ms,
-        "ttftMs": None,
+        "ttftMs": run.ttft_ms,
         "question": run.query,
         # 必须走 utc_iso：created_at 是 naive UTC，直接 isoformat 输出的无时区串
         # 会被浏览器当本地时间解析（UTC+8 差 8 小时）

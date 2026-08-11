@@ -141,11 +141,13 @@ export function RagTracePage() {
     },
     {
       key: "avgTtft",
-      title: "平均首字",
+      title: "平均首字耗时",
       value: avgTtftMetric?.value ?? "—",
       unit: avgTtftMetric?.unit,
       icon: <Clock3 className="h-4 w-4" />,
-      tone: "sky"
+      tone: "sky",
+      // TTFT：Generation 开始 → 首个正式回答 Token
+      hint: "从回答生成开始到首个正式回答 Token 的平均耗时；仅统计当前页已采集数据"
     }
   ];
 

@@ -390,30 +390,38 @@ export function RagTraceDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
 
-  const loadDetail = async (nextTraceId: string, options: { silent?: boolean } = {}) => {
-    if (!nextTraceId) return;
+  const loadDetail = async (
+    nextTraceId: string,
+    options: { silent?: boolean } = {}
+  ): Promise<RagTraceDetail | null> => {
+    if (!nextTraceId) return null;
     const { silent = false } = options;
     const requestId = ++detailRequestRef.current;
     if (!silent) setDetailLoading(true);
     try {
       const result = await getRagTraceDetail(nextTraceId);
-      if (detailRequestRef.current !== requestId) return;
+      if (detailRequestRef.current !== requestId) return null;
       setDetail(result);
+      return result;
     } catch (error) {
-      if (detailRequestRef.current !== requestId) return;
+      if (detailRequestRef.current !== requestId) return null;
       if (!silent) {
         toast.error(getErrorMessage(error, "加载链路详情失败"));
         console.error(error);
         setDetail(null);
       }
+      return null;
     } finally {
       if (detailRequestRef.current !== requestId) return;
       if (!silent) setDetailLoading(false);
     }
   };
 
-  // RUNNING Trace 自动轮询：只用递归 setTimeout（前一请求结束才排下一个），
-  // 一旦进入终态（success/failed/timeout/cancelled）立即停止；silent 刷新不闪 loading。
+  // RUNNING Trace 自动轮询：真正的递归——每次请求返回后根据返回值决定
+  // 是否安排下一次（依赖 running→running 状态不变时 effect 不会重跑，
+  // 之前「按 status 依赖」的写法在第一次刷新仍 running 时轮询链就断了）。
+  // 终态（success/failed/timeout/cancelled）后停止；silent 刷新不闪 loading。
+  const TRACE_POLL_INTERVAL_MS = 800;
   const isTerminalTraceStatus = (status?: string | null) => {
     const normalized = normalizeStatus(status);
     return (
@@ -425,14 +433,31 @@ export function RagTraceDetailPage() {
   };
 
   useEffect(() => {
-    const status = detail?.run?.status;
-    if (!traceId || !status || isTerminalTraceStatus(status)) return;
-    const timer = window.setTimeout(() => {
-      void loadDetail(traceId, { silent: true });
-    }, 1000);
-    return () => window.clearTimeout(timer);
+    if (!traceId) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const scheduleNext = () => {
+      if (cancelled) return;
+      timer = window.setTimeout(poll, TRACE_POLL_INTERVAL_MS);
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      const result = await loadDetail(traceId, { silent: true });
+      if (cancelled || !result) return;
+      if (isTerminalTraceStatus(result.run?.status)) return; // 终态：停止
+      scheduleNext(); // 仍 running：继续下一轮
+    };
+
+    scheduleNext();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceId, detail?.run?.status]);
+  }, [traceId]);
 
   useEffect(() => {
     if (!traceId) {

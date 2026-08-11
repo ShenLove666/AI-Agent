@@ -1424,19 +1424,22 @@ class RagChatService:
                         answer_parts.append(token)
                         yield {"type": "token", "data": token}
                     interrupted = bool(cancel_event is not None and cancel_event.is_set())
+                    ttft_ms = (
+                        round((first_token_at - generation_started_at) * 1000, 2)
+                        if first_token_at is not None
+                        else None
+                    )
                     attributes.update(
                         answer_chars=sum(map(len, answer_parts)),
                         interrupted=interrupted,
-                        ttft_ms=(
-                            round((first_token_at - generation_started_at) * 1000, 2)
-                            if first_token_at is not None
-                            else None
-                        ),
+                        ttft_ms=ttft_ms,
                         requested_mode=prepared.model_request.metadata.get("requested_mode"),
                         reasoning_enabled=prepared.model_request.metadata.get("deep_thinking", False),
                         thinking_chars=sum(map(len, thinking_parts)),
                         terminal_mode=terminal,
                     )
+                    # Run 级 TTFT：列表 API 直接读取（trace.finish 的 commit 落库）
+                    prepared.trace.run.ttft_ms = ttft_ms
             answer = "".join(answer_parts)
             if not interrupted:
                 # 回答生成完成（generation completed）先于 complete 事件下发；
