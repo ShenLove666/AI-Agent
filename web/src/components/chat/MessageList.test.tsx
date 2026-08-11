@@ -80,12 +80,6 @@ const virtuosoMock = vi.hoisted(() => {
       if (!el || el.offsetHeight === 0) return;
       el.scrollTo({ top: el.scrollHeight, behavior: opts.behavior });
     }
-    /** 阅读线比例的数据来源：mock 返回空 ranges（组件回退均匀分布） */
-    getState(
-      cb: (s: { ranges: { startIndex: number; endIndex: number; size: number }[]; scrollTop: number }) => void
-    ) {
-      cb({ ranges: [], scrollTop: this.scroller?.scrollTop ?? 0 });
-    }
   }
   const instances: InstanceType<typeof VirtuosoHandleStub>[] = [];
   return { VirtuosoHandleStub, instances };
@@ -844,7 +838,7 @@ describe("MessageList 推荐问题展开（Virtuoso scrollIntoView）", () => {
   });
 });
 
-describe("MessageList 对话导航 Minimap", () => {
+describe("MessageList 对话导航刻度（Minimap）", () => {
   function renderFourTurns() {
     return renderList([
       makeMessage("u1", "user", "牛肉和什么商品适合搭配推荐？"),
@@ -858,11 +852,12 @@ describe("MessageList 对话导航 Minimap", () => {
     ]);
   }
 
-  /** jsdom 无布局：为 scroller 与各 turn 锚点注入真实几何（高度不等，模拟长/短回答） */
-  function mockTurnGeometry(scroller: HTMLElement, heights: number[]) {
-    const turns = Array.from(
-      scroller.querySelectorAll<HTMLElement>("[data-turn-index]")
-    );
+  /**
+   * jsdom 无布局：为 scroller 与各 turn 锚点注入真实几何（高度不等，模拟长/短回答）。
+   * scrollerHeight 缺省为 turn 总高；可单独指定以构造「阅读线落在 gap」的场景。
+   */
+  function mockTurnGeometry(scroller: HTMLElement, heights: number[], scrollerHeight?: number) {
+    const turns = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
     turns.forEach((el, i) => {
       const top = heights.slice(0, i).reduce((a, b) => a + b, 0);
       el.getBoundingClientRect = () =>
@@ -878,7 +873,7 @@ describe("MessageList 对话导航 Minimap", () => {
           toJSON: () => ({})
         }) as DOMRect;
     });
-    const total = heights.reduce((a, b) => a + b, 0);
+    const total = scrollerHeight ?? heights.reduce((a, b) => a + b, 0);
     scroller.getBoundingClientRect = () =>
       ({ top: 0, bottom: total, height: total, width: 300, left: 0, right: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
   }
@@ -887,15 +882,7 @@ describe("MessageList 对话导航 Minimap", () => {
     return screen.getByRole("button", { name: label }).getAttribute("aria-current");
   }
 
-  it("turns < 4 不渲染 minimap；≥ 4 渲染一根线一轮", async () => {
-    renderList([
-      makeMessage("u1", "user", "问题一"),
-      makeMessage("a1", "assistant", "回答一"),
-      makeMessage("u2", "user", "问题二"),
-      makeMessage("a2", "assistant", "回答二")
-    ]);
-    await settle(50);
-    // 2 轮 → 隐藏；再 append 到 4 轮 → 出现
+  it("turns < 4 不渲染 minimap；≥ 4 渲染每轮一根线", async () => {
     const { rerender } = renderList([
       makeMessage("u1", "user", "问题一"),
       makeMessage("a1", "assistant", "回答一")
@@ -921,48 +908,90 @@ describe("MessageList 对话导航 Minimap", () => {
     );
     await settle(50);
     expect(screen.getByRole("navigation", { name: "对话导航" })).toBeInTheDocument();
-    // 每轮一根线（4 轮 4 个跳转按钮，aria-label 带轮次）
     expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "跳转到第 4 轮对话" })).toBeInTheDocument();
   });
 
-  it("阅读线判定：视口顶部向下 30% 命中的轮次为当前轮（回答高度不均时不再滞后）", async () => {
+  it("布局未完成（scroller 高度 0）→ 不高亮任何轮（active=null）", async () => {
+    renderFourTurns();
+    // 不注入几何：jsdom rect 全 0 → 防御分支保持 null
+    await settle(80);
+    expect(
+      screen.getAllByRole("button").every((b) => b.getAttribute("aria-current") === null)
+    ).toBe(true);
+  });
+
+  it("阅读线命中算法：35% 线穿过的轮为当前轮（回答高度不均不滞后）", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
-
-    // 高度不均：turn0 50px（短答）、turn1 200px（长答）、turn2 80px、turn3 100px
+    // 高度不等：turn0 50 / turn1 200 / turn2 80 / turn3 100（总 430）
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
-    // 初始（未滚动）：rect 全 0 时命中第 1 轮
+
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // readY = 430 * 0.35 = 150.5 ∈ [50,250]（turn1）→ 第 2 轮
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 1 轮对话")).not.toBe("true");
+  });
+
+  it("第一轮超长回答：阅读线仍在第一轮时绝不提前跳到下一轮", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    // turn0 1200px（超长首答），其余 150/200/300（总 1850）
+    mockTurnGeometry(scroller, [1200, 150, 200, 300]);
+
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // readY = 1850 * 0.35 = 647.5 ∈ [0,1200] → 第 1 轮（turn1 更近也不提前）
+    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 2 轮对话")).not.toBe("true");
+    expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
+  });
+
+  it("阅读线落在两轮 gap 之间 → 取上方最近一轮", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    // 注入带真实间隙的几何：turn0 [0,100]，turn1 从 110 开始（gap 100-110）……
+    // scroller 高 300 → readY = 105 恰好落在 gap 内
+    const heights = [100, 100, 100, 100];
+    const gaps = [10, 10, 10, 0];
+    const turns = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
+    let acc = 0;
+    turns.forEach((el, i) => {
+      const top = acc;
+      const h = heights[i];
+      el.getBoundingClientRect = () =>
+        ({ top, bottom: top + h, height: h, width: 100, left: 0, right: 100, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+      acc = top + h + gaps[i];
+    });
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 300, height: 300, width: 300, left: 0, right: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // readY = 105 ∈ gap [100,110] → 上方最近一轮 = turn0 → 第 1 轮
     expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
 
-    // 滚动到阅读线落在 turn1（anchorY = 430*0.3 = 129 ∈ [50,250]）→ 第 2 轮高亮
+    // 滚动后 readY = 420*0.35 = 147 ∈ turn1 [110,210] → 第 2 轮
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 420, height: 420, width: 300, left: 0, right: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
-    expect(currentAttr("跳转到第 1 轮对话")).not.toBe("true");
-
-    // 继续滚动使阅读线落在 turn3（anchorY = 430*0.3 = 129 ∈ [330,430] → 需改变几何）
-    mockTurnGeometry(scroller, [50, 200, 80, 100]);
-    // 模拟内容上移：scroller 视口位置不变，turn 位置整体上移 300px
-    const turns = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
-    turns.forEach((el, i) => {
-      const tops = [0, 50, 250, 330].map((v) => v - 300);
-      const top = tops[i];
-      el.getBoundingClientRect = () =>
-        ({ top, bottom: top + [50, 200, 80, 100][i], height: [50, 200, 80, 100][i], width: 100, left: 0, right: 100, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
-    });
-    act(() => {
-      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
-    });
-    await settle(80);
-    // anchorY 129 ∈ [30,110]（turn3 上移后）→ 第 4 轮
-    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
   });
 
-  it("点击某根线 → detached=true + scrollToIndex(start, smooth)，且立即高亮目标轮", async () => {
+  it("点击某根线 → detached=true + scrollToIndex(start, smooth)，不主动设置 active", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
@@ -977,48 +1006,128 @@ describe("MessageList 对话导航 Minimap", () => {
     expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
 
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
-    // 点击「跳转到第 3 轮对话」（index 2）
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
 
-    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现；
-    // 高亮立即锁定到目标轮（不等滚动落定）
+    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现。
+    // 不主动 set active——高亮由真实滚动（阅读线）决定
     expect(scrollSpy).toHaveBeenCalledTimes(1);
     expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "smooth" });
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
-    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
   });
 
-  it("点击跳转后锁定阅读线：smooth 滚动经过中间轮不抢高亮，滚动静止后恢复自动检测", async () => {
+  it("点击跳转不锁定 active：高亮跟随真实滚动，手滚回第一轮自然更新", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
 
-    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
-    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
-
-    // smooth 滚动经过中间轮：scrollTop 变化 → 仍锁定，高亮不被抢
+    // 制造 atBottom=false（滚动事件节流后上报），但 detached 仍 false → 按钮不显示
     act(() => {
-      m.setTop(200);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+
+    // 点击第 4 轮（index 3）→ detached
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 阅读线随滚动推进：readY = 900*0.35 = 315 ∈ [250,330]（turn2）→ 第 3 轮
+    mockTurnGeometry(scroller, [50, 200, 80, 100], 900);
+    act(() => {
+      m.setTop(500);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
     expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
 
+    // 用户手滚回第一轮：readY = 100*0.35 = 35 ∈ [0,50]（turn0）→ 第 1 轮
+    mockTurnGeometry(scroller, [50, 200, 80, 100], 100);
     act(() => {
-      m.setTop(300);
+      m.setTop(0);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
-    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
+  });
 
-    // 滚动静止（scrollTop 不再变化）→ 解锁并校正阅读线
+  it("会话切换不继承上一会话 active：先清空（null），布局完成后按新会话计算", async () => {
+    const mk = (prefix: string) => [
+      makeMessage(`${prefix}u1`, "user", "问题一", { turnId: 1 }),
+      makeMessage(`${prefix}a1`, "assistant", "回答一", { turnId: 1 }),
+      makeMessage(`${prefix}u2`, "user", "问题二", { turnId: 2 }),
+      makeMessage(`${prefix}a2`, "assistant", "回答二", { turnId: 2 }),
+      makeMessage(`${prefix}u3`, "user", "问题三", { turnId: 3 }),
+      makeMessage(`${prefix}a3`, "assistant", "回答三", { turnId: 3 }),
+      makeMessage(`${prefix}u4`, "user", "问题四", { turnId: 4 }),
+      makeMessage(`${prefix}a4`, "assistant", "回答四", { turnId: 4 })
+    ];
+    const { rerender } = renderList(mk("A"), { sessionKey: "sess-A" });
+    await settle();
+    const scroller = findScroller()!;
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
-    // 校正后 anchorY = 430*0.3 = 129 ∈ [50,250]（turn1）→ 第 2 轮
+    // 会话 A：阅读线命中 turn1 → 第 2 轮
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+
+    // 切换到会话 B：active 立即清空（null）→ 无任何高亮（绝不继承第 2 轮）
+    rerender(<MessageList messages={mk("B")} isLoading={false} isStreaming={false} sessionKey="sess-B" />);
+    await settle(30);
+    expect(
+      screen.getAllByRole("button").every((b) => b.getAttribute("aria-current") === null)
+    ).toBe(true);
+
+    // 布局完成（rAF 补算）：注入新几何 → 新会话阅读线落在 turn0 → 第 1 轮
+    const scrollerB = findScroller()!;
+    mockTurnGeometry(scrollerB, [50, 200, 80, 100], 100);
+    act(() => {
+      scrollerB.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
+  });
+
+  it("点击导航进入历史时 detached=true：AI 继续输出不拉回底部", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    const u2 = makeMessage("u2", "user", "问题二");
+    const a2 = makeMessage("a2", "assistant", "回答二");
+    const u3 = makeMessage("u3", "user", "问题三");
+    const a3 = makeMessage("a3", "assistant", "回答三", { agentSteps: [] });
+    const u4 = makeMessage("u4", "user", "问题四");
+    const a4 = makeMessage("a4", "assistant", "回答四");
+    const { rerender } = renderList([u1, a1, u2, a2, u3, a3, u4, a4]);
+    const scroller = findScroller()!;
+    await settle();
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // 先制造 atBottom=false（滚动事件节流后上报），但 detached 仍 false → 按钮不显示
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+
+    // 点击第 2 轮 marker（看历史）→ detached
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
+    await settle(50);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // AI 继续输出（同轮内容增长，turns 数不变）：不得自动拉回底部
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    rerender(
+      <MessageList
+        messages={[u1, a1, u2, a2, u3, { ...a3, content: `${a3.content}（继续输出……）` }, u4, a4]}
+        isLoading={false}
+        isStreaming={false}
+      />
+    );
+    await settle(120);
+    expect(scrollSpy).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
   });
 });

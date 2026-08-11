@@ -24,12 +24,17 @@ function makeTurns(count: number, content: (i: number) => string = (i) => `问�
 }
 
 describe("ConversationMinimap", () => {
-  it("每轮一根线；当前轮（activeIndex）aria-current 高亮", () => {
+  it("每轮一根横线；当前轮（activeIndex）aria-current 高亮", () => {
     render(<ConversationMinimap turns={makeTurns(5)} activeIndex={2} onNavigate={() => {}} />);
     expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "跳转到第 5 轮对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "跳转到第 3 轮对话" }).getAttribute("aria-current")).toBe("true");
     expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")).not.toBe("true");
+  });
+
+  it("activeIndex 为 null 时不显示任何高亮（布局未完成/会话切换）", () => {
+    render(<ConversationMinimap turns={makeTurns(5)} activeIndex={null} onNavigate={() => {}} />);
+    expect(screen.getAllByRole("button").every((b) => b.getAttribute("aria-current") === null)).toBe(true);
   });
 
   it("点击 → onNavigate 携带真实 turn 索引", () => {
@@ -39,24 +44,27 @@ describe("ConversationMinimap", () => {
     expect(onNavigate).toHaveBeenCalledWith(3);
   });
 
-  it("超过 40 轮 → 采样到 40 个槽位；首尾槽位对应真实首尾轮，点击反算真实索引", () => {
+  it("超过 36 轮 → 均匀采样到 36 根线；首尾槽位对应真实首尾轮，点击反算真实索引", () => {
     const onNavigate = vi.fn();
     render(<ConversationMinimap turns={makeTurns(80)} activeIndex={0} onNavigate={onNavigate} />);
 
-    // 40 个槽位（第 1 轮 + 第 80 轮 + 中间采样）
     expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "跳转到第 80 轮对话" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(40);
+    expect(screen.getAllByRole("button")).toHaveLength(36);
 
-    // 采样槽位：约中间槽 → 真实索引（39/39 * 79 ≈ 79 → 第 80 轮附近）
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 80 轮对话" }));
     expect(onNavigate).toHaveBeenCalledWith(79);
   });
 
-  it("采样后 activeIndex 映射到对应槽位（最后一条始终对应最后槽位）", () => {
-    // 80 轮，activeIndex=79（最后一条）→ 最后一个槽位高亮
+  it("采样后 activeIndex 映射到最近槽位（最后一条 → 最后一个槽位高亮）", () => {
     render(<ConversationMinimap turns={makeTurns(80)} activeIndex={79} onNavigate={() => {}} />);
     expect(screen.getByRole("button", { name: "跳转到第 80 轮对话" }).getAttribute("aria-current")).toBe("true");
+  });
+
+  it("36 轮以内全部渲染，不采样", () => {
+    render(<ConversationMinimap turns={makeTurns(36)} activeIndex={0} onNavigate={() => {}} />);
+    expect(screen.getAllByRole("button")).toHaveLength(36);
+    expect(screen.getByRole("button", { name: "跳转到第 36 轮对话" })).toBeInTheDocument();
   });
 
   it("hover 显示 tooltip：第 N 轮 + 摘要（超过 30 字截断）", () => {
@@ -77,31 +85,5 @@ describe("ConversationMinimap", () => {
     const summary = tooltip.textContent!.replace("第 1 轮", "").trim();
     expect(summary.length).toBeLessThanOrEqual(31);
     expect(summary.endsWith("…")).toBe(true);
-  });
-
-  it("ratios 提供真实高度比例 → 圆点按比例定位（长回答占更长轨道）", () => {
-    // 3 轮：高度 100 / 300 / 100 → 中心比例 0.1 / 0.5 / 0.9
-    render(
-      <ConversationMinimap
-        turns={makeTurns(3)}
-        activeIndex={1}
-        ratios={[0.1, 0.5, 0.9]}
-        onNavigate={() => {}}
-      />
-    );
-    const getTop = (label: string) =>
-      screen.getByRole("button", { name: label }).style.top;
-    expect(getTop("跳转到第 1 轮对话")).toBe("10%");
-    expect(getTop("跳转到第 2 轮对话")).toBe("50%");
-    expect(getTop("跳转到第 3 轮对话")).toBe("90%");
-  });
-
-  it("ratios 为 null 时回退均匀分布", () => {
-    render(<ConversationMinimap turns={makeTurns(3)} activeIndex={0} onNavigate={() => {}} />);
-    const getTop = (label: string) =>
-      screen.getByRole("button", { name: label }).style.top;
-    expect(getTop("跳转到第 1 轮对话")).toBe("0%");
-    expect(getTop("跳转到第 2 轮对话")).toBe("50%");
-    expect(getTop("跳转到第 3 轮对话")).toBe("100%");
   });
 });
