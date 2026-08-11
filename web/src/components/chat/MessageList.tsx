@@ -150,6 +150,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     if (isAtBottom) {
       detachedRef.current = false;
       setDetached(false);
+      // 第二道保险：回到底部时直接高亮最新一轮
+      const latestIndex = stableTurnsRef.current.length - 1;
+      if (latestIndex >= 0) setActiveTurnIndex(latestIndex);
     }
   }, []);
 
@@ -161,12 +164,30 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   // 因此直接量 [data-turn-index] 元素的 rect 即可，无需全量数据。
   const [activeTurnIndex, setActiveTurnIndex] = React.useState<number | null>(null);
 
+  // 距底部不超过该距离（px）视为「正在看最新内容」：无论阅读线几何上落在哪，
+  // 都必须高亮最后一轮（否则上一轮回答很长时会出现「人在最后、倒数第二根亮着」）
+  const ACTIVE_BOTTOM_GAP = 48;
+
   const updateActiveTurn = React.useCallback(() => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
+    const total = stableTurnsRef.current.length;
+    if (!total) return;
+
+    // 未布局（高度 0）时无法判定：保持 null，避免误判
     const scrollerRect = scroller.getBoundingClientRect();
-    // 未布局（高度 0）时无法判定阅读线：保持 null，避免误判
     if (scrollerRect.height <= 0) return;
+
+    // 1. 接近底部 → 最后一轮（bottom override，先于阅读线判定）：
+    //    上一轮回答很长时，35% 阅读线可能几何上仍落在上一轮，
+    //    但用户已滚到最新内容，此时必须高亮最后一轮
+    const bottomGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (bottomGap <= ACTIVE_BOTTOM_GAP) {
+      setActiveTurnIndex(total - 1);
+      return;
+    }
+
+    // 2. 35% 阅读线：浏览历史内容时的判定
     const readY = scrollerRect.top + scrollerRect.height * 0.35;
     const elements = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
     if (elements.length === 0) return;
@@ -394,12 +415,12 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           </div>
         )}
       />
-      {/* 对话导航刻度：≥4 轮时显示，桌面端（lg）渲染；垂直居中于正文阅读列右缘
-          之外 24px 起（正向 left 定位，不贴正文、不占正文空间）；实际高度由
-          「轮次数 × 每根线高」决定——一小段刻度；导航是显式用户动作，
+      {/* 对话导航刻度：≥4 轮时显示，桌面端（lg）渲染；rail 属于 viewport——
+          固定在聊天滚动区最右侧（滚动条内侧），不是正文内容的一部分；
+          实际高度由「轮次数 × 每根线高」决定；导航是显式用户动作，
           点击置 detached 后由 Virtuoso 平滑滚动 */}
       {stableTurns.length >= 4 ? (
-        <div className="pointer-events-none absolute top-1/2 left-[min(calc(50%_+_504px),calc(100%_-_2.5rem))] z-10 hidden -translate-y-1/2 lg:block">
+        <div className="pointer-events-none absolute top-1/2 right-5 z-10 hidden -translate-y-1/2 lg:block">
           <div className="pointer-events-auto">
             <ConversationMinimap
               turns={stableTurns}
@@ -414,9 +435,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           type="button"
           aria-label="回到底部"
           onClick={scrollToLatest}
-          // 与导航刻度错开（rail 右侧 +8px）：两者职责不同——刻度跳问题、按钮回最新，
-          // 视觉上不应像同一个组件
-          className="absolute bottom-5 left-[min(calc(50%_+_540px),calc(100%_-_3rem))] z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+          // 「回到底部」属于聊天阅读流，不属于 rail：置于正文底部水平居中，
+          // 与右侧刻度彻底分离（rail 跳问题、按钮回最新，视觉上两个独立控件）
+          className="absolute bottom-5 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
         >
           <ArrowDown className="h-4 w-4" />
         </button>

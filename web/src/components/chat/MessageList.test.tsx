@@ -927,6 +927,8 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle();
     // 高度不等：turn0 50 / turn1 200 / turn2 80 / turn3 100（总 430）
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    // bottomGap 需 > 48（否则 bottom override 直接高亮最后一轮）
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
 
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
@@ -943,6 +945,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle();
     // turn0 1200px（超长首答），其余 150/200/300（总 1850）
     mockTurnGeometry(scroller, [1200, 150, 200, 300]);
+    mockScrollMetrics(scroller, { scrollHeight: 2000, clientHeight: 300 });
 
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
@@ -958,6 +961,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     // 注入带真实间隙的几何：turn0 [0,100]，turn1 从 110 开始（gap 100-110）……
     // scroller 高 300 → readY = 105 恰好落在 gap 内
     const heights = [100, 100, 100, 100];
@@ -989,6 +993,49 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     });
     await settle(80);
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+  });
+
+  it("已滚到底部但阅读线几何上在长回答上 → 高亮最后一轮（bottom override）", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    // Turn 3（index 2）很长 1200px，Turn 4（index 3）很短 100px：总 1900。
+    // 若不 override：readY = 1900*0.35 = 665 ∈ turn2 [600,1800] → 会错误亮第 3 根
+    mockTurnGeometry(scroller, [300, 300, 1200, 100]);
+    const m = mockScrollMetrics(scroller, { scrollHeight: 1900, clientHeight: 300 });
+
+    // 已滚到底：bottomGap = 1900-1600-300 = 0 ≤ 48 → 最后一轮
+    act(() => {
+      m.setTop(1600);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).not.toBe("true");
+  });
+
+  it("离开底部 200px → 阅读线判定；重新滚到底 → 最后一轮", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    mockTurnGeometry(scroller, [300, 300, 1200, 100]);
+    const m = mockScrollMetrics(scroller, { scrollHeight: 1900, clientHeight: 300 });
+
+    // 离开底部 200px：bottomGap = 200 > 48 → 阅读线 readY=665 ∈ turn2 → 第 3 轮
+    act(() => {
+      m.setTop(1400);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+
+    // 重新滚到底 → bottomGap = 0 → 第 4 轮
+    act(() => {
+      m.setTop(1600);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
   });
 
   it("点击某根线 → detached=true + scrollToIndex(start, smooth)，不主动设置 active", async () => {
@@ -1033,10 +1080,11 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
 
-    // 阅读线随滚动推进：readY = 900*0.35 = 315 ∈ [250,330]（turn2）→ 第 3 轮
+    // 阅读线随滚动推进（离开底部：bottomGap = 800-300-300 = 200 > 48）：
+    // readY = 900*0.35 = 315 ∈ [250,330]（turn2）→ 第 3 轮
     mockTurnGeometry(scroller, [50, 200, 80, 100], 900);
     act(() => {
-      m.setTop(500);
+      m.setTop(300);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
@@ -1067,6 +1115,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle();
     const scroller = findScroller()!;
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
@@ -1084,6 +1133,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     // 布局完成（rAF 补算）：注入新几何 → 新会话阅读线落在 turn0 → 第 1 轮
     const scrollerB = findScroller()!;
     mockTurnGeometry(scrollerB, [50, 200, 80, 100], 100);
+    mockScrollMetrics(scrollerB, { scrollHeight: 800, clientHeight: 300 });
     act(() => {
       scrollerB.dispatchEvent(new Event("scroll", { bubbles: true }));
     });

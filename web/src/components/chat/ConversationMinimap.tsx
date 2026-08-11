@@ -47,7 +47,7 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
       : null;
 
   return (
-    <nav aria-label="对话导航" className="flex flex-col items-center gap-1">
+    <nav aria-label="对话导航" className="flex flex-col items-center gap-0">
       {Array.from({ length: visible }, (_, slot) => {
         const index = slotToIndex(slot);
         const turn = turns[index];
@@ -60,13 +60,14 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
             aria-label={`跳转到第 ${index + 1} 轮对话`}
             aria-current={isActive ? "true" : undefined}
             onClick={() => onNavigate(index)}
-            className="group relative flex h-[10px] w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+            className="group relative flex h-[9px] w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
           >
+            {/* active 不突然变长：同宽 w-5，靠颜色 + 粗细表达（更安静） */}
             <span
               className={cn(
-                "block rounded-full transition-[width,background-color]",
+                "block rounded-full transition-[height,background-color]",
                 isActive
-                  ? "h-[3px] w-6 bg-[var(--merchant-navy)]"
+                  ? "h-[3px] w-5 bg-[var(--merchant-navy)]"
                   : "h-[2px] w-5 bg-slate-300 group-hover:bg-slate-500"
               )}
             />
