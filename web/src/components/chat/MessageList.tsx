@@ -17,8 +17,8 @@ interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
   /**
-   * 遗留接口：滚动由 Virtuoso followOutput 单一权威负责，
-   * 本组件不再消费该值（保留在 props 中仅为兼容调用方，禁止在组件内使用）。
+   * 遗留接口：滚动跟随由本组件内部（新消息 effect + Latest Turn ResizeObserver）
+   * 承担，不消费该值（保留在 props 中仅为兼容调用方，禁止在组件内使用）。
    */
   isStreaming: boolean;
   sessionKey?: string | null;
@@ -132,25 +132,23 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, []);
 
-  // Virtuoso 是唯一滚动权威。业务判断不再是「是否数学意义上的底部」，
-  // 而是「用户有没有主动离开最新消息」：detached=false 就跟随
-  // （含 ResizeObserver scrollToIndex 与内容增长），detached=true 停止。
-  // （签名仍兼容 Virtuoso 的 (isAtBottom) => FollowOutputScalarType，参数省略。）
-  // 最新 Turn 自身高度增长（turns 数不变）由 Latest Turn ResizeObserver
-  // → scrollToIndex(last, end) 兜底（见下方 effect），两者共用 detached 语义。
-  // detached 用 ref 同步，避免闭包过期；程序滚动/布局变化不影响 detached。
-  const followOutput = React.useCallback(() => {
-    return detachedRef.current ? false : "auto";
-  }, []);
+  // ---- 滚动跟随只有一个控制器 ----
+  // 自动跟随统一由「新消息 effect」与「Latest Turn ResizeObserver → scrollToIndex」
+  // 两条显式路径承担（都不再经过 Virtuoso followOutput——避免两套机制
+  // 在「用户刚切换到手动浏览」的边界上竞争）。
+  // detached=false 才跟随；detached=true（用户意图）时所有程序滚动全部停止。
+  // detached 只由用户动作修改：上翻输入 → true；发送新消息/回到底部 → false。
 
+  // atBottom 是几何状态，detached 是用户意图状态——两者互不推导。
+  // atBottomStateChange(true) 可能来自程序滚动、内容重测量、streaming 高度变化，
+  // 不能据此把 detached 改回 false（否则「用户向上浏览」会被 Virtuoso 的
+  // 程序性回调打断，下一批 token 又把页面拉到底，形成上下闪动）。
+  // detached 只允许在明确动作处修改：wheel/touch/键盘上翻 → true；
+  // 发送新消息、点击「回到底部」→ false。
   const handleAtBottomChange = React.useCallback((isAtBottom: boolean) => {
     setAtBottom(isAtBottom);
-    // 回到底部即重新附着（该回调由真实滚动驱动）；
-    // ref 同步要与 setState 同时完成，避免 ResizeObserver 回调读到过期 true
     if (isAtBottom) {
-      detachedRef.current = false;
-      setDetached(false);
-      // 第二道保险：回到底部时直接高亮最新一轮
+      // 几何到底时高亮最新一轮（阅读语义），但不动 detached
       const latestIndex = stableTurnsRef.current.length - 1;
       if (latestIndex >= 0) setActiveTurnIndex(latestIndex);
     }
@@ -233,7 +231,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }
 
   // 新消息发送（turns 数量增长且新 turn 含 user）：重置滚离标记并立即贴底一次，
-  // 只执行一次、无任何 timer；此后的内容增长由 followOutput 与
+  // 只执行一次、无任何 timer；此后的内容增长由
   // Latest Turn ResizeObserver → scrollToIndex 接管。
   // 历史加载贴底仅依赖 initialTopMostItemIndex LAST（Virtuoso 在 messages 非空时才挂载）。
   const prevTurnsCountRef = React.useRef(stableTurns.length);
@@ -259,12 +257,11 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, [stableTurns.length]);
 
-  // ---- Latest Turn ResizeObserver → scrollToIndex ----
-  // 第二、三轮起，最新 Turn 的 Timeline/正文/Thinking/Sources 持续增长只改变
-  // 「最后一个 ChatTurn 自身高度」，turns.length 与数据项不变：Virtuoso 的
-  // followOutput 只对数据/条目数变化生效，感知不到单条目纯高度增长，
-  // 页面会停在回答上半部分。方案：观察最新 Turn 外层容器，尺寸变化经 rAF
-  // 合并后 scrollToIndex(last, align: "end")（Virtuoso 仍是唯一滚动权威）。
+  // ---- Latest Turn ResizeObserver → scrollToIndex（唯一自动跟随控制器）----
+  // 最新 Turn 的 Timeline/正文/Thinking/Sources 持续增长只改变「最后一个
+  // ChatTurn 自身高度」，turns.length 与数据项不变：Virtuoso 感知不到单条目
+  // 纯高度增长，页面会停在回答上半部分。方案：观察最新 Turn 外层容器，
+  // 尺寸变化经 rAF 合并后 scrollToIndex(last, align: "end")。
   // detached 时跳过，用户回到底部后自动恢复跟随。
   const [latestTurnEl, setLatestTurnEl] = React.useState<HTMLDivElement | null>(null);
   const handleLatestTurnRef = React.useCallback((el: HTMLDivElement | null) => {
@@ -392,7 +389,6 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         ref={virtuosoRef}
         data={stableTurns}
         initialTopMostItemIndex={initialTopMostItemIndex}
-        followOutput={followOutput}
         atBottomStateChange={handleAtBottomChange}
         scrollerRef={attachScroller}
         className="h-full"

@@ -690,8 +690,8 @@ describe("MessageList Latest Turn ResizeObserver", () => {
   });
 });
 
-describe("MessageList followOutput（新语义：只看 detached，不依赖数学底部）", () => {
-  it("未滚离（detached=false）时即使滚动位置不在底部，followOutput 也为 auto", async () => {
+describe("MessageList detached 状态机（只由用户意图修改）", () => {
+  it("未滚离时即使滚动位置不在底部，也不出现「回到底部」按钮", async () => {
     const u1 = makeMessage("u1", "user", "问题一");
     const a1 = makeMessage("a1", "assistant", "回答一");
     renderList([u1, a1]);
@@ -705,14 +705,11 @@ describe("MessageList followOutput（新语义：只看 detached，不依赖数�
     });
     await settle(80);
 
-    const handle = virtuosoMock.instances[0]!;
-    // 没有 wheel/touch/keydown → detached=false → followOutput="auto"（旧实现此处返回 false）
-    expect(handle.lastFollowOutput).toBe("auto");
-    // 未滚离 → 「回到底部」按钮不出现（按钮条件 detached && !atBottom）
+    // 没有 wheel/touch/keydown → detached=false → 按钮不出现
     expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
   });
 
-  it("滚离（detached=true）后 followOutput 为 false，且「回到底部」按钮出现", async () => {
+  it("滚离（detached=true）后「回到底部」按钮出现", async () => {
     const u1 = makeMessage("u1", "user", "问题一");
     const a1 = makeMessage("a1", "assistant", "回答一");
     renderList([u1, a1]);
@@ -727,9 +724,86 @@ describe("MessageList followOutput（新语义：只看 detached，不依赖数�
     });
     await settle(80);
 
-    const handle = virtuosoMock.instances[0]!;
-    expect(handle.lastFollowOutput).toBe(false);
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+
+  it("竞态：ResizeObserver 已调度 rAF 后用户 wheel 向上，随后 atBottomStateChange(true) 到来 → detached 保持 true，pending rAF 不滚", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300, offsetHeight: 300 });
+
+    const observer = lastObserver();
+    const { spy: rAFSpy, captured } = spyRaf();
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+
+    // 1. ResizeObserver 已经调度一个 rAF（pending，尚未执行）
+    act(() => {
+      observer.trigger();
+    });
+    expect(rAFSpy).toHaveBeenCalledTimes(1);
+
+    // 2. 用户 wheel 向上 → detached=true
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // 3. Virtuoso 程序性 atBottomStateChange(true) 到来（滚动/重测量的回调）
+    act(() => {
+      m.setTop(500);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // 4. 执行之前 pending 的 rAF：detached 仍为 true → 不得 scrollToIndex
+    scrollSpy.mockClear();
+    act(() => {
+      captured[0](0);
+    });
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+
+  it("wheel 向上 + atBottom=true 后 token 到达（resize）→ 0 次自动贴底", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300, offsetHeight: 300 });
+
+    const observer = lastObserver();
+    const { spy: rAFSpy } = spyRaf();
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+
+    // 用户 wheel 向上 → detached=true
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // atBottom=true（几何到底，但 detached 必须保持 true）
+    act(() => {
+      m.setTop(500);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // 下一批 token 到达 → resize：observer 回调看到 detached=true → 不调度 rAF、不滚
+    // （先清零 wheel/atBottom 阶段已产生的 navigation rAF）
+    rAFSpy.mockClear();
+    scrollSpy.mockClear();
+    act(() => {
+      observer.trigger();
+    });
+    expect(rAFSpy).not.toHaveBeenCalled();
+    expect(scrollSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -779,18 +853,17 @@ describe("MessageList 间距与 Footer", () => {
     await settle(80);
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
 
-    // 回到底部 → 重新附着（按钮消失）；随后滚动位置虽不在数学底部，
-    // followOutput 仍为 auto——对齐的就是真正的列表底，不再被 Footer 架空判定
+    // 回到底部 → 显式重置 detached（按钮消失）；随后滚动位置虽不在数学底部，
+    // detached 保持 false（几何回调无权改回），不出现按钮
     fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
     await settle(50);
     expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
 
-    const handle = virtuosoMock.instances[0]!;
     act(() => {
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
-    expect(handle.lastFollowOutput).toBe("auto");
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
   });
 });
 
