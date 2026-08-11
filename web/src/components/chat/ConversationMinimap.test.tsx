@@ -23,68 +23,101 @@ function makeTurns(count: number, content: (i: number) => string = (i) => `问�
   }));
 }
 
-describe("ConversationMinimap", () => {
-  it("每轮一根横线；当前轮（activeIndex）aria-current 高亮", () => {
-    render(<ConversationMinimap turns={makeTurns(5)} activeIndex={2} onNavigate={() => {}} />);
-    expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "跳转到第 5 轮对话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "跳转到第 3 轮对话" }).getAttribute("aria-current")).toBe("true");
-    expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")).not.toBe("true");
+function marker(label: string): HTMLButtonElement {
+  return screen.getByRole("button", { name: label }) as HTMLButtonElement;
+}
+
+function markerWidth(label: string): string {
+  return marker(label).querySelector("span")?.getAttribute("style") ?? "";
+}
+
+describe("ConversationMinimap fisheye rail", () => {
+  it("默认状态：active 深色 20px，其余 8px", () => {
+    render(<ConversationMinimap turns={makeTurns(6)} activeIndex={5} onNavigate={() => {}} />);
+    expect(marker("跳转到第 6 轮对话").getAttribute("aria-current")).toBe("true");
+    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 20px");
+    expect(markerWidth("跳转到第 1 轮对话")).toContain("width: 8px");
   });
 
-  it("activeIndex 为 null 时不显示任何高亮（布局未完成/会话切换）", () => {
+  it("activeIndex 为 null 时不显示任何高亮", () => {
     render(<ConversationMinimap turns={makeTurns(5)} activeIndex={null} onNavigate={() => {}} />);
     expect(screen.getAllByRole("button").every((b) => b.getAttribute("aria-current") === null)).toBe(true);
   });
 
+  it("fisheye：hover 中心 30px，±1 24px，±2 18px，±3 13px，更远回落到 8px", () => {
+    render(<ConversationMinimap turns={makeTurns(20)} activeIndex={null} onNavigate={() => {}} />);
+    fireEvent.mouseEnter(marker("跳转到第 9 轮对话")); // index 8
+
+    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px"); // hover
+    expect(markerWidth("跳转到第 8 轮对话")).toContain("width: 24px"); // -1
+    expect(markerWidth("跳转到第 10 轮对话")).toContain("width: 24px"); // +1
+    expect(markerWidth("跳转到第 7 轮对话")).toContain("width: 18px"); // -2
+    expect(markerWidth("跳转到第 11 轮对话")).toContain("width: 18px"); // +2
+    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 13px"); // -3
+    expect(markerWidth("跳转到第 12 轮对话")).toContain("width: 13px"); // +3
+    expect(markerWidth("跳转到第 5 轮对话")).toContain("width: 8px"); // -4 → 回落
+    expect(markerWidth("跳转到第 13 轮对话")).toContain("width: 8px"); // +4 → 回落
+  });
+
+  it("active 与 hover 分开控制：active 远离 hover 时仍保持深色 20px", () => {
+    render(<ConversationMinimap turns={makeTurns(12)} activeIndex={2} onNavigate={() => {}} />);
+    fireEvent.mouseEnter(marker("跳转到第 9 轮对话")); // hover index 8，远离 active 2
+
+    // active marker（第 3 轮）保持高亮 + 20px
+    expect(marker("跳转到第 3 轮对话").getAttribute("aria-current")).toBe("true");
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 20px");
+    // hover marker 最大
+    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px");
+  });
+
+  it("长对话全量渲染：100 轮 → 100 个 marker，不再采样", () => {
+    render(<ConversationMinimap turns={makeTurns(100)} activeIndex={0} onNavigate={() => {}} />);
+    expect(screen.getAllByRole("button")).toHaveLength(100);
+    expect(marker("跳转到第 1 轮对话")).toBeInTheDocument();
+    expect(marker("跳转到第 100 轮对话")).toBeInTheDocument();
+  });
+
+  it("rail 自身可滚动：overflow-y-auto + 隐藏 scrollbar + overscroll-contain", () => {
+    render(<ConversationMinimap turns={makeTurns(100)} activeIndex={0} onNavigate={() => {}} />);
+    const rail = marker("跳转到第 1 轮对话").parentElement!;
+    expect(rail.className).toContain("overflow-y-auto");
+    expect(rail.className).toContain("overscroll-contain");
+    expect(rail.className).toContain("[scrollbar-width:none]");
+    expect(rail.className).toContain("[&::-webkit-scrollbar]:hidden");
+  });
+
   it("点击 → onNavigate 携带真实 turn 索引", () => {
     const onNavigate = vi.fn();
-    render(<ConversationMinimap turns={makeTurns(5)} activeIndex={0} onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
-    expect(onNavigate).toHaveBeenCalledWith(3);
-  });
-
-  it("超过 36 轮 → 均匀采样到 36 根线；首尾槽位对应真实首尾轮，点击反算真实索引", () => {
-    const onNavigate = vi.fn();
-    render(<ConversationMinimap turns={makeTurns(80)} activeIndex={0} onNavigate={onNavigate} />);
-
-    expect(screen.getByRole("button", { name: "跳转到第 1 轮对话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "跳转到第 80 轮对话" })).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(36);
-
-    fireEvent.click(screen.getByRole("button", { name: "跳转到第 80 轮对话" }));
-    expect(onNavigate).toHaveBeenCalledWith(79);
-  });
-
-  it("采样后 activeIndex 映射到最近槽位（最后一条 → 最后一个槽位高亮）", () => {
-    render(<ConversationMinimap turns={makeTurns(80)} activeIndex={79} onNavigate={() => {}} />);
-    expect(screen.getByRole("button", { name: "跳转到第 80 轮对话" }).getAttribute("aria-current")).toBe("true");
-  });
-
-  it("36 轮以内全部渲染，不采样", () => {
-    render(<ConversationMinimap turns={makeTurns(36)} activeIndex={0} onNavigate={() => {}} />);
-    expect(screen.getAllByRole("button")).toHaveLength(36);
-    expect(screen.getByRole("button", { name: "跳转到第 36 轮对话" })).toBeInTheDocument();
+    render(<ConversationMinimap turns={makeTurns(25)} activeIndex={0} onNavigate={onNavigate} />);
+    fireEvent.click(marker("跳转到第 20 轮对话"));
+    expect(onNavigate).toHaveBeenCalledWith(19);
   });
 
   it("hover 显示 tooltip：只含问题摘要（不暴露轮次编号），超过 30 字截断", () => {
     render(
       <ConversationMinimap
-        turns={makeTurns(2, (i) => `这是一段特别长的用户问题描述需要被摘要展示${"很长".repeat(20)}`)}
+        turns={makeTurns(4, (i) => `这是一段特别长的用户问题描述需要被摘要展示${"很长".repeat(20)}`)}
         activeIndex={0}
         onNavigate={() => {}}
       />
     );
-    fireEvent.mouseEnter(screen.getByRole("button", { name: "跳转到第 1 轮对话" }));
-    // 每根线都带一个 tooltip（显示/隐藏由 CSS group-hover 控制，jsdom 不应用样式）；
-    // 断言第 1 根线的 tooltip 内容正确
-    const tooltip = screen.getAllByRole("tooltip")[0]!;
+    fireEvent.mouseEnter(marker("跳转到第 1 轮对话"));
+    const tooltip = screen.getByRole("tooltip");
     expect(tooltip).toBeInTheDocument();
-    // 视觉 UI 不显示轮次编号——只有摘要
     expect(tooltip.textContent).not.toContain("第 1 轮");
-    // 摘要截断到 30 字并追加省略号
     const summary = tooltip.textContent!.trim();
     expect(summary.length).toBeLessThanOrEqual(31);
     expect(summary.endsWith("…")).toBe(true);
+  });
+
+  it("指针离开 rail → 清除 hover 与 tooltip", () => {
+    render(<ConversationMinimap turns={makeTurns(6)} activeIndex={0} onNavigate={() => {}} />);
+    fireEvent.mouseEnter(marker("跳转到第 3 轮对话"));
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 30px");
+
+    fireEvent.mouseLeave(marker("跳转到第 3 轮对话"));
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 8px");
   });
 });

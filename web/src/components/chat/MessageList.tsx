@@ -512,7 +512,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           实际高度由「轮次数 × 每根线高」决定；导航是显式用户动作，
           点击置 detached 后由 Virtuoso 平滑滚动 */}
       {stableTurns.length >= 4 ? (
-        <div className="pointer-events-none absolute top-1/2 right-5 z-10 hidden -translate-y-1/2 lg:block">
+        <div className="pointer-events-none absolute top-1/2 right-4 z-10 hidden -translate-y-1/2 lg:block">
           <div className="pointer-events-auto">
             <ConversationMinimap
               turns={stableTurns}

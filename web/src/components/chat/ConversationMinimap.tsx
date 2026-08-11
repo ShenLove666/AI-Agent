@@ -3,86 +3,163 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import type { ChatTurn } from "@/utils/chatTurns";
 
-/** 最多渲染的横线条数（超过时按轮次序号均匀采样，首尾保留） */
-const MAX_VISIBLE_MARKERS = 36;
 /** Tooltip 摘要最多展示的字符数 */
 const SUMMARY_MAX = 30;
+
+/** 静态宽度档位：idle 8px，active 20px */
+const IDLE_WIDTH = 8;
+const ACTIVE_WIDTH = 20;
+/** hover 中心向邻域衰减扩张：0=hover、1=±1、2=±2、3=±3，更远回落到 8px */
+const HOVER_WIDTHS = [30, 24, 18, 13];
+
+function getMarkerWidth(
+  index: number,
+  hoverIndex: number | null,
+  activeIndex: number | null
+): number {
+  if (hoverIndex === null) {
+    return index === activeIndex ? ACTIVE_WIDTH : IDLE_WIDTH;
+  }
+  const distance = Math.abs(index - hoverIndex);
+  const hoverWidth = HOVER_WIDTHS[distance];
+  if (hoverWidth !== undefined) return hoverWidth;
+  // active 即使离 hover 很远，也维持可辨识长度
+  return index === activeIndex ? ACTIVE_WIDTH : IDLE_WIDTH;
+}
 
 interface ConversationMinimapProps {
   turns: ChatTurn[];
   /** 当前阅读轮次索引；null = 布局未完成/未知，不显示任何高亮 */
   activeIndex: number | null;
-  /** 点击某根线：携带真实 turn 索引（已从采样槽位反算） */
+  /** 点击某根线：携带真实 turn 索引 */
   onNavigate: (index: number) => void;
 }
 
 /**
- * 对话导航刻度（GPT 风格）：一轮 User + Assistant = 一根横线。
- * - 所有横线等间距——它代表「对话轮次」而非页面物理高度，
- *   长回答与短回答在导航中各占一根线
- * - 当前轮更深更粗；hover 展开问题摘要 tooltip（不显示轮次编号——
- *   控件目的是快速浏览消息位置，编号对用户没有价值）
- * - 超过 MAX_VISIBLE_MARKERS 轮时按序号均匀采样（首尾槽位对应首尾轮），
- *   active 映射到最近的采样槽位
- * - 纯展示组件，不做任何滚动——滚动由父组件（唯一滚动权威 Virtuoso）执行
+ * 对话导航 rail（Codex 式 fisheye）：
+ * - 一轮 User + Assistant = 一根横线，**全量渲染不采样**——长对话时 rail
+ *   自己可滚动（隐藏 scrollbar + overscroll-contain），用户能精确点到每一轮
+ * - 长度受 hover 距离控制（hover 中心 ±3 衰减扩张），颜色受 active/hover
+ *   状态控制（active 深色 3px 始终 ≥20px；hover 深灰 2px；其余浅灰）
+ * - 右端固定：marker 只向左生长（rail 在页面右侧，避免从中心双向扩张的抖动感）
+ * - active 变化时 rail 自动滚到对应 marker（直接操作 scrollTop，不用
+ *   scrollIntoView——后者可能连带滚动外层容器）；用户正在操作 rail 时不抢位置
+ * - tooltip 渲染在 overflow viewport 之外（外层 relative + 绝对定位），不会被裁掉
+ * - 纯展示组件，不做聊天区滚动——导航由父组件（唯一滚动权威 Virtuoso）执行
  */
 export function ConversationMinimap({ turns, activeIndex, onNavigate }: ConversationMinimapProps) {
-  const total = turns.length;
-  const visible = Math.min(total, MAX_VISIBLE_MARKERS);
+  const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
+  const [isInteracting, setIsInteracting] = React.useState(false);
+  const [tooltip, setTooltip] = React.useState<{ index: number; y: number } | null>(null);
 
-  // 槽位 → 真实索引：均匀采样，首尾槽位永远对应首尾轮
-  const slotToIndex = React.useCallback(
-    (slot: number) => (visible <= 1 ? 0 : Math.round((slot / (visible - 1)) * (total - 1))),
-    [visible, total]
-  );
-  // 真实索引 → 最近槽位（供 active 高亮映射）
-  const indexToSlot = React.useCallback(
-    (index: number) => (visible <= 1 ? 0 : Math.round((index / (total - 1)) * (visible - 1))),
-    [visible, total]
-  );
+  const railRef = React.useRef<HTMLDivElement | null>(null);
+  const markerRefs = React.useRef(new Map<number, HTMLButtonElement>());
 
-  const activeSlot =
-    activeIndex !== null && activeIndex >= 0 && activeIndex < total
-      ? indexToSlot(activeIndex)
-      : null;
+  // active 变化时让 rail 跟随：只滚 rail 自身（scrollTop），不用 scrollIntoView
+  // （可能影响外层 ancestor scroll container）；用户正在操作 rail 时让出控制权
+  React.useEffect(() => {
+    if (activeIndex === null || isInteracting) return;
+    const rail = railRef.current;
+    const marker = markerRefs.current.get(activeIndex);
+    if (!rail || !marker) return;
+    const top = marker.offsetTop;
+    const bottom = top + marker.offsetHeight;
+    const visibleTop = rail.scrollTop;
+    const visibleBottom = visibleTop + rail.clientHeight;
+    const safe = 32;
+    if (top < visibleTop + safe) {
+      rail.scrollTop = Math.max(0, top - safe);
+    } else if (bottom > visibleBottom - safe) {
+      rail.scrollTop = bottom - rail.clientHeight + safe;
+    }
+  }, [activeIndex, isInteracting]);
+
+  // tooltip 位置按 marker 相对 rail 的 Y 计算（在 overflow viewport 之外渲染）
+  const handleMarkerEnter = (index: number, event: React.MouseEvent<HTMLButtonElement>) => {
+    setHoverIndex(index);
+    const buttonRect = event.currentTarget.getBoundingClientRect();
+    const railRect = railRef.current?.getBoundingClientRect();
+    if (!railRect) return;
+    setTooltip({
+      index,
+      y: buttonRect.top - railRect.top + buttonRect.height / 2
+    });
+  };
+
+  const handleMarkerLeave = () => {
+    setHoverIndex(null);
+    setTooltip(null);
+  };
 
   return (
-    <nav aria-label="对话导航" className="flex flex-col items-center gap-0">
-      {Array.from({ length: visible }, (_, slot) => {
-        const index = slotToIndex(slot);
-        const turn = turns[index];
-        const isActive = slot === activeSlot;
-        const summary = (turn.user?.content ?? turn.assistant?.content ?? "").trim();
-        return (
-          <button
-            key={`${turn.key}-${slot}`}
-            type="button"
-            aria-label={`跳转到第 ${index + 1} 轮对话`}
-            aria-current={isActive ? "true" : undefined}
-            onClick={() => onNavigate(index)}
-            className="group relative flex h-[9px] w-8 items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
-          >
-            {/* active 不突然变长：同宽 w-5，靠颜色 + 粗细表达（更安静） */}
-            <span
-              className={cn(
-                "block rounded-full transition-[height,background-color]",
-                isActive
-                  ? "h-[3px] w-5 bg-[var(--merchant-navy)]"
-                  : "h-[2px] w-5 bg-slate-300 group-hover:bg-slate-500"
-              )}
-            />
-            {summary ? (
-              // 只显示问题摘要：不暴露「第 N 轮」编号（aria-label 已承担无障碍语义）
+    <nav
+      aria-label="对话导航"
+      className="relative"
+      onPointerEnter={() => setIsInteracting(true)}
+      onPointerLeave={() => {
+        setIsInteracting(false);
+        setHoverIndex(null);
+        setTooltip(null);
+      }}
+    >
+      {/* tooltip 是外层 sibling，不在 overflow viewport 内 → 不会被 rail 裁掉 */}
+      {tooltip ? (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute right-full z-20 mr-3 max-w-[260px] truncate rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-soft"
+          style={{ top: tooltip.y, transform: "translateY(-50%)" }}
+        >
+          {(() => {
+            const turn = turns[tooltip.index];
+            const summary = (turn?.user?.content ?? turn?.assistant?.content ?? "").trim();
+            return summary.length > SUMMARY_MAX ? `${summary.slice(0, SUMMARY_MAX)}…` : summary;
+          })()}
+        </div>
+      ) : null}
+
+      {/* rail：自己可滚动；隐藏 scrollbar（Firefox scrollbar-width / WebKit ::-webkit-scrollbar）；
+          overscroll-contain 防止滚到 rail 边缘后 wheel 穿透到聊天正文 */}
+      <div
+        ref={railRef}
+        className="flex max-h-[min(52vh,420px)] flex-col overflow-y-auto overscroll-contain py-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {turns.map((turn, index) => {
+          const active = index === activeIndex;
+          const hovered = index === hoverIndex;
+          const width = getMarkerWidth(index, hoverIndex, activeIndex);
+          return (
+            <button
+              key={turn.key}
+              type="button"
+              ref={(node) => {
+                if (node) markerRefs.current.set(index, node);
+                else markerRefs.current.delete(index);
+              }}
+              aria-label={`跳转到第 ${index + 1} 轮对话`}
+              aria-current={active ? "true" : undefined}
+              onMouseEnter={(event) => handleMarkerEnter(index, event)}
+              onFocus={(event) => handleMarkerEnter(index, event)}
+              onMouseLeave={handleMarkerLeave}
+              onBlur={handleMarkerLeave}
+              onClick={() => onNavigate(index)}
+              className="flex h-[9px] w-10 shrink-0 items-center justify-end focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+            >
+              {/* 右端固定：只向左生长（rail 在页面右侧） */}
               <span
-                role="tooltip"
-                className="pointer-events-none absolute right-full top-1/2 z-10 mr-3 hidden max-w-[260px] -translate-y-1/2 truncate rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-soft group-hover:block"
-              >
-                {summary.length > SUMMARY_MAX ? `${summary.slice(0, SUMMARY_MAX)}…` : summary}
-              </span>
-            ) : null}
-          </button>
-        );
-      })}
+                style={{ width }}
+                className={cn(
+                  "block rounded-full transition-[width,height,background-color] duration-150 ease-out",
+                  active
+                    ? "h-[3px] bg-[var(--merchant-navy)]"
+                    : hovered
+                      ? "h-[2px] bg-slate-600"
+                      : "h-[2px] bg-slate-300"
+                )}
+              />
+            </button>
+          );
+        })}
+      </div>
     </nav>
   );
 }
