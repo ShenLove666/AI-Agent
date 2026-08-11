@@ -122,4 +122,51 @@ describe("ConversationMinimap fisheye rail", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
     expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 16px");
   });
+
+  /** 让 rail 可滚并 mock 指定 marker 的 offsetTop（jsdom 无布局，全为 0） */
+  function mockRailGeometry(rail: HTMLElement, markerIndex: number, offsetTop: number) {
+    Object.defineProperty(rail, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(rail, "clientHeight", { configurable: true, value: 300 });
+    const el = Array.from(rail.querySelectorAll("button"))[markerIndex]!;
+    Object.defineProperty(el, "offsetTop", { configurable: true, value: offsetTop });
+    Object.defineProperty(el, "offsetHeight", { configurable: true, value: 9 });
+  }
+
+  it("hover 不暂停 active 自动跟随：active 变化时 rail 滚到中部舒适区", () => {
+    const { rerender } = render(
+      <ConversationMinimap turns={makeTurns(60)} activeIndex={0} onNavigate={() => {}} />
+    );
+    const rail = marker("跳转到第 1 轮对话").parentElement!;
+    mockRailGeometry(rail, 50, 800);
+
+    // active 移到第 51 轮（offsetTop 800，超出 30%~70% 舒适区）→ rail 居中
+    rerender(<ConversationMinimap turns={makeTurns(60)} activeIndex={50} onNavigate={() => {}} />);
+    // desiredTop = 800 - 150 + 4.5 = 654.5 → clamp(654.5, 700) = 654.5 → 654
+    expect(rail.scrollTop).toBe(654.5);
+
+    // 鼠标 hover 一根 marker：不暂停跟随——active 再变化仍会滚
+    fireEvent.mouseEnter(marker("跳转到第 2 轮对话"));
+    mockRailGeometry(rail, 10, 200);
+    rerender(<ConversationMinimap turns={makeTurns(60)} activeIndex={10} onNavigate={() => {}} />);
+    // desiredTop = 200 - 150 + 4.5 = 54.5 → 54
+    expect(rail.scrollTop).toBe(54.5);
+  });
+
+  it("rail 上 wheel 暂停自动跟随；pointer leave 恢复", () => {
+    const { rerender } = render(
+      <ConversationMinimap turns={makeTurns(60)} activeIndex={0} onNavigate={() => {}} />
+    );
+    const nav = screen.getByRole("navigation", { name: "对话导航" });
+    const rail = marker("跳转到第 1 轮对话").parentElement!;
+    mockRailGeometry(rail, 50, 800);
+
+    // 用户真的在 rail 上滚 wheel → 暂停自动跟随
+    fireEvent.wheel(nav);
+    rerender(<ConversationMinimap turns={makeTurns(60)} activeIndex={50} onNavigate={() => {}} />);
+    expect(rail.scrollTop).toBe(0); // 暂停：不跟随
+
+    // pointer leave → 恢复跟随：active 已变，effect 重新执行并居中
+    fireEvent.pointerLeave(nav);
+    expect(rail.scrollTop).toBe(654.5);
+  });
 });

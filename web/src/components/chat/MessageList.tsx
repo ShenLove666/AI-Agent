@@ -120,6 +120,19 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     setSelectedTurnIndex(null);
   };
 
+  // 真实用户滚动后「先更新 active、再释放 selected」：wheel 事件发生时浏览器
+  // 还没改 scrollTop，若此刻就清 selected，会先暴露旧的 geometry active
+  // （闪一帧旧高亮），滚动完成才更新到新位置。改为在 scroll rAF 中先计算
+  // 新的 active，再同一批 React 更新里释放 selected——UI 直接从目标轮跳到新轮。
+  const releaseSelectionOnNextScrollRef = React.useRef(false);
+
+  // 取消未完成的 minimap 导航：真实用户滚动意图出现时，pending 的
+  // materialize→精准定位 不得再把页面拉回点击目标（用户永远拥有最终控制权）。
+  const cancelPendingMinimapNavigation = React.useCallback(() => {
+    pendingMinimapIndexRef.current = null;
+    minimapNavigatingRef.current = false;
+  }, []);
+
   // 输入监听：只登记 wheel / touch / keydown 等真实输入路径；普通 scroll 事件
   // （程序滚动、布局变化都会触发）不用于推断「用户滚离/滚回」，也不清除
   // minimap 显式选择——只有明确用户输入才能清（与 detached 同一设计原则）。
@@ -130,8 +143,20 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     handleUserInputRef.current = (event: Event) => {
       if (event.type === "keydown") {
         const e = event as KeyboardEvent;
-        // 任何明确的方向键都是真实用户滚动意图 → 清除 minimap 显式选择
-        clearMinimapSelectionRef.current();
+        // 只认滚动键：Tab/Enter/字母等落在 scroller 上的按键不该释放 selected
+        const isScrollKey =
+          e.key === "PageUp" ||
+          e.key === "PageDown" ||
+          e.key === "Home" ||
+          e.key === "End" ||
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown" ||
+          e.key === " ";
+        if (!isScrollKey) return;
+        if (selectedTurnIndexRef.current !== null) {
+          releaseSelectionOnNextScrollRef.current = true;
+        }
+        cancelPendingMinimapNavigation();
         const pageUp = e.key === "PageUp";
         const home = e.key === "Home";
         const arrowUp = e.key === "ArrowUp";
@@ -172,9 +197,12 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         if (currentY == null || touchYRef.current == null) return;
         const delta = currentY - touchYRef.current;
         touchYRef.current = currentY;
-        // 有真实位移的方向滚动 → 清除 minimap 显式选择
+        // 有真实位移的方向滚动 → 标记释放 selected（scroll 后统一执行）
         if (Math.abs(delta) > 3) {
-          clearMinimapSelectionRef.current();
+          if (selectedTurnIndexRef.current !== null) {
+            releaseSelectionOnNextScrollRef.current = true;
+          }
+          cancelPendingMinimapNavigation();
         }
         // 触屏方向：手指下滑（delta>0）→ 页面向上 → 浏览历史 → detached
         if (delta > 3) {
@@ -193,8 +221,11 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
 
       if (event.type === "wheel") {
         const e = event as WheelEvent;
-        // 真实用户滚动 → 清除 minimap 显式选择
-        clearMinimapSelectionRef.current();
+        // 真实用户滚动：标记释放 selected（不立即清——scroll 后先算新 active 再释放）
+        if (selectedTurnIndexRef.current !== null) {
+          releaseSelectionOnNextScrollRef.current = true;
+        }
+        cancelPendingMinimapNavigation();
         // passive wheel 在滚动应用前触发（读到滚动前的位置）：
         // 明确上翻即视为向上浏览
         if (e.deltaY < 0) {
@@ -309,6 +340,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
 
   // scroll 监听只做一件事：rAF 合并后按阅读线更新 active（每帧最多一次）。
   // minimap 导航定位期间跳过——定位触发的中间 scroll 位置不代表用户阅读位置。
+  // 用户真实滚动后：先算出新的 active，再释放 selected（同一批 React 更新，
+  // UI 直接从目标轮跳到新轮，不闪旧 active）。
   const activeFrameRef = React.useRef<number | null>(null);
   const handleNavigationScroll = React.useCallback(() => {
     if (minimapNavigatingRef.current) return;
@@ -316,6 +349,11 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     activeFrameRef.current = requestAnimationFrame(() => {
       activeFrameRef.current = null;
       updateActiveTurn();
+      if (releaseSelectionOnNextScrollRef.current) {
+        releaseSelectionOnNextScrollRef.current = false;
+        selectedTurnIndexRef.current = null;
+        setSelectedTurnIndex(null);
+      }
     });
   }, [updateActiveTurn]);
 
@@ -440,6 +478,16 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     return true;
   }, []);
 
+  // 统一闭合一次 minimap 导航：无论走「已 mounted 精准定位」还是
+  // 「materialize → anchor 出现」，最终都回到 pending=null / navigating=false，
+  // 并给 geometry active 一个正确基准（selected 仍优先显示，不造成视觉抢占）。
+  // 若此处不恢复 navigating=false，后续所有 scroll 的 active 更新会被永久跳过。
+  const finishMinimapNavigation = React.useCallback((index: number) => {
+    pendingMinimapIndexRef.current = null;
+    minimapNavigatingRef.current = false;
+    setActiveTurnIndex(index);
+  }, []);
+
   // anchor 挂载回调：存入 Map；若正是 pending 导航目标，等一帧布局稳定后
   // 完成精准定位（远距离点击：Virtuoso materialize → anchor 出现 → 对齐）
   const handleUserAnchorRef = React.useCallback(
@@ -454,7 +502,7 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
       requestAnimationFrame(() => {
         if (pendingMinimapIndexRef.current !== index) return;
         scrollUserAnchorIntoPosition(index);
-        pendingMinimapIndexRef.current = null;
+        finishMinimapNavigation(index);
       });
     },
     [scrollUserAnchorIntoPosition]
@@ -481,17 +529,23 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
 
       // Anchor 已在 DOM：不经过 Virtuoso，直接一次精准定位
       if (scrollUserAnchorIntoPosition(index)) {
-        pendingMinimapIndexRef.current = null;
-        minimapNavigatingRef.current = false;
+        finishMinimapNavigation(index);
         return;
       }
 
       // Anchor 未 mounted：Virtuoso 只负责 materialize，最终落点由
-      // handleUserAnchorRef 在 anchor 出现后补齐（align:"start" 不是最终定位）
+      // handleUserAnchorRef 在 anchor 出现后补齐（align:"start" 不是最终定位）；
+      // 若该 Turn 没有 user 消息（无 anchor，如孤立 assistant），本帧后兜底
+      // 完成导航（两个 rAF 都检查 pending，先到者生效，不会重复）
       virtuosoRef.current?.scrollToIndex({
         index,
         align: "start",
         behavior: "auto"
+      });
+      requestAnimationFrame(() => {
+        if (pendingMinimapIndexRef.current !== index) return;
+        scrollUserAnchorIntoPosition(index);
+        finishMinimapNavigation(index);
       });
     },
     [scrollUserAnchorIntoPosition]

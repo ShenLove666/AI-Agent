@@ -38,30 +38,32 @@ interface ConversationMinimapProps {
  */
 export function ConversationMinimap({ turns, activeIndex, onNavigate }: ConversationMinimapProps) {
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null);
-  const [isInteracting, setIsInteracting] = React.useState(false);
+  // 只有用户真的在 rail 上滚 wheel 才暂停 active 自动跟随——hover 本身
+  // 不代表「我在手动操纵 rail」，否则鼠标停在 minimap 上时 rail 就完全不
+  // 跟正文滚动（评审：hover ≠ manual rail scroll）
+  const [manualRailScroll, setManualRailScroll] = React.useState(false);
   const [tooltip, setTooltip] = React.useState<{ index: number; y: number } | null>(null);
 
   const railRef = React.useRef<HTMLDivElement | null>(null);
   const markerRefs = React.useRef(new Map<number, HTMLButtonElement>());
 
   // active 变化时让 rail 跟随：只滚 rail 自身（scrollTop），不用 scrollIntoView
-  // （可能影响外层 ancestor scroll container）；用户正在操作 rail 时让出控制权
+  // （可能影响外层 ancestor scroll container）；用户正在 rail 上滚 wheel 时让出
+  // 控制权。active 保持在 rail 中部舒适区（30%~70%），越界后居中到 50%——
+  // 而不是一路走到边缘才补一下。
   React.useEffect(() => {
-    if (activeIndex === null || isInteracting) return;
+    if (activeIndex === null || manualRailScroll) return;
     const rail = railRef.current;
     const marker = markerRefs.current.get(activeIndex);
     if (!rail || !marker) return;
     const top = marker.offsetTop;
     const bottom = top + marker.offsetHeight;
-    const visibleTop = rail.scrollTop;
-    const visibleBottom = visibleTop + rail.clientHeight;
-    const safe = 32;
-    if (top < visibleTop + safe) {
-      rail.scrollTop = Math.max(0, top - safe);
-    } else if (bottom > visibleBottom - safe) {
-      rail.scrollTop = bottom - rail.clientHeight + safe;
-    }
-  }, [activeIndex, isInteracting]);
+    const upperSafe = rail.scrollTop + rail.clientHeight * 0.3;
+    const lowerSafe = rail.scrollTop + rail.clientHeight * 0.7;
+    if (top >= upperSafe && bottom <= lowerSafe) return; // 舒适区内不动
+    const desiredTop = top - rail.clientHeight / 2 + marker.offsetHeight / 2;
+    rail.scrollTop = Math.max(0, Math.min(desiredTop, rail.scrollHeight - rail.clientHeight));
+  }, [activeIndex, manualRailScroll]);
 
   // tooltip 位置按 marker 相对 rail 的 Y 计算（在 overflow viewport 之外渲染）
   const handleMarkerEnter = (index: number, event: React.MouseEvent<HTMLButtonElement>) => {
@@ -84,9 +86,10 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
     <nav
       aria-label="对话导航"
       className="relative"
-      onPointerEnter={() => setIsInteracting(true)}
+      // 只有真的在 rail 上滚 wheel 才暂停自动跟随；hover 不暂停
+      onWheel={() => setManualRailScroll(true)}
       onPointerLeave={() => {
-        setIsInteracting(false);
+        setManualRailScroll(false);
         setHoverIndex(null);
         setTooltip(null);
       }}

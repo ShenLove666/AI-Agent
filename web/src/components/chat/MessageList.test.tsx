@@ -1414,6 +1414,101 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
   });
 
+  it("materialize 路径导航闭合：兜底 rAF 恢复 navigating，后续滚动 active 正常更新", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二"),
+      makeMessage("a3", "assistant", "孤立回答（无用户消息）"),
+      makeMessage("u4", "user", "问题四"),
+      makeMessage("a4", "assistant", "回答四")
+    ]);
+    await settle();
+    const scroller = findScroller()!;
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+
+    // 远距离点击（无 anchor 的 turn）→ 兜底 rAF 完成导航
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    await settle(50);
+
+    // 后续真实滚动：若 navigating 卡 true，active 将永不更新
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // 几何 readY = 430*0.35 = 150.5 ∈ turn1 → 第 2 轮（active 已恢复更新）
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).not.toBe("true");
+  });
+
+  it("真实滚动后：先更新 active 再释放 selected（不闪旧 active）", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    mockAnchorGeometry(scroller, { 2: { top: 250, height: 40 } });
+
+    // 旧 active：几何 readY = 150.5 ∈ turn1 → 第 2 轮
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+
+    // 点击第 3 轮 → selected 覆盖显示
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+
+    // wheel 事件发生瞬间：selected 尚未释放（只打标记，等 scroll rAF）
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+    });
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+
+    // 浏览器滚动完成 → scroll rAF：先 updateActiveTurn，同一批更新里释放 selected
+    act(() => {
+      m.setTop(300);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // 几何接管：readY = 150.5 ∈ turn1 → 第 2 轮（不闪旧值，直接由 3 → 几何结果）
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).not.toBe("true");
+  });
+
+  it("点击远距离后立即 wheel → pending 导航取消，materialize 完成不再拉回", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二"),
+      makeMessage("a3", "assistant", "孤立回答（无用户消息）"),
+      makeMessage("u4", "user", "问题四"),
+      makeMessage("a4", "assistant", "回答四")
+    ]);
+    await settle();
+    const scroller = findScroller()!;
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // 点击第 3 轮（孤立 turn：scrollToIndex 路径，pending=2）
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    // 用户立即 wheel（materialize 未完成）→ cancelPending
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+    });
+
+    // 兜底 rAF 执行：pending 已取消 → 不 scrollBy、不把页面拉回目标
+    await settle(80);
+    expect(m.getTop()).toBe(0);
+    // selected 尚未释放（wheel 只打标记，等 scroll 后统一释放）→ 高亮保持
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+  });
+
   it("点击跳转不锁定 active：真实滚动（wheel）清除 selected 后，高亮跟随阅读线，手滚回第一轮自然更新", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
