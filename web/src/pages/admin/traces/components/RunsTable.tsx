@@ -181,40 +181,52 @@ function BriefDialog({ run, onClose, onOpenDetail }: BriefDialogProps) {
   const [nodes, setNodes] = useState<RagTraceNode[] | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Nodes 轮询：run 为 RUNNING 时 800ms 拉一次（节点是结束才落库，执行中会
+  // 陆续出现）；进入终态后最后一次拉取（status 变化触发 effect 重跑）即停止。
   useEffect(() => {
     if (!run) {
       setNodes(null);
       return;
     }
-    let active = true;
-    setLoading(true);
-    getRagTraceNodes(run.traceId)
-      .then((data) => {
-        if (!active) return;
-        setNodes(data || []);
-      })
-      .catch((error) => {
-        if (!active) return;
-        toast.error(getErrorMessage(error, "加载链路节点失败"));
-        setNodes([]);
-      })
-      .finally(() => {
-        if (!active) return;
-        setLoading(false);
-      });
-    return () => {
-      active = false;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const load = async () => {
+      try {
+        const data = await getRagTraceNodes(run.traceId);
+        if (!cancelled) setNodes(data || []);
+      } catch (error) {
+        if (!cancelled) console.error(error);
+      }
     };
-  }, [run]);
+
+    const poll = async () => {
+      await load();
+      if (!cancelled && normalizeStatus(run.status) === "running") {
+        timer = window.setTimeout(poll, 800);
+      }
+    };
+
+    setLoading(true);
+    void poll().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run?.traceId, run?.status]);
 
   if (!run) return null;
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(run.traceId);
+      await copyText(run.traceId);
       toast.success("Trace Id 已复制");
     } catch {
-      toast.error("复制失败");
+      toast.error("浏览器限制自动复制，请手动复制");
     }
   };
 
@@ -380,7 +392,10 @@ export function RunsTable({
   onPrevPage,
   onNextPage
 }: RunsTableProps) {
-  const [briefRun, setBriefRun] = useState<RagTraceRun | null>(null);
+  // 只记录「用户选中的 traceId」，不存对象快照——弹窗内容永远从最新 runs 派生，
+  // 列表轮询把 RUNNING 刷新成 SUCCESS 时，打开的概览自动跟着变
+  const [briefTraceId, setBriefTraceId] = useState<string | null>(null);
+  const briefRun = briefTraceId ? runs.find((run) => run.traceId === briefTraceId) ?? null : null;
 
   return (
     <Card className="trace-list-table-card">
@@ -439,7 +454,7 @@ export function RunsTable({
                           size="sm"
                           variant="outline"
                           className="trace-list-action-btn trace-list-action-btn-primary"
-                          onClick={() => setBriefRun(run)}
+                          onClick={() => setBriefTraceId(run.traceId)}
                         >
                           <LayoutPanelTop className="h-3.5 w-3.5" />
                           概览
@@ -487,7 +502,7 @@ export function RunsTable({
       </CardContent>
       <BriefDialog
         run={briefRun}
-        onClose={() => setBriefRun(null)}
+        onClose={() => setBriefTraceId(null)}
         onOpenDetail={onOpenRun}
       />
     </Card>

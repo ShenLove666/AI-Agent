@@ -5,7 +5,15 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunsTable } from "@/pages/admin/traces/components/RunsTable";
-import type { RagTraceRun } from "@/services/ragTraceService";
+import { getRagTraceNodes, type RagTraceRun } from "@/services/ragTraceService";
+
+vi.mock("@/services/ragTraceService", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/ragTraceService")>();
+  return {
+    ...actual,
+    getRagTraceNodes: vi.fn().mockResolvedValue([])
+  };
+});
 
 const TRACE_ID = "783e431ce4cd4409806d3ebecc6d9b87";
 const nativeClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -81,6 +89,54 @@ describe("RunsTable", () => {
 
     await user.click(copyButton);
     expect(writeText).toHaveBeenCalledWith(TRACE_ID);
+  });
+
+  it("概览弹窗跟随最新 runs：同 traceId 从 RUNNING 变 SUCCESS，无需重新打开", async () => {
+    const user = userEvent.setup();
+    const runningRun: RagTraceRun = {
+      ...run,
+      status: "running",
+      durationMs: null,
+      ttftMs: null
+    };
+    const { rerender } = render(
+      <RunsTable
+        runs={[runningRun]}
+        loading={false}
+        current={1}
+        pages={1}
+        total={1}
+        onOpenRun={vi.fn()}
+        onPrevPage={vi.fn()}
+        onNextPage={vi.fn()}
+      />
+    );
+
+    // 打开 RUNNING 那条的「链路概览」（列表行与弹窗各一个 RUNNING 徽标）
+    const briefButton = screen.getByRole("button", { name: /概览/ });
+    await user.click(briefButton);
+    expect(screen.getByText("链路概览")).toBeInTheDocument();
+    expect(screen.getAllByText("RUNNING").length).toBeGreaterThanOrEqual(2);
+
+    // 父级 runs 更新为同 traceId SUCCESS（列表轮询的结果）→ 弹窗自动跟随
+    const successRun: RagTraceRun = { ...run, status: "success" };
+    rerender(
+      <RunsTable
+        runs={[successRun]}
+        loading={false}
+        current={1}
+        pages={1}
+        total={1}
+        onOpenRun={vi.fn()}
+        onPrevPage={vi.fn()}
+        onNextPage={vi.fn()}
+      />
+    );
+
+    expect(screen.getAllByText("SUCCESS").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryAllByText("RUNNING")).toHaveLength(0);
+    // 弹窗仍打开（未重新打开）
+    expect(screen.getByText("链路概览")).toBeInTheDocument();
   });
 
   it("keeps a high-contrast scrollbar visible while the list is idle", () => {

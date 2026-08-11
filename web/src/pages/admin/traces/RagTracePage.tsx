@@ -41,29 +41,82 @@ export function RagTracePage() {
 
   const runs = pageData?.records || [];
 
-  const loadRuns = async (current = pageNo, nextTraceId = queryTraceId) => {
+  const loadRuns = async (
+    current = pageNo,
+    nextTraceId = queryTraceId,
+    options: { silent?: boolean } = {}
+  ): Promise<PageResult<RagTraceRun> | null> => {
+    const { silent = false } = options;
     const requestId = ++runsRequestRef.current;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const result = await getRagTraceRuns({
         current,
         size: PAGE_SIZE,
         traceId: nextTraceId.trim() || undefined
       });
-      if (runsRequestRef.current !== requestId) return;
+      if (runsRequestRef.current !== requestId) return null;
       setPageData(result);
+      return result;
     } catch (error) {
-      if (runsRequestRef.current !== requestId) return;
-      toast.error(getErrorMessage(error, "加载链路运行列表失败"));
-      console.error(error);
+      if (runsRequestRef.current !== requestId) return null;
+      if (!silent) {
+        toast.error(getErrorMessage(error, "加载链路运行列表失败"));
+        console.error(error);
+      }
+      return null;
     } finally {
       if (runsRequestRef.current !== requestId) return;
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
+  // 自适应轮询：存在 RUNNING → 800ms 刷一次；全部终态 → 5s 刷一次
+  // （idle 也保持低频刷新，另一标签页的新 Trace 才会自己出现）；
+  // 页面隐藏时降为 5s。递归 setTimeout（前一次返回后再排下一次）。
+  const RUNNING_POLL_MS = 800;
+  const IDLE_POLL_MS = 5000;
+
   useEffect(() => {
-    loadRuns();
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const schedule = (delay: number) => {
+      if (cancelled) return;
+      timer = window.setTimeout(poll, delay);
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        schedule(IDLE_POLL_MS);
+        return;
+      }
+      const result = await loadRuns(pageNo, queryTraceId, { silent: true });
+      if (cancelled || !result) {
+        schedule(IDLE_POLL_MS);
+        return;
+      }
+      const hasRunning = result.records.some(
+        (run) => normalizeStatus(run.status) === "running"
+      );
+      schedule(hasRunning ? RUNNING_POLL_MS : IDLE_POLL_MS);
+    };
+
+    // 首次/筛选变化：立即加载（非 silent，显示 loading），返回后按状态排下一轮
+    void loadRuns(pageNo, queryTraceId).then((result) => {
+      if (cancelled) return;
+      const hasRunning = result
+        ? result.records.some((run) => normalizeStatus(run.status) === "running")
+        : false;
+      schedule(hasRunning ? RUNNING_POLL_MS : IDLE_POLL_MS);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageNo, queryTraceId]);
 
   const handleSearch = () => {
