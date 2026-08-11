@@ -41,6 +41,8 @@ class RagTraceService:
     @contextmanager
     def node(self, db: Session, execution: TraceExecution, name: str):
         started_at = time.perf_counter()
+        # 节点相对 trace.start 的偏移（Waterfall 真实时序的依据）
+        start_offset_ms = (started_at - execution.started_at) * 1000
         attributes: dict[str, Any] = {}
         status = "running"
         try:
@@ -61,6 +63,7 @@ class RagTraceService:
                     name=name,
                     status=status,
                     elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+                    start_offset_ms=round(start_offset_ms, 2),
                     attributes_json=json.dumps(attributes, ensure_ascii=False),
                 )
             )

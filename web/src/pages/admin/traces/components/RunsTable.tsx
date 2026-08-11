@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -70,19 +70,33 @@ const StatusBadge = ({ status }: { status?: string | null }) => {
 };
 
 function TraceIdCell({ traceId }: { traceId: string }) {
+  const textRef = useRef<HTMLSpanElement | null>(null);
+
+  // http 环境下自动复制被浏览器拒绝时：选中文本让用户 Ctrl+C
+  const selectTraceId = () => {
+    const node = textRef.current;
+    if (!node) return;
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  };
+
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
     try {
       await copyText(traceId);
       toast.success("Trace Id 已复制");
     } catch {
-      toast.error("复制失败");
+      selectTraceId();
+      toast.error("浏览器限制自动复制，已选中 Trace ID，请按 Ctrl+C");
     }
   };
 
   return (
     <div className="trace-list-trace-id-row">
-      <span className="trace-list-trace-id-text" title={traceId}>
+      <span ref={textRef} className="trace-list-trace-id-text" title={traceId}>
         {traceId}
       </span>
       <button

@@ -51,15 +51,27 @@ const decodeTraceId = (value?: string): string => {
 };
 
 const copyToClipboard = (text: string, label: string) => {
-  // navigator.clipboard 在 http（非 secure context）下不可用 → copyText 内降级
+  // navigator.clipboard 在 http（非 secure context）下不可用 → copyText 内降级；
+  // 降级仍被浏览器拒绝时：自动选中文本，提示用户 Ctrl+C
   copyText(text)
     .then(() => {
       toast.success(`${label} 已复制`);
     })
     .catch(() => {
-      toast.error("复制失败");
+      const node = traceIdRef.current;
+      if (node) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      toast.error(`浏览器限制自动复制，已选中 ${label}，请按 Ctrl+C`);
     });
 };
+
+// 详情页 Trace Id 文本节点（复制降级时选中它）
+const traceIdRef = { current: null as HTMLSpanElement | null };
 
 // ============ 状态颜色 ============
 
@@ -378,24 +390,49 @@ export function RagTraceDetailPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
 
-  const loadDetail = async (nextTraceId: string) => {
+  const loadDetail = async (nextTraceId: string, options: { silent?: boolean } = {}) => {
     if (!nextTraceId) return;
+    const { silent = false } = options;
     const requestId = ++detailRequestRef.current;
-    setDetailLoading(true);
+    if (!silent) setDetailLoading(true);
     try {
       const result = await getRagTraceDetail(nextTraceId);
       if (detailRequestRef.current !== requestId) return;
       setDetail(result);
     } catch (error) {
       if (detailRequestRef.current !== requestId) return;
-      toast.error(getErrorMessage(error, "加载链路详情失败"));
-      console.error(error);
-      setDetail(null);
+      if (!silent) {
+        toast.error(getErrorMessage(error, "加载链路详情失败"));
+        console.error(error);
+        setDetail(null);
+      }
     } finally {
       if (detailRequestRef.current !== requestId) return;
-      setDetailLoading(false);
+      if (!silent) setDetailLoading(false);
     }
   };
+
+  // RUNNING Trace 自动轮询：只用递归 setTimeout（前一请求结束才排下一个），
+  // 一旦进入终态（success/failed/timeout/cancelled）立即停止；silent 刷新不闪 loading。
+  const isTerminalTraceStatus = (status?: string | null) => {
+    const normalized = normalizeStatus(status);
+    return (
+      normalized === "success" ||
+      normalized === "failed" ||
+      normalized === "timeout" ||
+      normalized === "cancelled"
+    );
+  };
+
+  useEffect(() => {
+    const status = detail?.run?.status;
+    if (!traceId || !status || isTerminalTraceStatus(status)) return;
+    const timer = window.setTimeout(() => {
+      void loadDetail(traceId, { silent: true });
+    }, 1000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [traceId, detail?.run?.status]);
 
   useEffect(() => {
     if (!traceId) {
@@ -648,7 +685,8 @@ export function RagTraceDetailPage() {
         {/* 元信息 */}
         <div className="flex items-center gap-4 text-xs text-slate-500">
         <span
-            className="font-mono cursor-pointer hover:text-slate-700 flex items-center gap-1 transition-colors"
+            ref={traceIdRef}
+            className="font-mono cursor-pointer hover:text-slate-700 flex items-center gap-1 transition-colors select-all"
             onClick={() => copyToClipboard(traceId, "Trace Id")}
             title="点击复制 Trace Id"
         >

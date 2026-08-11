@@ -36,3 +36,9 @@ class RagTraceNode(Base):
     elapsed_ms: Mapped[float] = mapped_column(Float)
     attributes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 相对 trace.start 的偏移（毫秒）：Waterfall 真实时序的依据。
+    # 位于末尾：与 migration 0014 的 add_column（SQLite 追加到表尾）列顺序一致；
+    # server_default 与迁移保持一致（legacy 重建签名比对）。
+    start_offset_ms: Mapped[float] = mapped_column(
+        Float, default=0, server_default="0"
+    )

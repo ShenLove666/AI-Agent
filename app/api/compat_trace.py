@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Request
 from sqlalchemy import func, select
@@ -47,7 +48,15 @@ def run_vo(run: RagTraceRun, user_name: str | None = None) -> dict:
     }
 
 
-def node_vo(node: RagTraceNode) -> dict:
+def node_vo(node: RagTraceNode, run_created_at: datetime | None = None) -> dict:
+    # 真实时序：startTime = trace 起点 + 节点偏移（旧记录无偏移时回退 None）；
+    # endTime = startTime + duration。Waterfall 由此可画出真实执行顺序。
+    start_time: str | None = None
+    end_time: str | None = None
+    if run_created_at is not None and node.start_offset_ms:
+        start_dt = run_created_at + timedelta(milliseconds=node.start_offset_ms)
+        start_time = utc_iso(start_dt)
+        end_time = utc_iso(start_dt + timedelta(milliseconds=node.elapsed_ms))
     return {
         "traceId": node.run_id,
         "nodeId": str(node.id),
@@ -60,8 +69,8 @@ def node_vo(node: RagTraceNode) -> dict:
         "status": node.status,
         "errorMessage": None,
         "durationMs": node.elapsed_ms,
-        "startTime": None,
-        "endTime": None,
+        "startTime": start_time,
+        "endTime": end_time,
         "extraData": node.attributes_json,
     }
 
@@ -144,6 +153,6 @@ def run_nodes(
         )
     )
     return ApiResponse(
-        data={"runId": trace_id, "nodes": [node_vo(node) for node in nodes]},
+        data={"runId": trace_id, "nodes": [node_vo(node, run.created_at) for node in nodes]},
         traceId=current_trace_id(),
     )

@@ -85,9 +85,8 @@ export function RagTracePage() {
     const successCount = runs.filter((item) => normalizeStatus(item.status) === "success").length;
     const failedCount = runs.filter((item) => normalizeStatus(item.status) === "failed").length;
     const runningCount = runs.filter((item) => normalizeStatus(item.status) === "running").length;
-    const avgDuration = durations.length
-      ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
-      : 0;
+    // 本页总耗时（平均耗时排障价值低，改为更有意义的累计指标）
+    const totalDuration = durations.reduce((sum, value) => sum + value, 0);
     const avgTtft = ttftValues.length
       ? Math.round(ttftValues.reduce((sum, value) => sum + value, 0) / ttftValues.length)
       : null; // null = 未采集，与 0ms 是两回事
@@ -97,7 +96,7 @@ export function RagTracePage() {
       successCount,
       failedCount,
       runningCount,
-      avgDuration,
+      totalDuration,
       avgTtft,
       successRate
     };
@@ -106,7 +105,7 @@ export function RagTracePage() {
   const current = pageData?.current || pageNo;
   const pages = pageData?.pages || 1;
   const total = pageData?.total || 0;
-  const avgDurationMetric = formatDurationMetric(traceStats.avgDuration);
+  const totalDurationMetric = formatDurationMetric(traceStats.totalDuration);
   // 未采集（null）→ 显示「—」，绝不显示 0ms
   const avgTtftMetric =
     traceStats.avgTtft === null ? null : formatDurationMetric(traceStats.avgTtft);
@@ -133,10 +132,10 @@ export function RagTracePage() {
       tone: "cyan"
     },
     {
-      key: "avg",
-      title: "平均耗时",
-      value: avgDurationMetric.value,
-      unit: avgDurationMetric.unit,
+      key: "totalDuration",
+      title: "本页总耗时",
+      value: totalDurationMetric.value,
+      unit: totalDurationMetric.unit,
       icon: <Clock3 className="h-4 w-4" />,
       tone: "indigo"
     },
