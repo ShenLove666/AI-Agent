@@ -43,6 +43,7 @@ afterEach(() => {
   } else {
     Reflect.deleteProperty(navigator, "clipboard");
   }
+  Reflect.deleteProperty(window, "isSecureContext");
 });
 
 describe("RunsTable", () => {
@@ -64,6 +65,11 @@ describe("RunsTable", () => {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText }
+    });
+    // copyText 在 secure context 下才走 Clipboard API（否则降级 execCommand）
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true
     });
     renderTable();
 

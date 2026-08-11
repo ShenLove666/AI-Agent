@@ -21,6 +21,9 @@ class RagTraceRun(Base):
     elapsed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 聊天请求去重指纹（ChatRequestRun.request_id）：Trace → Request → Conversation → Turn。
+    # 位于末尾：与 migration 0013 的 add_column（SQLite 追加到表尾）列顺序一致。
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
 class RagTraceNode(Base):

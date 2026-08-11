@@ -30,7 +30,8 @@ def run_vo(run: RagTraceRun, user_name: str | None = None) -> dict:
         "traceName": "RAG Chat",
         "entryMethod": "chat/stream",
         "conversationId": run.conversation_id,
-        "taskId": None,
+        # 任务/请求 ID：trace 创建时写入的聊天请求指纹（ChatRequestRun.request_id）
+        "taskId": run.request_id,
         "userName": user_name,
         "username": user_name,
         "userId": str(run.user_id),
@@ -86,6 +87,9 @@ def list_runs(
         statement = statement.where(RagTraceRun.conversation_id == conversationId)
     if status:
         statement = statement.where(RagTraceRun.status == status)
+    if taskId:
+        # 请求 ID 已直接落在 rag_trace_runs.request_id（trace 创建时写入）
+        statement = statement.where(RagTraceRun.request_id.like(f"%{taskId}%"))
     total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
     rows = list(
         db.execute(

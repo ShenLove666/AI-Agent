@@ -42,6 +42,10 @@ _INTENT_LITERALS = {"direct", "history_reference", "research", "refuse"}
 # 否则会误伤「如何防止数据造假」等合法业务问题）。
 _REFUSE_TERMS = ("伪造", "欺骗", "假截图")
 
+# 简单数学表达式（如「1+3=?」「12 × 4」）：确定性 direct，避免为这类
+# trivial 请求多调用一次 Intent LLM 分类（快路径 <1ms vs ~1.4s）。
+_SIMPLE_MATH_RE = re.compile(r"^[\d\s+\-*/×÷().=？?%^]+$")
+
 # history_reference 高置信表达（normalize 后包含匹配）：
 # 「我上句话问的什么」「重复一下你刚才的回答」等 —— 答案来自当前对话本身。
 # 无 history 时仍返回 history_reference，由 service 分支兜底
@@ -169,6 +173,9 @@ class ConversationIntentRouter:
         if is_trivial_direct(question):
             return IntentDecision("direct", "普通问候/感谢/闲聊，无需业务数据")
         normalized = _normalize(question)
+        # 简单数学表达式（「1+3=?」）：确定性 direct，不调用 Intent LLM
+        if _SIMPLE_MATH_RE.fullmatch(normalized):
+            return IntentDecision("direct", "基础数学表达式，无需业务数据")
         for pattern in _HISTORY_REFERENCE_PATTERNS:
             if pattern in normalized:
                 return IntentDecision(

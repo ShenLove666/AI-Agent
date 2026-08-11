@@ -120,6 +120,13 @@ def test_intent_router_fast_paths():
         assert (await router.classify("那土豆呢", history)).intent == "research"
         # 数学短问题不触发短指代规则（不以「呢」结尾、不以那/这开头）
         assert (await router.classify("1 + 1 = 多少", history)).intent == "direct"
+        # 简单数学 deterministic fast-path：不调用 Intent LLM（用会抛错的模型验证短路）
+        math_strict = ConversationIntentRouter(_ThrowingRouter())
+        assert (await math_strict.classify("1 + 3 = ?", None)).intent == "direct"
+        assert (await math_strict.classify("12 × 4", None)).intent == "direct"
+        assert (await math_strict.classify("(2+3)*4-1", None)).intent == "direct"
+        # 中文数学表达（含汉字）不走数学正则：进入常规路径（无模型 fallback → direct）
+        assert (await router.classify("1 + 1 = 多少", None)).intent == "direct"
 
     asyncio.run(run())
 

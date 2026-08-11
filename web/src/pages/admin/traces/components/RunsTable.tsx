@@ -27,6 +27,7 @@ import {
   statusBadgeVariant,
   statusLabel
 } from "@/pages/admin/traces/traceUtils";
+import { copyText } from "@/utils/clipboard";
 
 interface RunsTableProps {
   runs: RagTraceRun[];
@@ -72,7 +73,7 @@ function TraceIdCell({ traceId }: { traceId: string }) {
   const handleCopy = async (event: React.MouseEvent) => {
     event.stopPropagation();
     try {
-      await navigator.clipboard.writeText(traceId);
+      await copyText(traceId);
       toast.success("Trace Id 已复制");
     } catch {
       toast.error("复制失败");
@@ -252,15 +253,14 @@ function BriefDialog({ run, onClose, onOpenDetail }: BriefDialogProps) {
                   </span>
                   <span className="trace-brief-stat-label">失败节点</span>
                 </div>
-                <div className="trace-brief-stat">
-                  <span className="trace-brief-stat-value">{stats.maxDepth}</span>
-                  <span className="trace-brief-stat-label">最大深度</span>
-                </div>
-                <div className="trace-brief-stat">
+                <div
+                  className="trace-brief-stat"
+                  title="节点累计为各 Trace Node 耗时之和；并发或嵌套节点可能与链路总耗时不同"
+                >
                   <span className="trace-brief-stat-value">
                     {formatDuration(stats.totalDurationMs)}
                   </span>
-                  <span className="trace-brief-stat-label">节点累计</span>
+                  <span className="trace-brief-stat-label">已记录节点累计</span>
                 </div>
               </div>
 

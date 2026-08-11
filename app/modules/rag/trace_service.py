@@ -20,8 +20,20 @@ class TraceExecution:
 
 
 class RagTraceService:
-    def start(self, db: Session, *, user_id: int, query: str) -> TraceExecution:
-        run = RagTraceRun(id=uuid.uuid4().hex, user_id=user_id, query=query)
+    def start(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        query: str,
+        request_id: str | None = None,
+    ) -> TraceExecution:
+        run = RagTraceRun(
+            id=uuid.uuid4().hex,
+            user_id=user_id,
+            query=query,
+            request_id=request_id,
+        )
         db.add(run)
         db.commit()
         return TraceExecution(run)

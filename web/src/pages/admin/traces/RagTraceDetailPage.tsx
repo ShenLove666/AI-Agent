@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { getRagTraceDetail, type RagTraceDetail } from "@/services/ragTraceService";
+import { copyText } from "@/utils/clipboard";
 import { getErrorMessage } from "@/utils/error";
 import {
   clamp,
@@ -50,11 +51,14 @@ const decodeTraceId = (value?: string): string => {
 };
 
 const copyToClipboard = (text: string, label: string) => {
-  navigator.clipboard.writeText(text).then(() => {
-    toast.success(`${label} 已复制`);
-  }).catch(() => {
-    toast.error("复制失败");
-  });
+  // navigator.clipboard 在 http（非 secure context）下不可用 → copyText 内降级
+  copyText(text)
+    .then(() => {
+      toast.success(`${label} 已复制`);
+    })
+    .catch(() => {
+      toast.error("复制失败");
+    });
 };
 
 // ============ 状态颜色 ============

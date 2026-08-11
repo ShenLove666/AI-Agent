@@ -650,9 +650,15 @@ class RagChatService:
         # 同步当前 model_router：运行期/测试可能整体替换 router 实例，
         # 避免构造时的陈旧绑定（否则 classify 会调用旧模型导致意图误判）。
         # 注入的测试替身（非 ConversationIntentRouter）无此属性则跳过。
-        if isinstance(self.intent_router, ConversationIntentRouter):
-            self.intent_router.model_router = self.model_router
-        intent = await self.intent_router.classify(request.question, budgeted_history)
+        # intent-router 单独打点：LLM 分类可能耗时 ~1s+（此前是 Trace 黑盒时间，
+        # 总耗时与节点累计的缺口主要来自这里）
+        with self.traces.node(db, trace, "intent-router") as attributes:
+            if isinstance(self.intent_router, ConversationIntentRouter):
+                self.intent_router.model_router = self.model_router
+            intent = await self.intent_router.classify(
+                request.question, budgeted_history
+            )
+            attributes.update(intent=intent.intent, reason=intent.reason)
         if intent.intent == "history_reference":
             return await self.prepare_history_reference_response(
                 db,
@@ -1061,7 +1067,12 @@ class RagChatService:
                 assistant_message_id=message.id,
                 version=message.version,
             )
-        trace = self.traces.start(db, user_id=actor_user_id, query=request.question)
+        trace = self.traces.start(
+            db,
+            user_id=actor_user_id,
+            query=request.question,
+            request_id=request.request_id,
+        )
         try:
             prepared = await self.prepare(
                 db, actor_user_id, data_owner_id, request, trace
@@ -1224,7 +1235,12 @@ class RagChatService:
                 },
             }
             return
-        trace = self.traces.start(db, user_id=actor_user_id, query=request.question)
+        trace = self.traces.start(
+            db,
+            user_id=actor_user_id,
+            query=request.question,
+            request_id=request.request_id,
+        )
         queue: asyncio.Queue[dict] = asyncio.Queue()
         # 流级事件收集：prepare 与 generation 的全部事件以统一 seq（计数 sink）
         # 进入 persist_events，流结束（成功/异常）后做 reducer 合并持久化。

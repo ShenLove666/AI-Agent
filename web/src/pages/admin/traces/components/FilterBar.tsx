@@ -34,7 +34,7 @@ export function FilterBar({ filters, onFiltersChange, onSearch, onRefresh, onRes
             className="trace-list-control"
             value={filters.taskId}
             onChange={(event) => onFiltersChange({ taskId: event.target.value })}
-            placeholder="按 Task ID 过滤"
+            placeholder="按请求 ID 过滤"
           />
           <Select
             value={filters.status || "__all__"}
