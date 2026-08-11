@@ -416,40 +416,86 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     });
   }, [stableTurns.length]);
 
+  // ---- Minimap 导航：目标 = User Message Anchor（不是 ChatTurn）----
+  // marker 代表「这一轮用户说了什么」，所以定位对象是用户消息锚点：
+  // 两级定位——anchor 已 mounted 时直接精确 scrollBy（用户问题落到
+  // viewport 顶部 + NAV_TOP_OFFSET）；未 mounted 时 Virtuoso 只负责把该 Turn
+  // materialize（align:"start" 只是加载手段，不是最终落点），anchor ref 出现后
+  // 立即补一次精确对齐。不再使用 center/end 对齐整个 Turn——Turn 高度由
+  // 超长用户输入/Markdown/Timeline/Thinking 决定，「Turn 的中心」没有产品意义。
+  const NAV_TOP_OFFSET = 24;
+  const userAnchorRefs = React.useRef(new Map<number, HTMLDivElement>());
+  const pendingMinimapIndexRef = React.useRef<number | null>(null);
+
+  const scrollUserAnchorIntoPosition = React.useCallback((index: number) => {
+    const scroller = scrollerRef.current;
+    const anchor = userAnchorRefs.current.get(index);
+    if (!scroller || !anchor) return false;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    const delta = anchorRect.top - scrollerRect.top - NAV_TOP_OFFSET;
+    if (Math.abs(delta) <= 1) return true;
+    // Virtuoso 已负责虚拟列表定位；这里只做最后 ~30px 级的精准对齐
+    scroller.scrollBy({ top: delta, behavior: "auto" });
+    return true;
+  }, []);
+
+  // anchor 挂载回调：存入 Map；若正是 pending 导航目标，等一帧布局稳定后
+  // 完成精准定位（远距离点击：Virtuoso materialize → anchor 出现 → 对齐）
+  const handleUserAnchorRef = React.useCallback(
+    (index: number, node: HTMLDivElement | null) => {
+      if (node) {
+        userAnchorRefs.current.set(index, node);
+      } else {
+        userAnchorRefs.current.delete(index);
+        return;
+      }
+      if (pendingMinimapIndexRef.current !== index) return;
+      requestAnimationFrame(() => {
+        if (pendingMinimapIndexRef.current !== index) return;
+        scrollUserAnchorIntoPosition(index);
+        pendingMinimapIndexRef.current = null;
+      });
+    },
+    [scrollUserAnchorIntoPosition]
+  );
+
   // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
   // 语义同 wheel/键盘输入），并记录 selectedTurnIndex（用户显式选择，优先于
-  // 几何 active——否则点击倒数第二轮时，目标已在尾部可见、scrollTop 无法再滚，
-  // 一帧后几何重算会因 bottom override 把高亮抢回最后一轮，看起来「没反应」）。
-  // 定位用 behavior:"auto"：minimap 是快速跳转导航，不做平滑动画（smooth 跨
-  // 多个虚拟 item 沿途测量会闪）。align：历史轮 center（尾部 start 无滚动空间），
-  // 最后一轮 end（到底）。
-  // 导航期间锁定 active 更新：定位触发的中间 scroll 不因中间 viewport 位置
-  // 反复改高亮。selected 一直保持，直到真实用户滚动等明确动作清除。
+  // 几何 active——避免底部 bottom override 把高亮抢回最后一轮）。
+  // 导航期间锁定 geometry active 更新：定位触发的中间 scroll 不反复改高亮。
+  // selected 一直保持，直到真实用户滚动等明确动作清除。
   const minimapNavigatingRef = React.useRef(false);
 
-  const handleMinimapNavigate = React.useCallback((index: number) => {
-    detachedRef.current = true;
-    setDetached(true);
+  const handleMinimapNavigate = React.useCallback(
+    (index: number) => {
+      detachedRef.current = true;
+      setDetached(true);
 
-    // 用户明确选择了这一轮：立即高亮，不被任何几何回调抢走
-    selectedTurnIndexRef.current = index;
-    setSelectedTurnIndex(index);
+      // 用户明确选择了这一轮：立即高亮，不被任何几何回调抢走
+      selectedTurnIndexRef.current = index;
+      setSelectedTurnIndex(index);
 
-    minimapNavigatingRef.current = true;
+      minimapNavigatingRef.current = true;
+      pendingMinimapIndexRef.current = index;
 
-    const latestIndex = stableTurnsRef.current.length - 1;
-    virtuosoRef.current?.scrollToIndex({
-      index,
-      align: index === latestIndex ? "end" : "center",
-      behavior: "auto"
-    });
+      // Anchor 已在 DOM：不经过 Virtuoso，直接一次精准定位
+      if (scrollUserAnchorIntoPosition(index)) {
+        pendingMinimapIndexRef.current = null;
+        minimapNavigatingRef.current = false;
+        return;
+      }
 
-    // 只等一帧解除导航锁（不重新 updateActiveTurn——bottom override 会覆盖
-    // 显式选择；selected ?? active 已保证高亮稳定）。不用任何 timer 补滚。
-    requestAnimationFrame(() => {
-      minimapNavigatingRef.current = false;
-    });
-  }, []);
+      // Anchor 未 mounted：Virtuoso 只负责 materialize，最终落点由
+      // handleUserAnchorRef 在 anchor 出现后补齐（align:"start" 不是最终定位）
+      virtuosoRef.current?.scrollToIndex({
+        index,
+        align: "start",
+        behavior: "auto"
+      });
+    },
+    [scrollUserAnchorIntoPosition]
+  );
 
   // 会话切换（virtuosoKey 变化）时重置 active 与 minimap 显式选择：
   // DOM 尚未布局，任何旧值都会闪错（Test：切换后绝不能继承上一会话）。
@@ -542,6 +588,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
               className={index === stableTurns.length - 1 ? "pb-8" : "pb-7"}
               // 仅最新一轮挂 ref（Latest Turn ResizeObserver 观察目标），其余不传避免误绑定
               onRef={index === stableTurns.length - 1 ? handleLatestTurnRef : undefined}
+              // 所有轮都挂用户消息锚点（minimap 精准定位目标）
+              onUserAnchorRef={(node) => handleUserAnchorRef(index, node)}
             />
           </div>
         )}

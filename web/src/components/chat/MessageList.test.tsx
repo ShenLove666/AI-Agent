@@ -1079,6 +1079,30 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     return screen.getByRole("button", { name: label }).getAttribute("aria-current");
   }
 
+  /**
+   * 为 user message anchor 注入视口几何（minimap 精准定位的目标）。
+   * scroller rect 由 mockTurnGeometry 提供（top 0）。
+   */
+  function mockAnchorGeometry(scroller: HTMLElement, anchors: Record<number, { top: number; height: number }>) {
+    const els = Array.from(scroller.querySelectorAll<HTMLElement>("[data-user-message-anchor]"));
+    els.forEach((el, i) => {
+      const spec = anchors[i];
+      if (!spec) return;
+      el.getBoundingClientRect = () =>
+        ({
+          top: spec.top,
+          bottom: spec.top + spec.height,
+          height: spec.height,
+          width: 100,
+          left: 0,
+          right: 100,
+          x: 0,
+          y: 0,
+          toJSON: () => ({})
+        }) as DOMRect;
+    });
+  }
+
   it("turns < 4 不渲染 minimap；≥ 4 渲染每轮一根线", async () => {
     const { rerender } = renderList([
       makeMessage("u1", "user", "问题一"),
@@ -1235,12 +1259,14 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
   });
 
-  it("点击某根线 → detached=true + scrollToIndex(start, auto)，不主动设置 active", async () => {
+  it("点击某根线（anchor 已 mounted）→ 精准 scrollBy 定位到 User Anchor，不经 Virtuoso；detached=true", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
-    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    // 第 3 轮 user anchor 视口 top = 250
+    mockAnchorGeometry(scroller, { 2: { top: 250, height: 40 } });
 
     // 制造 atBottom=false（滚动事件节流后上报），但 detached 仍 false → 按钮不显示
     act(() => {
@@ -1252,26 +1278,28 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
 
-    // 显式用户导航：scrollToIndex(start, auto)——minimap 是快速定位导航，不做平滑
-    // 动画（smooth 跨虚拟 item 沿途测量会闪）；detached=true → 回到底部按钮出现。
-    // 不主动 set active——高亮由导航完成后的阅读线计算决定
-    expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "center", behavior: "auto" });
+    // anchor 已 mounted → 不经过 Virtuoso（不调用 scrollToIndex）
+    expect(scrollSpy).not.toHaveBeenCalled();
+    // 精准定位：delta = 250 - 0 - 24 = 226 → 用户问题落到 viewport 顶部 + 24px
+    expect(m.getTop()).toBe(226);
+    // detached=true → 回到底部按钮出现；selected 立即高亮
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
   });
 
-  it("点击只发起一次导航 scrollToIndex；导航期间 scroll 事件不反复更新 active", async () => {
+  it("点击只执行一次精准 scrollBy；导航期间 scroll 事件不反复更新 active（selected 保持）", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    mockAnchorGeometry(scroller, { 1: { top: 50, height: 40 } });
 
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
-    // 只发起一次导航；历史轮 center 对齐
-    expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "center", behavior: "auto" });
+    // 只执行一次精准定位（scrollBy），不经 Virtuoso
+    expect(scrollSpy).not.toHaveBeenCalled();
+    expect(m.getTop()).toBe(50 - 24);
     // 用户显式选择立即高亮（selected 优先），不依赖几何
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
 
@@ -1291,6 +1319,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     // 已滚到底：bottomGap = 800-500-300 = 0 → 几何 active = 最后一轮（第 4 根）
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    mockAnchorGeometry(scroller, { 2: { top: 250, height: 40 } });
     act(() => {
       m.setTop(500);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
@@ -1298,10 +1327,10 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle(80);
     expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
 
-    // 点击倒数第二根（第 3 轮）：立即高亮 + center 对齐
+    // 点击倒数第二根（第 3 轮）：立即高亮 + anchor 精准定位
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "center", behavior: "auto" });
+    expect(scrollSpy).not.toHaveBeenCalled();
     expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
     expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
 
@@ -1325,22 +1354,29 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     expect(currentAttr("跳转到第 3 轮对话")).not.toBe("true");
   });
 
-  it("点击最后一根 → align end（到底）；点击回到底部清除 selected", async () => {
+  it("最后一根 marker 也定位到 User Anchor；「回到底部」才定位底部（smooth）+ 清除 selected", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    mockAnchorGeometry(scroller, { 1: { top: 50, height: 40 }, 3: { top: 330, height: 40 } });
 
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    // 历史轮：anchor 精准定位，不经 Virtuoso
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
+    expect(scrollSpy).not.toHaveBeenCalled();
+    expect(m.getTop()).toBe(50 - 24);
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
 
-    // 点击最后一根（index 3 = latest）→ align end
+    // 最后一根（index 3）同样定位到最后一个 User Anchor，不是 conversation bottom
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
-    expect(scrollSpy).toHaveBeenLastCalledWith({ index: 3, align: "end", behavior: "auto" });
+    expect(scrollSpy).not.toHaveBeenCalled();
+    // scrollBy 累计：26（第一次）+ (330 - 24)（第二次）
+    expect(m.getTop()).toBe(26 + 330 - 24);
     expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
 
-    // 滚离 → detached；点击「回到底部」→ 清除 selected（第 2 轮高亮消失）
+    // 滚离 → detached；点击「回到底部」→ scrollToIndex(end, smooth) + 清除 selected
     act(() => {
       m.setTop(100);
       scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
@@ -1349,8 +1385,33 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle(80);
     fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
     await settle(50);
-    // selected 已清除（几何 active 未布局时为 null）→ 第 2 轮不再高亮
-    expect(currentAttr("跳转到第 2 轮对话")).not.toBe("true");
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 3, align: "end", behavior: "smooth" });
+    // selected 已清除 → 高亮交还几何 active（wheel 时阅读线在 turn1 → 第 2 轮）
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
+  });
+
+  it("anchor 未 mounted（孤立 assistant turn 无用户消息）→ Virtuoso materialize（scrollToIndex start）", async () => {
+    renderList([
+      makeMessage("u1", "user", "问题一"),
+      makeMessage("a1", "assistant", "回答一"),
+      makeMessage("u2", "user", "问题二"),
+      makeMessage("a2", "assistant", "回答二"),
+      makeMessage("a3", "assistant", "孤立回答（无用户消息）"),
+      makeMessage("u4", "user", "问题四"),
+      makeMessage("a4", "assistant", "回答四")
+    ]);
+    await settle();
+    const scroller = findScroller()!;
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    // 第 3 轮是孤立 assistant：无 user anchor → 走 Virtuoso materialize
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "auto" });
+    // selected 仍立即高亮
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
   });
 
   it("点击跳转不锁定 active：真实滚动（wheel）清除 selected 后，高亮跟随阅读线，手滚回第一轮自然更新", async () => {

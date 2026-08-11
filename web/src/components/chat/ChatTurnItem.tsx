@@ -17,13 +17,26 @@ interface ChatTurnItemProps {
    * 由 MessageList 仅对最新一轮传入；挂载时收到节点、卸载时收到 null。
    */
   onRef?: (el: HTMLDivElement | null) => void;
+  /**
+   * 暴露「用户消息」DOM 节点（minimap 导航的精准定位锚点）。
+   * 注意：anchor 只包住 User Message 本身，不是整个 ChatTurn——minimap 的
+   * 语义是「这一轮用户说了什么」，导航落点必须是用户问题第一行附近，
+   * 而不是整轮（User+Assistant）的中心/开头。
+   */
+  onUserAnchorRef?: (el: HTMLDivElement | null) => void;
 }
 
 /**
  * 一个 Virtuoso Item = 一个完整 Chat Turn（user + assistant）。
  * 内层 div 的 data-message-id 供「推荐面板展开滚入视口」等按消息定位的逻辑使用。
  */
-export function ChatTurnItem({ turn, isLatestTurn, onRef, className }: ChatTurnItemProps) {
+export function ChatTurnItem({
+  turn,
+  isLatestTurn,
+  onRef,
+  onUserAnchorRef,
+  className
+}: ChatTurnItemProps) {
   // Intercept triple-click at mousedown phase to prevent browser from
   // extending paragraph selection across sibling message boundaries.
   // preventDefault() stops the default selection, then we manually select
@@ -52,7 +65,7 @@ export function ChatTurnItem({ turn, isLatestTurn, onRef, className }: ChatTurnI
       onMouseDown={handleTripleClickDown}
     >
       {turn.user ? (
-        <div data-message-id={turn.user.id}>
+        <div ref={onUserAnchorRef} data-user-message-anchor data-message-id={turn.user.id}>
           <MessageItem message={turn.user} />
         </div>
       ) : null}
