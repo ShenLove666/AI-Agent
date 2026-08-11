@@ -78,4 +78,30 @@ describe("ConversationMinimap", () => {
     expect(summary.length).toBeLessThanOrEqual(31);
     expect(summary.endsWith("…")).toBe(true);
   });
+
+  it("ratios 提供真实高度比例 → 圆点按比例定位（长回答占更长轨道）", () => {
+    // 3 轮：高度 100 / 300 / 100 → 中心比例 0.1 / 0.5 / 0.9
+    render(
+      <ConversationMinimap
+        turns={makeTurns(3)}
+        activeIndex={1}
+        ratios={[0.1, 0.5, 0.9]}
+        onNavigate={() => {}}
+      />
+    );
+    const getTop = (label: string) =>
+      screen.getByRole("button", { name: label }).style.top;
+    expect(getTop("跳转到第 1 轮对话")).toBe("10%");
+    expect(getTop("跳转到第 2 轮对话")).toBe("50%");
+    expect(getTop("跳转到第 3 轮对话")).toBe("90%");
+  });
+
+  it("ratios 为 null 时回退均匀分布", () => {
+    render(<ConversationMinimap turns={makeTurns(3)} activeIndex={0} onNavigate={() => {}} />);
+    const getTop = (label: string) =>
+      screen.getByRole("button", { name: label }).style.top;
+    expect(getTop("跳转到第 1 轮对话")).toBe("0%");
+    expect(getTop("跳转到第 2 轮对话")).toBe("50%");
+    expect(getTop("跳转到第 3 轮对话")).toBe("100%");
+  });
 });

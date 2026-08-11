@@ -80,6 +80,12 @@ const virtuosoMock = vi.hoisted(() => {
       if (!el || el.offsetHeight === 0) return;
       el.scrollTo({ top: el.scrollHeight, behavior: opts.behavior });
     }
+    /** 阅读线比例的数据来源：mock 返回空 ranges（组件回退均匀分布） */
+    getState(
+      cb: (s: { ranges: { startIndex: number; endIndex: number; size: number }[]; scrollTop: number }) => void
+    ) {
+      cb({ ranges: [], scrollTop: this.scroller?.scrollTop ?? 0 });
+    }
   }
   const instances: InstanceType<typeof VirtuosoHandleStub>[] = [];
   return { VirtuosoHandleStub, instances };
@@ -852,6 +858,35 @@ describe("MessageList 对话导航 Minimap", () => {
     ]);
   }
 
+  /** jsdom 无布局：为 scroller 与各 turn 锚点注入真实几何（高度不等，模拟长/短回答） */
+  function mockTurnGeometry(scroller: HTMLElement, heights: number[]) {
+    const turns = Array.from(
+      scroller.querySelectorAll<HTMLElement>("[data-turn-index]")
+    );
+    turns.forEach((el, i) => {
+      const top = heights.slice(0, i).reduce((a, b) => a + b, 0);
+      el.getBoundingClientRect = () =>
+        ({
+          top,
+          bottom: top + heights[i],
+          height: heights[i],
+          width: 100,
+          left: 0,
+          right: 100,
+          x: 0,
+          y: 0,
+          toJSON: () => ({})
+        }) as DOMRect;
+    });
+    const total = heights.reduce((a, b) => a + b, 0);
+    scroller.getBoundingClientRect = () =>
+      ({ top: 0, bottom: total, height: total, width: 300, left: 0, right: 300, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  }
+
+  function currentAttr(label: string): string | null {
+    return screen.getByRole("button", { name: label }).getAttribute("aria-current");
+  }
+
   it("turns < 4 不渲染 minimap；≥ 4 渲染一根线一轮", async () => {
     renderList([
       makeMessage("u1", "user", "问题一"),
@@ -891,11 +926,48 @@ describe("MessageList 对话导航 Minimap", () => {
     expect(screen.getByRole("button", { name: "跳转到第 4 轮对话" })).toBeInTheDocument();
   });
 
-  it("点击某根线 → detached=true（回到底部按钮出现）+ scrollToIndex(start, smooth)", async () => {
+  it("阅读线判定：视口顶部向下 30% 命中的轮次为当前轮（回答高度不均时不再滞后）", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+
+    // 高度不均：turn0 50px（短答）、turn1 200px（长答）、turn2 80px、turn3 100px
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    // 初始（未滚动）：rect 全 0 时命中第 1 轮
+    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
+
+    // 滚动到阅读线落在 turn1（anchorY = 430*0.3 = 129 ∈ [50,250]）→ 第 2 轮高亮
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 1 轮对话")).not.toBe("true");
+
+    // 继续滚动使阅读线落在 turn3（anchorY = 430*0.3 = 129 ∈ [330,430] → 需改变几何）
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    // 模拟内容上移：scroller 视口位置不变，turn 位置整体上移 300px
+    const turns = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
+    turns.forEach((el, i) => {
+      const tops = [0, 50, 250, 330].map((v) => v - 300);
+      const top = tops[i];
+      el.getBoundingClientRect = () =>
+        ({ top, bottom: top + [50, 200, 80, 100][i], height: [50, 200, 80, 100][i], width: 100, left: 0, right: 100, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    });
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // anchorY 129 ∈ [30,110]（turn3 上移后）→ 第 4 轮
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
+  });
+
+  it("点击某根线 → detached=true + scrollToIndex(start, smooth)，且立即高亮目标轮", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
     mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
 
     // 制造 atBottom=false（滚动事件节流后上报），但 detached 仍 false → 按钮不显示
     act(() => {
@@ -908,34 +980,45 @@ describe("MessageList 对话导航 Minimap", () => {
     // 点击「跳转到第 3 轮对话」（index 2）
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
 
-    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现
+    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现；
+    // 高亮立即锁定到目标轮（不等滚动落定）
     expect(scrollSpy).toHaveBeenCalledTimes(1);
     expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "smooth" });
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
   });
 
-  it("activeIndex 随 rangeChanged 更新（当前轮线高亮）", async () => {
+  it("点击跳转后锁定阅读线：smooth 滚动经过中间轮不抢高亮，滚动静止后恢复自动检测", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
 
-    // 初始：第 1 根线 active
-    expect(
-      screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")
-    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
 
-    // 滚动到 startIndex≈2（scrollTop 200 → rangeChanged startIndex 2）→ 第 3 根线高亮
+    // smooth 滚动经过中间轮：scrollTop 变化 → 仍锁定，高亮不被抢
     act(() => {
       m.setTop(200);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
-    expect(
-      screen.getByRole("button", { name: "跳转到第 3 轮对话" }).getAttribute("aria-current")
-    ).toBe("true");
-    expect(
-      screen.getByRole("button", { name: "跳转到第 1 轮对话" }).getAttribute("aria-current")
-    ).not.toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+
+    act(() => {
+      m.setTop(300);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+
+    // 滚动静止（scrollTop 不再变化）→ 解锁并校正阅读线
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // 校正后 anchorY = 430*0.3 = 129 ∈ [50,250]（turn1）→ 第 2 轮
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
   });
 });

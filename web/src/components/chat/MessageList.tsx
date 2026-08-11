@@ -127,6 +127,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
       node.addEventListener("touchstart", handleUserInputRef.current!, { passive: true });
       node.addEventListener("touchmove", handleUserInputRef.current!, { passive: true });
       node.addEventListener("keydown", handleUserInputRef.current!);
+      // 阅读线检测的滚动监听（rAF 合并 + 程序滚动锁定）
+      node.addEventListener("scroll", handleScrollRef.current!, { passive: true });
     }
   }, []);
 
@@ -151,21 +153,105 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, []);
 
-  // 可见范围（供 Minimap 高亮当前轮）：activeIndex 取 startIndex，
-  // 只经 rangeChanged 更新——Virtuoso 是唯一滚动权威，这里只做展示不做滚动
-  const [visibleRange, setVisibleRange] = React.useState({ startIndex: 0, endIndex: 0 });
-  const handleRangeChanged = React.useCallback(
-    (range: { startIndex: number; endIndex: number }) => setVisibleRange(range),
-    []
-  );
+  // 当前阅读轮次：由「视口阅读线」判定（视口顶部向下 30% 处命中的 turn），
+  // 替代 rangeChanged startIndex——startIndex 是视口顶部第一个 item，
+  // 用户视线通常在中部，回答高度不均时高亮会滞后，失去信任感。
+  // 虚拟化列表只有可见项在 DOM，而阅读线必然落在可见区域内，因此
+  // 直接量 [data-turn-index] 元素的 rect 即可，无需全量数据。
+  const [readLineIndex, setReadLineIndex] = React.useState(0);
 
-  // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
-  // 语义同 wheel/键盘输入），随后由 Virtuoso 执行平滑滚动
-  const handleMinimapNavigate = React.useCallback((index: number) => {
-    detachedRef.current = true;
-    setDetached(true);
-    virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+  // 每轮中心点占总高比例（真实 DOM 高度，来自 Virtuoso getState 已测量 ranges；
+  // 未测量轮次用已测量均值估算）。null 表示尚未算出（minimap 回退均匀分布）。
+  const [turnRatios, setTurnRatios] = React.useState<number[] | null>(null);
+
+  // ---- 阅读线检测：scroll 事件 + rAF 合并 ----
+  // 程序滚动锁定：minimap 点击后置 true，smooth 滚动经过中间轮时跳过
+  // active 更新（否则高亮会一路跳动）；检测到 scrollTop 静止即解锁并校正一次。
+  const scrollFrameRef = React.useRef<number | null>(null);
+  const programmaticScrollRef = React.useRef(false);
+  const lastScrollTopRef = React.useRef(-1);
+
+  const updateActiveByReadLine = React.useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const rect = scroller.getBoundingClientRect();
+    const anchorY = rect.top + rect.height * 0.3;
+    const turnEls = scroller.querySelectorAll<HTMLElement>("[data-turn-index]");
+    if (turnEls.length === 0) return;
+    let best = 0;
+    let bestDist = Infinity;
+    turnEls.forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const dist = anchorY < r.top ? r.top - anchorY : anchorY > r.bottom ? anchorY - r.bottom : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = Number(el.dataset.turnIndex ?? 0);
+      }
+    });
+    setReadLineIndex(best);
   }, []);
+
+  // 真实高度比例：Virtuoso 已测量尺寸段 → 每轮中心比例。
+  // 长回答占更长轨道空间，短回答更短——真正意义上的「地图」。
+  const computeTurnRatios = React.useCallback(() => {
+    const virtuoso = virtuosoRef.current;
+    const count = stableTurnsRef.current.length;
+    if (!virtuoso || count === 0) return;
+    virtuoso.getState((state) => {
+      const ranges = state?.ranges ?? [];
+      const measured: (number | undefined)[] = new Array<number | undefined>(count);
+      ranges.forEach((range) => {
+        for (let i = range.startIndex; i <= range.endIndex && i < count; i++) {
+          measured[i] = range.size;
+        }
+      });
+      const known = measured.filter((v): v is number => v !== undefined);
+      if (known.length === 0) return; // 尚无测量，保持 null → 均匀分布
+      const fallback = known.reduce((a, b) => a + b, 0) / known.length;
+      const heights = measured.map((v) => v ?? fallback);
+      const total = heights.reduce((a, b) => a + b, 0) || 1;
+      let acc = 0;
+      const ratios = heights.map((h) => {
+        const center = (acc + h / 2) / total;
+        acc += h;
+        return center;
+      });
+      setTurnRatios((prev) => {
+        if (prev && prev.length === ratios.length) {
+          let same = true;
+          for (let i = 0; i < ratios.length; i++) {
+            if (Math.abs(prev[i] - ratios[i]) > 0.001) { same = false; break; }
+          }
+          if (same) return prev; // 避免无谓重渲染
+        }
+        return ratios;
+      });
+    });
+  }, []);
+
+  const handleScrollRef = React.useRef<((event: Event) => void) | null>(null);
+  if (handleScrollRef.current === null) {
+    handleScrollRef.current = () => {
+      if (scrollFrameRef.current !== null) return;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        const scroller = scrollerRef.current;
+        if (!scroller) return;
+        if (programmaticScrollRef.current) {
+          if (scroller.scrollTop === lastScrollTopRef.current) {
+            // smooth 滚动结束（位置静止）→ 解锁并立即校正阅读线
+            programmaticScrollRef.current = false;
+            updateActiveByReadLine();
+          } else {
+            lastScrollTopRef.current = scroller.scrollTop;
+          }
+          return;
+        }
+        updateActiveByReadLine();
+        computeTurnRatios();
+      });
+    };
+  }
 
   // 新消息发送（turns 数量增长且新 turn 含 user）：重置滚离标记并立即贴底一次，
   // 只执行一次、无任何 timer；此后的内容增长由 followOutput 与
@@ -252,6 +338,25 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     });
   }, [stableTurns.length]);
 
+  // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
+  // 语义同 wheel/键盘输入），随后由 Virtuoso 执行平滑滚动。
+  // 同时锁定阅读线检测：smooth 滚动会经过中间轮次，若不锁定高亮会一路跳动
+  // （点击第 4 轮 → 经过第 2/3 轮 → 高亮乱跳）；滚动静止后自动解锁并校正。
+  const handleMinimapNavigate = React.useCallback((index: number) => {
+    detachedRef.current = true;
+    setDetached(true);
+    programmaticScrollRef.current = true;
+    lastScrollTopRef.current = scrollerRef.current?.scrollTop ?? -1;
+    setReadLineIndex(index); // 立即高亮目标轮，不等滚动落定
+    virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+  }, []);
+
+  // 初始挂载与轮次变化后补一次阅读线检测与比例计算（无滚动事件时也能校准）
+  React.useEffect(() => {
+    updateActiveByReadLine();
+    computeTurnRatios();
+  }, [updateActiveByReadLine, computeTurnRatios, stableTurns.length]);
+
   // List 容器不得使用 margin（space-y-*）：margin 会破坏 Virtuoso 的 item 测量，
   // 导致滚到底/跳动。Turn 间距由 ChatTurnItem 内部的 item padding（pb-7）承担，
   // 底部呼吸空间由最后 item 的 pb-8 承担（不再用本容器 padding——pb-8 不属于
@@ -306,33 +411,37 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         initialTopMostItemIndex={initialTopMostItemIndex}
         followOutput={followOutput}
         atBottomStateChange={handleAtBottomChange}
-        rangeChanged={handleRangeChanged}
         scrollerRef={attachScroller}
         className="h-full"
         components={{ List }}
         itemContent={(index, turn) => (
-          <ChatTurnItem
-            turn={turn}
-            isLatestTurn={index === stableTurns.length - 1}
-            // Turn 间距用 item padding（pb-7）而非 List 的 margin（space-y-*），
-            // 保证 Virtuoso item 测量准确（margin 会破坏测量导致滚到底/跳动）；
-            // 最后 item 多给 pb-8 作为底部呼吸空间（属于 item 可测量高度，
-            // scrollToIndex align: "end" 与真底一致）
-            className={index === stableTurns.length - 1 ? "pb-8" : "pb-7"}
-            // 仅最新一轮挂 ref（Latest Turn ResizeObserver 观察目标），其余不传避免误绑定
-            onRef={index === stableTurns.length - 1 ? handleLatestTurnRef : undefined}
-          />
+          // 外层 div 提供阅读线锚点（data-turn-index）：虚拟化下仅可见项在 DOM，
+          // 阅读线（视口 30%）必然落在可见区域内，直接量 rect 即可判定当前轮
+          <div data-turn-index={index}>
+            <ChatTurnItem
+              turn={turn}
+              isLatestTurn={index === stableTurns.length - 1}
+              // Turn 间距用 item padding（pb-7）而非 List 的 margin（space-y-*），
+              // 保证 Virtuoso item 测量准确（margin 会破坏测量导致滚到底/跳动）；
+              // 最后 item 多给 pb-8 作为底部呼吸空间（属于 item 可测量高度，
+              // scrollToIndex align: "end" 与真底一致）
+              className={index === stableTurns.length - 1 ? "pb-8" : "pb-7"}
+              // 仅最新一轮挂 ref（Latest Turn ResizeObserver 观察目标），其余不传避免误绑定
+              onRef={index === stableTurns.length - 1 ? handleLatestTurnRef : undefined}
+            />
+          </div>
         )}
       />
-      {/* 对话导航 minimap：≥4 轮时显示，桌面端（lg）渲染；垂直居中于阅读列右缘
-          （右侧 20-32px），与回到底部按钮（右下角）不重叠；导航是显式用户动作，
-          点击置 detached 后由 Virtuoso 平滑滚动，不抢占自动跟随 */}
+      {/* 对话导航 minimap：≥4 轮时显示，桌面端（lg）渲染；轨道垂直贯穿阅读列
+          右缘（右侧 20-32px），圆点按真实 DOM 高度比例定位；导航是显式用户动作，
+          点击置 detached 并由 Virtuoso 平滑滚动，滚动期间锁定阅读线高亮 */}
       {stableTurns.length >= 4 ? (
-        <div className="pointer-events-none absolute top-1/2 right-[max(1.5rem,calc(50%_-_456px))] z-10 hidden -translate-y-1/2 lg:block">
-          <div className="pointer-events-auto">
+        <div className="pointer-events-none absolute top-0 bottom-0 right-[max(1.5rem,calc(50%_-_456px))] z-10 hidden lg:block">
+          <div className="pointer-events-auto flex h-full items-center">
             <ConversationMinimap
               turns={stableTurns}
-              activeIndex={visibleRange.startIndex}
+              activeIndex={readLineIndex}
+              ratios={turnRatios}
               onNavigate={handleMinimapNavigate}
             />
           </div>
