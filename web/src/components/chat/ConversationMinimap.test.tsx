@@ -50,13 +50,13 @@ describe("ConversationMinimap fisheye rail", () => {
     render(<ConversationMinimap turns={makeTurns(20)} activeIndex={null} onNavigate={() => {}} />);
     fireEvent.mouseEnter(marker("跳转到第 9 轮对话")); // index 8
 
-    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px"); // hover
-    expect(markerWidth("跳转到第 8 轮对话")).toContain("width: 24px"); // -1
-    expect(markerWidth("跳转到第 10 轮对话")).toContain("width: 24px"); // +1
-    expect(markerWidth("跳转到第 7 轮对话")).toContain("width: 18px"); // -2
-    expect(markerWidth("跳转到第 11 轮对话")).toContain("width: 18px"); // +2
-    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 13px"); // -3
-    expect(markerWidth("跳转到第 12 轮对话")).toContain("width: 13px"); // +3
+    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 36px"); // hover
+    expect(markerWidth("跳转到第 8 轮对话")).toContain("width: 28px"); // -1
+    expect(markerWidth("跳转到第 10 轮对话")).toContain("width: 28px"); // +1
+    expect(markerWidth("跳转到第 7 轮对话")).toContain("width: 20px"); // -2
+    expect(markerWidth("跳转到第 11 轮对话")).toContain("width: 20px"); // +2
+    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 14px"); // -3
+    expect(markerWidth("跳转到第 12 轮对话")).toContain("width: 14px"); // +3
     expect(markerWidth("跳转到第 5 轮对话")).toContain("width: 16px"); // -4 → 回落
     expect(markerWidth("跳转到第 13 轮对话")).toContain("width: 16px"); // +4 → 回落
   });
@@ -69,7 +69,7 @@ describe("ConversationMinimap fisheye rail", () => {
     expect(marker("跳转到第 3 轮对话").getAttribute("aria-current")).toBe("true");
     expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 16px");
     // hover marker 最大
-    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px");
+    expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 36px");
   });
 
   it("长对话全量渲染：100 轮 → 100 个 marker，不再采样", () => {
@@ -116,7 +116,7 @@ describe("ConversationMinimap fisheye rail", () => {
     render(<ConversationMinimap turns={makeTurns(6)} activeIndex={0} onNavigate={() => {}} />);
     fireEvent.mouseEnter(marker("跳转到第 3 轮对话"));
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
-    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 30px");
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 36px");
 
     fireEvent.mouseLeave(marker("跳转到第 3 轮对话"));
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
