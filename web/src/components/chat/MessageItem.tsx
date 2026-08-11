@@ -178,7 +178,9 @@ export const MessageItem = React.memo(function MessageItem({
             </div>
           ) : null}
           {hasContent ? (
-            <div className="max-w-[820px]">
+            // flow-root 建立 BFC：阻止 Markdown 首/末块的垂直 margin 向 item 外层
+            // collapse，减少 Virtuoso 对 item 高度的测量偏差（虚拟列表 jump 来源之一）
+            <div className="flow-root max-w-[820px]">
               <MarkdownRenderer
                 content={renderedMessage.content}
                 messageId={renderedMessage.id}

@@ -389,6 +389,10 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         ref={virtuosoRef}
         data={stableTurns}
         initialTopMostItemIndex={initialTopMostItemIndex}
+        // 官方 prop：提升 ResizeObserver 测量性能、减少 streaming 期间的 flickering
+        skipAnimationFrameInResizeObserver
+        // 顶部预渲染区域：上滚时更早挂载/测量旧 Turn，减少临时 mount 的 layout shift
+        increaseViewportBy={{ top: 500, bottom: 200 }}
         atBottomStateChange={handleAtBottomChange}
         scrollerRef={attachScroller}
         className="h-full"

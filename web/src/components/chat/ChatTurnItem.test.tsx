@@ -87,8 +87,9 @@ describe("ChatTurnItem Turn 渲染", () => {
 
     const container = document.querySelector('[data-message-id="u1"]')!.parentElement!;
     expect(container.className).toContain("pb-7");
-    // 与既有 isLatestTurn 动画类共存，互不覆盖
-    expect(container.className).toContain("animate-fade-up");
+    // 无位移动画：虚拟列表中 item 的 translateY 动画会与 Virtuoso 位置计算冲突
+    // （滚动 jump 来源），isLatestTurn 也不再附加动画类
+    expect(container.className).not.toContain("animate-fade-up");
   });
 
   it("不传 className 时最外层容器无多余 class（cn 合并安全）", () => {

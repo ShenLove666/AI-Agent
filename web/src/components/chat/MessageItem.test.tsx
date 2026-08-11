@@ -385,7 +385,7 @@ describe("MessageItem 深度思考防御", () => {
     expect(container.querySelector(".ai-wait")).not.toBeNull();
   });
 
-  it("isThinking=true 且 thinking 有真实内容：显示「正在深度思考」", () => {
+  it("isThinking=true 且 thinking 有真实内容：显示「正在深度思考」状态条，但不实时展开全文", () => {
     const message: Message = {
       id: "m-thinking-real",
       role: "assistant",
@@ -396,7 +396,10 @@ describe("MessageItem 深度思考防御", () => {
       isThinking: true
     };
     render(<MessageItem message={message} />);
+    // 固定高度状态条存在
     expect(screen.getByText(/正在深度思考/)).toBeInTheDocument();
-    expect(screen.getByText(/正在核对购物篮关联规则/)).toBeInTheDocument();
+    // 运行中不展开 reasoning 全文（thinking token 继续进 store，结束后由折叠条展示）：
+    // 避免思考结束瞬间几百 px 的高度骤变导致虚拟列表位置闪动
+    expect(screen.queryByText(/正在核对购物篮关联规则/)).not.toBeInTheDocument();
   });
 });

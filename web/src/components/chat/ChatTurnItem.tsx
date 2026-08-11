@@ -1,7 +1,6 @@
 import * as React from "react";
 
 import { MessageItem } from "@/components/chat/MessageItem";
-import { cn } from "@/lib/utils";
 import type { ChatTurn } from "@/utils/chatTurns";
 
 interface ChatTurnItemProps {
@@ -45,9 +44,11 @@ export function ChatTurnItem({ turn, isLatestTurn, onRef, className }: ChatTurnI
   }, []);
 
   return (
+    // 不使用位移动画（animate-fade-up 已删除）：虚拟列表中 item 的位置动画
+    // 会与 Virtuoso 的位置计算/尺寸测量冲突，滚动时产生 jump
     <div
       ref={onRef}
-      className={cn(className, isLatestTurn && "animate-fade-up")}
+      className={className}
       onMouseDown={handleTripleClickDown}
     >
       {turn.user ? (
