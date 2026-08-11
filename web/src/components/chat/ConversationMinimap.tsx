@@ -6,25 +6,14 @@ import type { ChatTurn } from "@/utils/chatTurns";
 /** Tooltip 摘要最多展示的字符数 */
 const SUMMARY_MAX = 30;
 
-/** 静态宽度档位：idle 8px，active 20px */
+/** 静态宽度档位：默认全部等长 8px（Codex 式——active 靠颜色+粗细区分，不靠长度） */
 const IDLE_WIDTH = 8;
-const ACTIVE_WIDTH = 20;
 /** hover 中心向邻域衰减扩张：0=hover、1=±1、2=±2、3=±3，更远回落到 8px */
 const HOVER_WIDTHS = [30, 24, 18, 13];
 
-function getMarkerWidth(
-  index: number,
-  hoverIndex: number | null,
-  activeIndex: number | null
-): number {
-  if (hoverIndex === null) {
-    return index === activeIndex ? ACTIVE_WIDTH : IDLE_WIDTH;
-  }
-  const distance = Math.abs(index - hoverIndex);
-  const hoverWidth = HOVER_WIDTHS[distance];
-  if (hoverWidth !== undefined) return hoverWidth;
-  // active 即使离 hover 很远，也维持可辨识长度
-  return index === activeIndex ? ACTIVE_WIDTH : IDLE_WIDTH;
+function getMarkerWidth(index: number, hoverIndex: number | null): number {
+  if (hoverIndex === null) return IDLE_WIDTH;
+  return HOVER_WIDTHS[Math.abs(index - hoverIndex)] ?? IDLE_WIDTH;
 }
 
 interface ConversationMinimapProps {
@@ -126,7 +115,7 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
         {turns.map((turn, index) => {
           const active = index === activeIndex;
           const hovered = index === hoverIndex;
-          const width = getMarkerWidth(index, hoverIndex, activeIndex);
+          const width = getMarkerWidth(index, hoverIndex);
           return (
             <button
               key={turn.key}

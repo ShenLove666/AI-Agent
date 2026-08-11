@@ -32,11 +32,13 @@ function markerWidth(label: string): string {
 }
 
 describe("ConversationMinimap fisheye rail", () => {
-  it("默认状态：active 深色 20px，其余 8px", () => {
+  it("默认状态：所有线等长 8px，active 靠颜色/粗细区分（Codex 式，不靠长度）", () => {
     render(<ConversationMinimap turns={makeTurns(6)} activeIndex={5} onNavigate={() => {}} />);
     expect(marker("跳转到第 6 轮对话").getAttribute("aria-current")).toBe("true");
-    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 20px");
+    // active 与普通线等长
+    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 8px");
     expect(markerWidth("跳转到第 1 轮对话")).toContain("width: 8px");
+    expect(markerWidth("跳转到第 6 轮对话")).toBe(markerWidth("跳转到第 1 轮对话"));
   });
 
   it("activeIndex 为 null 时不显示任何高亮", () => {
@@ -59,13 +61,13 @@ describe("ConversationMinimap fisheye rail", () => {
     expect(markerWidth("跳转到第 13 轮对话")).toContain("width: 8px"); // +4 → 回落
   });
 
-  it("active 与 hover 分开控制：active 远离 hover 时仍保持深色 20px", () => {
+  it("active 与 hover 分开控制：active 远离 hover 时回落 8px，颜色保持深色高亮", () => {
     render(<ConversationMinimap turns={makeTurns(12)} activeIndex={2} onNavigate={() => {}} />);
     fireEvent.mouseEnter(marker("跳转到第 9 轮对话")); // hover index 8，远离 active 2
 
-    // active marker（第 3 轮）保持高亮 + 20px
+    // active marker（第 3 轮）保持高亮（颜色/粗细），但长度回落 8px
     expect(marker("跳转到第 3 轮对话").getAttribute("aria-current")).toBe("true");
-    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 20px");
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 8px");
     // hover marker 最大
     expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px");
   });
