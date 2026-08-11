@@ -270,26 +270,45 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   // 程序性回调打断，下一批 token 又把页面拉到底，形成上下闪动）。
   // detached 只允许在明确动作处修改：wheel/touch/键盘上翻 → true；
   // 发送新消息、点击「回到底部」→ false。
+
+  // ---- 当前阅读轮次（minimap active）----
+  // 统一语义：marker = User Message Anchor。判定模型与 minimap 点击目标一致——
+  // 找距视口阅读线（顶部向下 35%）最近的「用户消息锚点」，而不是整个
+  // ChatTurn（User+Assistant 盒子）。长 AI 回答不应让同一根线高亮过久；
+  // 下一轮用户问题进入屏幕时，active 应自然切到下一根。
+  const [activeTurnIndex, setActiveTurnIndex] = React.useState<number | null>(null);
+  const activeTurnIndexRef = React.useRef<number | null>(null);
+  activeTurnIndexRef.current = activeTurnIndex;
+
+  // 统一 setter：ref 与 state 同步，相同值不重复 set（避免无谓渲染）
+  const commitActiveTurn = React.useCallback((index: number) => {
+    if (activeTurnIndexRef.current === index) return;
+    activeTurnIndexRef.current = index;
+    setActiveTurnIndex(index);
+  }, []);
+
   const handleAtBottomChange = React.useCallback((isAtBottom: boolean) => {
     setAtBottom(isAtBottom);
     if (isAtBottom) {
       // 几何到底时高亮最新一轮（阅读语义），但不动 detached
       const latestIndex = stableTurnsRef.current.length - 1;
-      if (latestIndex >= 0) setActiveTurnIndex(latestIndex);
+      if (latestIndex >= 0) commitActiveTurn(latestIndex);
     }
-  }, []);
+  }, [commitActiveTurn]);
 
-  // 当前阅读轮次：由「视口阅读线」判定（视口顶部向下 35% 处）。
-  // 命中算法而非最近距离——阅读线穿过哪一轮就是哪一轮；
-  // 线刚好落在两轮 gap 之间时取上方最近一轮，绝不提前跳到下一轮。
-  // null = 布局未完成/会话刚切换，不显示任何高亮（避免错误闪一下）。
-  // 虚拟化列表只有可见项在 DOM，而阅读线必然落在可见区域内，
-  // 因此直接量 [data-turn-index] 元素的 rect 即可，无需全量数据。
-  const [activeTurnIndex, setActiveTurnIndex] = React.useState<number | null>(null);
-
-  // 距底部不超过该距离（px）视为「正在看最新内容」：无论阅读线几何上落在哪，
-  // 都必须高亮最后一轮（否则上一轮回答很长时会出现「人在最后、倒数第二根亮着」）
-  const ACTIVE_BOTTOM_GAP = 48;
+  // ---- updateActiveTurn：User Anchor 最近判定 ----
+  // 1) bottom 双阈值 hysteresis：进入底部（≤24px）→ last；已在 last 时须离开
+  //    到底部 48px 外才交还 anchor 判定（避免 trackpad 惯性在 23/25/22/26px
+  //    间 last/penultimate 来回闪）
+  // 2) 其余：35% 阅读线 → 距离最近的 mounted User Anchor（isConnected 过滤）
+  // 3) 16px hysteresis：候选与当前距离接近时不切换（临界抖动保护）
+  // 4) 小滚动邻接保护：本帧滚动量 < 视口 20% 时最多切 ±1 轮（快速 PageUp/
+  //    拖 scrollbar 等大滚动不受限）
+  const ACTIVE_READ_LINE_RATIO = 0.35;
+  const ACTIVE_SWITCH_HYSTERESIS = 16;
+  const BOTTOM_ENTER_GAP = 24;
+  const BOTTOM_EXIT_GAP = 48;
+  const previousScrollTopRef = React.useRef(0);
 
   const updateActiveTurn = React.useCallback(() => {
     const scroller = scrollerRef.current;
@@ -301,42 +320,58 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     const scrollerRect = scroller.getBoundingClientRect();
     if (scrollerRect.height <= 0) return;
 
-    // 1. 接近底部 → 最后一轮（bottom override，先于阅读线判定）：
-    //    上一轮回答很长时，35% 阅读线可能几何上仍落在上一轮，
-    //    但用户已滚到最新内容，此时必须高亮最后一轮
     const bottomGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    if (bottomGap <= ACTIVE_BOTTOM_GAP) {
-      setActiveTurnIndex(total - 1);
+    const currentIndex = activeTurnIndexRef.current;
+
+    // 1. bottom override（双阈值 hysteresis）
+    if (bottomGap <= BOTTOM_ENTER_GAP) {
+      commitActiveTurn(total - 1);
+      return;
+    }
+    if (currentIndex === total - 1 && bottomGap <= BOTTOM_EXIT_GAP) {
+      commitActiveTurn(total - 1);
       return;
     }
 
-    // 2. 35% 阅读线：浏览历史内容时的判定
-    const readY = scrollerRect.top + scrollerRect.height * 0.35;
-    const elements = Array.from(scroller.querySelectorAll<HTMLElement>("[data-turn-index]"));
-    if (elements.length === 0) return;
+    // 2. 距阅读线最近的 User Message Anchor
+    const readY = scrollerRect.top + scrollerRect.height * ACTIVE_READ_LINE_RATIO;
+    let candidateIndex: number | null = null;
+    let candidateDistance = Infinity;
+    for (const [index, anchor] of userAnchorRefs.current) {
+      if (!anchor.isConnected) continue;
+      const rect = anchor.getBoundingClientRect();
+      const distance = Math.abs(rect.top - readY);
+      if (distance < candidateDistance) {
+        candidateDistance = distance;
+        candidateIndex = index;
+      }
+    }
+    if (candidateIndex === null) return;
 
-    // 1. 优先找真正被阅读线穿过的 Turn
-    const hit = elements.find((el) => {
-      const rect = el.getBoundingClientRect();
-      return rect.top <= readY && rect.bottom > readY;
-    });
-    if (hit) {
-      const index = Number(hit.dataset.turnIndex);
-      if (Number.isFinite(index)) setActiveTurnIndex(index);
-      return;
+    // 3. hysteresis：候选与当前锚点距离接近时不切换
+    if (currentIndex !== null && currentIndex !== candidateIndex) {
+      const currentAnchor = userAnchorRefs.current.get(currentIndex);
+      if (currentAnchor && currentAnchor.isConnected) {
+        const currentDistance = Math.abs(currentAnchor.getBoundingClientRect().top - readY);
+        if (candidateDistance + ACTIVE_SWITCH_HYSTERESIS >= currentDistance) {
+          return;
+        }
+      }
     }
-    // 2. 阅读线刚好落在 Turn 间距中：取上方最近的一轮
-    let previous: HTMLElement | null = null;
-    for (const el of elements) {
-      const rect = el.getBoundingClientRect();
-      if (rect.top <= readY) previous = el;
-      else break;
+
+    // 4. 小滚动邻接保护：本帧滚动量小却算出跨多轮 → 只切 ±1
+    const scrollDelta = Math.abs(scroller.scrollTop - previousScrollTopRef.current);
+    previousScrollTopRef.current = scroller.scrollTop;
+    if (
+      currentIndex !== null &&
+      Math.abs(candidateIndex - currentIndex) > 1 &&
+      scrollDelta < scroller.clientHeight * 0.2
+    ) {
+      candidateIndex = candidateIndex > currentIndex ? currentIndex + 1 : currentIndex - 1;
     }
-    if (previous) {
-      const index = Number(previous.dataset.turnIndex);
-      if (Number.isFinite(index)) setActiveTurnIndex(index);
-    }
-  }, []);
+
+    commitActiveTurn(candidateIndex);
+  }, [commitActiveTurn]);
 
   // scroll 监听只做一件事：rAF 合并后按阅读线更新 active（每帧最多一次）。
   // minimap 导航定位期间跳过——定位触发的中间 scroll 位置不代表用户阅读位置。
