@@ -90,7 +90,7 @@ export function RagTracePage() {
       : 0;
     const avgTtft = ttftValues.length
       ? Math.round(ttftValues.reduce((sum, value) => sum + value, 0) / ttftValues.length)
-      : 0;
+      : null; // null = 未采集，与 0ms 是两回事
     const successRate = runs.length ? Math.round((successCount / runs.length) * 1000) / 10 : 0;
     return {
       totalRuns: pageData?.total ?? runs.length,
@@ -107,7 +107,9 @@ export function RagTracePage() {
   const pages = pageData?.pages || 1;
   const total = pageData?.total || 0;
   const avgDurationMetric = formatDurationMetric(traceStats.avgDuration);
-  const avgTtftMetric = formatDurationMetric(traceStats.avgTtft);
+  // 未采集（null）→ 显示「—」，绝不显示 0ms
+  const avgTtftMetric =
+    traceStats.avgTtft === null ? null : formatDurationMetric(traceStats.avgTtft);
   const statCards: {
     key: string;
     title: string;
@@ -141,8 +143,8 @@ export function RagTracePage() {
     {
       key: "avgTtft",
       title: "平均首字",
-      value: avgTtftMetric.value,
-      unit: avgTtftMetric.unit,
+      value: avgTtftMetric?.value ?? "—",
+      unit: avgTtftMetric?.unit,
       icon: <Clock3 className="h-4 w-4" />,
       tone: "sky"
     }

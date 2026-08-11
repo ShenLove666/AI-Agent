@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from app.api.dependencies import CurrentAdmin, DbSession
 from app.framework.errors import AppError
 from app.framework.response import ApiResponse
+from app.framework.timeutil import utc_iso
 from app.framework.trace import current_trace_id
 from app.modules.rag.trace_models import RagTraceNode, RagTraceRun
 from app.modules.users.models import User
@@ -38,7 +39,9 @@ def run_vo(run: RagTraceRun, user_name: str | None = None) -> dict:
         "durationMs": run.elapsed_ms,
         "ttftMs": None,
         "question": run.query,
-        "startTime": run.created_at.isoformat() if run.created_at else None,
+        # 必须走 utc_iso：created_at 是 naive UTC，直接 isoformat 输出的无时区串
+        # 会被浏览器当本地时间解析（UTC+8 差 8 小时）
+        "startTime": utc_iso(run.created_at),
         "endTime": None,
     }
 

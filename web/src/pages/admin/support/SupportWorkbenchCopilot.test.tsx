@@ -142,10 +142,11 @@ describe("SupportWorkbenchCopilot", () => {
     const generate = await screen.findByRole("button", { name: "生成" });
     fireEvent.click(generate);
 
-    expect(await screen.findByText("AI 正在处理")).toBeInTheDocument();
-    expect(screen.getByText("核对订单信息")).toBeInTheDocument();
-    expect(screen.getByText("查询适用规则")).toBeInTheDocument();
-    expect(screen.getByText("正在评估处理风险")).toBeInTheDocument();
+    // 真实生成状态：只有 spinner + 说明文案（前端只有一次 HTTP 请求，
+    // 没有真实阶段事件——不显示假进度勾选）
+    expect(await screen.findByText("AI 正在生成处理建议…")).toBeInTheDocument();
+    expect(screen.getByText("正在核对工单、业务事实与已发布知识")).toBeInTheDocument();
+    expect(screen.queryByText("核对订单信息")).not.toBeInTheDocument();
     expect(generate).toBeDisabled();
     expect(screen.getByRole("button", { name: "采纳并发送" })).toBeEnabled();
     expect(screen.getByRole("button", { name: /解决/ })).toBeEnabled();
@@ -153,7 +154,7 @@ describe("SupportWorkbenchCopilot", () => {
     fixtures.generateResolvers[0]?.(null);
 
     await waitFor(() =>
-      expect(screen.queryByText("AI 正在处理")).not.toBeInTheDocument()
+      expect(screen.queryByText("AI 正在生成处理建议…")).not.toBeInTheDocument()
     );
     expect(await screen.findByRole("textbox", { name: "可编辑的对客回复" })).toBeInTheDocument();
   });

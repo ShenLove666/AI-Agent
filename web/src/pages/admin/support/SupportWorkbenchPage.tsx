@@ -118,30 +118,21 @@ const evidenceItemText = (item: unknown): string => {
 };
 
 function GeneratingSuggestionStatus() {
+  // 前端只发一次 generateSupportSuggestion() HTTP 请求，没有真实阶段事件；
+  // 固定打勾的步骤是假进度——只显示 spinner + 说明文案
   return (
     <div
       role="status"
       aria-label="AI 正在处理"
-      className="space-y-4 rounded-md border border-indigo-100 bg-indigo-50/50 p-4"
+      className="space-y-3 rounded-md border border-indigo-100 bg-indigo-50/50 p-4"
     >
       <p className="flex items-center gap-2 text-sm font-semibold text-indigo-900">
         <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-        AI 正在处理
+        AI 正在生成处理建议…
       </p>
-      <ul className="space-y-2.5 text-xs text-slate-600">
-        <li className="flex items-center gap-2">
-          <Check className="h-3.5 w-3.5 text-emerald-500" />
-          核对订单信息
-        </li>
-        <li className="flex items-center gap-2">
-          <Check className="h-3.5 w-3.5 text-emerald-500" />
-          查询适用规则
-        </li>
-        <li className="flex items-center gap-2">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
-          正在评估处理风险
-        </li>
-      </ul>
+      <p className="text-xs leading-5 text-slate-500">
+        正在核对工单、业务事实与已发布知识
+      </p>
     </div>
   );
 }
@@ -224,7 +215,11 @@ export function SupportWorkbenchPage() {
   const [draft, setDraft] = useState("");
   const [edited, setEdited] = useState("");
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  const copilotRef = useRef<HTMLElement | null>(null);
+  // 订单上下文默认折叠为摘要（工作台最宝贵的是 AI 建议的垂直空间），点开才看详情
+  const [orderExpanded, setOrderExpanded] = useState(false);
+  // AI 回复建议正文滚动容器（生成完成后滚回顶部，不用 scrollIntoView——
+  // 后者可能连带移动外层 Admin 页面的祖先滚动容器）
+  const aiBodyRef = useRef<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [generatingSuggestion, setGeneratingSuggestion] = useState(false);
   const [sendingReply, setSendingReply] = useState(false);
@@ -239,6 +234,7 @@ export function SupportWorkbenchPage() {
     setEdited(suggestion?.content || "");
     setEvidenceOpen(false);
     setConfirmedFacts(false);
+    setOrderExpanded(false);
   }, []);
   const load = useCallback(async () => {
     setLoading(true);
@@ -346,14 +342,14 @@ export function SupportWorkbenchPage() {
       </section>
       <section
         aria-label="客服处理工作区"
-        className="grid h-auto min-h-0 overflow-visible rounded-lg border border-slate-200 bg-white xl:h-[calc(100dvh-240px)] xl:min-h-[560px] xl:grid-cols-[330px_minmax(420px,1fr)_390px] xl:overflow-hidden"
+        className="grid h-auto min-h-0 overflow-visible rounded-lg border border-slate-200 bg-white xl:h-[calc(100dvh-240px)] xl:min-h-[560px] xl:grid-cols-[290px_minmax(500px,1fr)_440px] xl:overflow-hidden 2xl:grid-cols-[300px_minmax(560px,1fr)_500px]"
       >
         <aside
           role="region"
           aria-label="工单队列"
-          className="min-h-[420px] overflow-y-auto border-b border-slate-200 bg-white xl:min-h-0 xl:border-b-0 xl:border-r"
+          className="flex min-h-[420px] flex-col border-b border-slate-200 bg-white xl:min-h-0 xl:border-b-0 xl:border-r"
         >
-          <div className="border-b border-slate-200 p-4">
+          <div className="shrink-0 border-b border-slate-200 p-4">
             <div className="flex items-center gap-2">
               <Inbox className="h-4 w-4 text-indigo-600" />
               <h2 className="text-sm font-semibold text-slate-900">工单队列</h2>
@@ -385,7 +381,8 @@ export function SupportWorkbenchPage() {
               ))}
             </div>
           </div>
-          <div className="max-h-[545px] overflow-auto">
+          {/* 唯一纵向滚动容器：工单列表（每栏只允许一个滚动区） */}
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {loading ? (
               <div className="flex h-40 items-center justify-center">
                 <Loader2 className="animate-spin text-blue-500" />
@@ -556,7 +553,10 @@ export function SupportWorkbenchPage() {
           aria-label="AI 回复助手"
           className="flex min-h-[680px] flex-col bg-slate-50/60 xl:min-h-0 xl:border-l xl:border-slate-200"
         >
-          <section className="max-h-[40%] shrink-0 overflow-y-auto border-b border-slate-200 p-4">
+          {/* 订单上下文：默认摘要（~110px），「查看订单详情」才展开——
+              工作台核心是 AI 建议，订单卡不该占 40% 高度；右侧只保留
+              AI 正文一个纵向滚动容器（此处无滚动） */}
+          <section className="shrink-0 border-b border-slate-200 p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="rounded-md border border-indigo-100 bg-indigo-50 p-1.5 text-indigo-600">
@@ -574,59 +574,79 @@ export function SupportWorkbenchPage() {
               )}
             </div>
             {workspace?.order ? (
-              <div className="mt-3 space-y-2.5 rounded-md border border-slate-200 bg-white p-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-mono text-xs font-semibold text-slate-900">
+              <div className="mt-3 space-y-2 rounded-md border border-slate-200 bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-mono text-xs font-semibold text-slate-900">
                       {workspace.order.orderNo}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
+                    <p className="mt-0.5 truncate text-[11px] text-slate-500">
                       {workspace.order.items
                         .map((item) => `${item.productName} ×${item.quantity}`)
                         .join("、")}
                     </p>
                   </div>
-                  <strong className="text-sm text-slate-900">
+                  <strong className="shrink-0 text-sm text-slate-900">
                     ¥{(workspace.order.amount.minor / 100).toFixed(2)}
                   </strong>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="rounded-md bg-slate-50 p-2">
-                    <span className="text-slate-400">履约状态</span>
-                    <p className="mt-0.5 flex items-center gap-1 font-medium text-slate-800">
-                      <Truck className="h-3.5 w-3.5 text-indigo-500" />
-                      {fulfillmentStatuses[workspace.order.fulfillment?.status || ""] || "暂无履约"}
-                    </p>
-                  </div>
-                  <div className="rounded-md bg-slate-50 p-2">
-                    <span className="text-slate-400">退款状态</span>
-                    <p className="mt-0.5 font-medium text-slate-800">
-                      {workspace.order.refund?.status || "无退款申请"}
-                    </p>
-                  </div>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <Truck className="h-3.5 w-3.5 text-indigo-500" />
+                    {fulfillmentStatuses[workspace.order.fulfillment?.status || ""] || "暂无履约"}
+                  </span>
+                  <span>·</span>
+                  <span>{workspace.order.refund?.status || "无退款申请"}</span>
                 </div>
-                <p className="text-[10px] leading-4 text-slate-400">
-                  {workspace.order.fulfillment?.currentLocation
-                    ? `当前位置：${workspace.order.fulfillment.currentLocation}`
-                    : "当前位置未接入，不展示虚构轨迹"}
-                </p>
+                <button
+                  type="button"
+                  onClick={() => setOrderExpanded((prev) => !prev)}
+                  aria-expanded={orderExpanded}
+                  className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                >
+                  {orderExpanded ? "收起订单详情" : "查看订单详情"}
+                  <ChevronDown
+                    className={cn("h-3.5 w-3.5 transition-transform", orderExpanded && "rotate-180")}
+                  />
+                </button>
+                {orderExpanded ? (
+                  <div className="space-y-2 border-t border-slate-100 pt-2 text-xs">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md bg-slate-50 p-2">
+                        <span className="text-slate-400">履约状态</span>
+                        <p className="mt-0.5 font-medium text-slate-800">
+                          {fulfillmentStatuses[workspace.order.fulfillment?.status || ""] || "暂无履约"}
+                        </p>
+                      </div>
+                      <div className="rounded-md bg-slate-50 p-2">
+                        <span className="text-slate-400">退款状态</span>
+                        <p className="mt-0.5 font-medium text-slate-800">
+                          {workspace.order.refund?.status || "无退款申请"}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-[10px] leading-4 text-slate-400">
+                      {workspace.order.fulfillment?.currentLocation
+                        ? `当前位置：${workspace.order.fulfillment.currentLocation}`
+                        : "当前位置未接入，不展示虚构轨迹"}
+                    </p>
+                    {workspace?.outboundMessages[0] && (
+                      <p className="text-[11px] text-slate-500">
+                        最近发送：
+                        {workspace.outboundMessages[0].isDemo ? "模拟发送" : "外部渠道"} ·{" "}
+                        {workspace.outboundMessages[0].status}
+                      </p>
+                    )}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="mt-3 rounded-md bg-white p-3 text-xs text-slate-500">
                 当前工单未关联订单，可继续按知识规则处理。
               </p>
             )}
-            {workspace?.outboundMessages[0] && (
-              <p className="mt-2.5 text-[11px] text-slate-500">
-                最近发送：{workspace.outboundMessages[0].isDemo ? "模拟发送" : "外部渠道"} ·{" "}
-                {workspace.outboundMessages[0].status}
-              </p>
-            )}
           </section>
-          <header
-            ref={copilotRef}
-            className="flex shrink-0 items-center justify-between border-b border-indigo-100 bg-indigo-50/50 px-4 py-3"
-          >
+          <header className="flex shrink-0 items-center justify-between border-b border-indigo-100 bg-indigo-50/50 px-4 py-3">
             <div className="flex items-center gap-3">
               <span className="rounded-md border border-indigo-200 bg-white p-1.5 text-indigo-600 shadow-sm">
                 <Sparkles className="h-4 w-4" />
@@ -654,7 +674,9 @@ export function SupportWorkbenchPage() {
                   await selectCase(detail.id);
                   toast.success("建议生成完成");
                   requestAnimationFrame(() => {
-                    copilotRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+                    // 只滚 AI 自己的内容区，不用 scrollIntoView（可能带动
+                    // Admin 页面祖先滚动容器）
+                    aiBodyRef.current?.scrollTo?.({ top: 0 });
                   });
                 } catch (e) {
                   toast.error((e as Error).message);
@@ -671,7 +693,9 @@ export function SupportWorkbenchPage() {
               生成
             </Button>
           </header>
+          {/* 右侧唯一纵向滚动容器：AI 正文（订单区不再滚动） */}
           <section
+            ref={aiBodyRef}
             aria-label="AI 回复建议正文"
             className="min-h-0 flex-1 overflow-y-auto p-4"
           >

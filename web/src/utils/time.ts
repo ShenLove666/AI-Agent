@@ -2,6 +2,21 @@ import { format, differenceInMinutes, differenceInHours, differenceInDays } from
 
 const WEEKDAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
+/**
+ * 解析 API 时间字符串：兼容旧接口返回的 naive UTC（无时区后缀）。
+ * `2026-08-11T06:29:00` 会被 `new Date()` 当本地时间解析（UTC+8 差 8 小时），
+ * 统一补 `Z` 后缀按 UTC 解析。
+ */
+const ISO_WITH_TZ = /(Z|[+-]\d{2}:\d{2})$/;
+
+export function parseApiDate(value: string): Date {
+  const normalized =
+    /^\d{4}-\d{2}-\d{2}T/.test(value) && !ISO_WITH_TZ.test(value)
+      ? `${value}Z`
+      : value;
+  return new Date(normalized);
+}
+
 const getWeekStart = (d: Date) => {
   const date = new Date(d);
   const day = date.getDay();
@@ -12,7 +27,7 @@ const getWeekStart = (d: Date) => {
 };
 
 const formatRelativeNumeric = (value: string) => {
-  const date = new Date(value);
+  const date = parseApiDate(value);
   const diffMinutes = differenceInMinutes(new Date(), date);
   const diffHours = differenceInHours(new Date(), date);
   const diffDays = differenceInDays(new Date(), date);
@@ -24,7 +39,7 @@ const formatRelativeNumeric = (value: string) => {
 
 export const formatRelativeTime = (value?: string | null) => {
   if (!value) return "-";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   const now = new Date();
   const diffMinutes = differenceInMinutes(now, date);
@@ -51,14 +66,15 @@ export const formatRelativeTime = (value?: string | null) => {
 
 export const formatFullDateTime = (value?: string | null) => {
   if (!value) return "";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return format(date, "yyyy-MM-dd HH:mm:ss");
 };
 
 export const formatTooltipTime = (value?: string | null) => {
   if (!value) return "";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return `${format(date, "yyyy-MM-dd HH:mm:ss")} · ${formatRelativeNumeric(value)}`;
 };
+
