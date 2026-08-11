@@ -67,7 +67,7 @@ describe("ConversationMinimap", () => {
     expect(screen.getByRole("button", { name: "跳转到第 36 轮对话" })).toBeInTheDocument();
   });
 
-  it("hover 显示 tooltip：第 N 轮 + 摘要（超过 30 字截断）", () => {
+  it("hover 显示 tooltip：只含问题摘要（不暴露轮次编号），超过 30 字截断", () => {
     render(
       <ConversationMinimap
         turns={makeTurns(2, (i) => `这是一段特别长的用户问题描述需要被摘要展示${"很长".repeat(20)}`)}
@@ -80,9 +80,10 @@ describe("ConversationMinimap", () => {
     // 断言第 1 根线的 tooltip 内容正确
     const tooltip = screen.getAllByRole("tooltip")[0]!;
     expect(tooltip).toBeInTheDocument();
-    expect(tooltip.textContent).toContain("第 1 轮");
-    // 摘要截断到 30 字并追加省略号（不含「第 N 轮」标签）
-    const summary = tooltip.textContent!.replace("第 1 轮", "").trim();
+    // 视觉 UI 不显示轮次编号——只有摘要
+    expect(tooltip.textContent).not.toContain("第 1 轮");
+    // 摘要截断到 30 字并追加省略号
+    const summary = tooltip.textContent!.trim();
     expect(summary.length).toBeLessThanOrEqual(31);
     expect(summary.endsWith("…")).toBe(true);
   });

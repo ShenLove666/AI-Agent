@@ -394,11 +394,12 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           </div>
         )}
       />
-      {/* 对话导航刻度：≥4 轮时显示，桌面端（lg）渲染；垂直居中于阅读列右缘
-          （右侧 16-24px），实际高度由「轮次数 × 每根线高」决定——一小段刻度，
-          不贯穿整页；导航是显式用户动作，点击置 detached 后由 Virtuoso 平滑滚动 */}
+      {/* 对话导航刻度：≥4 轮时显示，桌面端（lg）渲染；垂直居中于正文阅读列右缘
+          之外 24px 起（正向 left 定位，不贴正文、不占正文空间）；实际高度由
+          「轮次数 × 每根线高」决定——一小段刻度；导航是显式用户动作，
+          点击置 detached 后由 Virtuoso 平滑滚动 */}
       {stableTurns.length >= 4 ? (
-        <div className="pointer-events-none absolute top-1/2 right-[max(1.5rem,calc(50%_-_464px))] z-10 hidden -translate-y-1/2 lg:block">
+        <div className="pointer-events-none absolute top-1/2 left-[min(calc(50%_+_504px),calc(100%_-_2.5rem))] z-10 hidden -translate-y-1/2 lg:block">
           <div className="pointer-events-auto">
             <ConversationMinimap
               turns={stableTurns}
@@ -413,7 +414,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           type="button"
           aria-label="回到底部"
           onClick={scrollToLatest}
-          className="absolute bottom-5 right-[max(1.5rem,calc(50%_-_464px))] z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
+          // 与导航刻度错开（rail 右侧 +8px）：两者职责不同——刻度跳问题、按钮回最新，
+          // 视觉上不应像同一个组件
+          className="absolute bottom-5 left-[min(calc(50%_+_540px),calc(100%_-_3rem))] z-10 flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-soft transition hover:bg-slate-50 hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200"
         >
           <ArrowDown className="h-4 w-4" />
         </button>

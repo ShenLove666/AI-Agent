@@ -20,7 +20,8 @@ interface ConversationMinimapProps {
  * 对话导航刻度（GPT 风格）：一轮 User + Assistant = 一根横线。
  * - 所有横线等间距——它代表「对话轮次」而非页面物理高度，
  *   长回答与短回答在导航中各占一根线
- * - 当前轮更深更粗，hover 展开「第 N 轮 + 摘要」tooltip
+ * - 当前轮更深更粗；hover 展开问题摘要 tooltip（不显示轮次编号——
+ *   控件目的是快速浏览消息位置，编号对用户没有价值）
  * - 超过 MAX_VISIBLE_MARKERS 轮时按序号均匀采样（首尾槽位对应首尾轮），
  *   active 映射到最近的采样槽位
  * - 纯展示组件，不做任何滚动——滚动由父组件（唯一滚动权威 Virtuoso）执行
@@ -46,7 +47,7 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
       : null;
 
   return (
-    <nav aria-label="对话导航" className="flex flex-col items-center gap-[6px]">
+    <nav aria-label="对话导航" className="flex flex-col items-center gap-1">
       {Array.from({ length: visible }, (_, slot) => {
         const index = slotToIndex(slot);
         const turn = turns[index];
@@ -70,11 +71,11 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
               )}
             />
             {summary ? (
+              // 只显示问题摘要：不暴露「第 N 轮」编号（aria-label 已承担无障碍语义）
               <span
                 role="tooltip"
                 className="pointer-events-none absolute right-full top-1/2 z-10 mr-3 hidden max-w-[260px] -translate-y-1/2 truncate rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-600 shadow-soft group-hover:block"
               >
-                <span className="mr-1.5 font-semibold text-slate-800">第 {index + 1} 轮</span>
                 {summary.length > SUMMARY_MAX ? `${summary.slice(0, SUMMARY_MAX)}…` : summary}
               </span>
             ) : null}
