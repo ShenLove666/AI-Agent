@@ -280,9 +280,11 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     }
   }, []);
 
-  // scroll 监听只做一件事：rAF 合并后按阅读线更新 active（每帧最多一次）
+  // scroll 监听只做一件事：rAF 合并后按阅读线更新 active（每帧最多一次）。
+  // minimap 导航定位期间跳过——定位触发的中间 scroll 位置不代表用户阅读位置。
   const activeFrameRef = React.useRef<number | null>(null);
   const handleNavigationScroll = React.useCallback(() => {
+    if (minimapNavigatingRef.current) return;
     if (activeFrameRef.current !== null) return;
     activeFrameRef.current = requestAnimationFrame(() => {
       activeFrameRef.current = null;
@@ -382,13 +384,36 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }, [stableTurns.length]);
 
   // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
-  // 语义同 wheel/键盘输入），随后由 Virtuoso 执行平滑滚动。
-  // 不主动设置 active——高亮跟随真实滚动自然经过各轮，最后停在目标轮。
-  const handleMinimapNavigate = React.useCallback((index: number) => {
-    detachedRef.current = true;
-    setDetached(true);
-    virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
-  }, []);
+  // 语义同 wheel/键盘输入），随后由 Virtuoso 定位。
+  // 定位用 behavior:"auto" 而非 smooth：目标轮是高度不固定的完整 ChatTurn，
+  // smooth 跨多个虚拟 item 时沿途 mount/unmount/测量，中间会不断修正位置
+  // （看起来像「先到底部 → 闪两下 → 才到顶部」）。minimap 是快速跳转导航，
+  // 不是滚动动画——平滑只留给「回到底部」按钮。
+  // 导航期间锁定 active 更新：定位触发的 scroll 事件不因中间 viewport 位置
+  // 反复改高亮；单次 rAF 后解除锁定并重新按真实阅读位置计算。
+  const minimapNavigatingRef = React.useRef(false);
+
+  const handleMinimapNavigate = React.useCallback(
+    (index: number) => {
+      detachedRef.current = true;
+      setDetached(true);
+
+      minimapNavigatingRef.current = true;
+      virtuosoRef.current?.scrollToIndex({
+        index,
+        align: "start",
+        behavior: "auto"
+      });
+
+      // 只等一帧（Virtuoso 同步定位完成后）：不再滚动页面，仅重算一次 active。
+      // 不用任何 timer 补滚。
+      requestAnimationFrame(() => {
+        minimapNavigatingRef.current = false;
+        updateActiveTurn();
+      });
+    },
+    [updateActiveTurn]
+  );
 
   // 会话切换（virtuosoKey 变化）时重置 active：DOM 尚未布局，任何旧值都会闪错。
   // 布局完成后再经 rAF 由阅读线计算真实 active（Test：切换后绝不能继承上一会话）。

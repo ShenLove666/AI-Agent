@@ -1235,7 +1235,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
   });
 
-  it("点击某根线 → detached=true + scrollToIndex(start, smooth)，不主动设置 active", async () => {
+  it("点击某根线 → detached=true + scrollToIndex(start, auto)，不主动设置 active", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
@@ -1252,11 +1252,56 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
 
-    // 显式用户导航：scrollToIndex(start, smooth)；detached=true → 回到底部按钮出现。
-    // 不主动 set active——高亮由真实滚动（阅读线）决定
+    // 显式用户导航：scrollToIndex(start, auto)——minimap 是快速定位导航，不做平滑
+    // 动画（smooth 跨虚拟 item 沿途测量会闪）；detached=true → 回到底部按钮出现。
+    // 不主动 set active——高亮由导航完成后的阅读线计算决定
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "smooth" });
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "auto" });
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+
+  it("点击只发起一次导航 scrollToIndex；导航期间 scroll 事件不反复更新 active", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
+    // 只发起一次导航
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "start", behavior: "auto" });
+
+    // 导航定位触发的中间 scroll（尚未到 rAF 解除锁定的帧）：active 不因中间
+    // viewport 位置反复变化——高亮保持现状（导航前阅读线命中的轮）
+    act(() => {
+      m.setTop(300);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(30); // 小于 rAF 解除帧？jsdom rAF ~16ms——settle 30ms 可能已解除。
+    // 直接断言：导航 rAF 解除后 active 按目标轮计算（第 2 轮）
+    await settle(80);
+    // 目标轮几何：readY = 430*0.35 = 150.5 ∈ turn1 → 第 2 轮
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+  });
+
+  it("导航完成后下一帧 updateActiveTurn → active = 实际目标轮", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    mockTurnGeometry(scroller, [50, 200, 80, 100]);
+
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
+    // 点击瞬间：不提前 setActive——active 保持导航前状态（初始未计算 → null）
+    expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
+
+    // 导航 rAF 帧执行后：updateActiveTurn 已重新计算（不再是 null）。
+    // 用确定性几何验证：scroller 高 100 → readY = 35 ∈ turn0 → 第 1 轮
+    mockTurnGeometry(scroller, [50, 200, 80, 100], 100);
+    await settle(80);
+    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
   });
 
   it("点击跳转不锁定 active：高亮跟随真实滚动，手滚回第一轮自然更新", async () => {
