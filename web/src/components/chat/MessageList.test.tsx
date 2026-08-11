@@ -1256,7 +1256,7 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     // 动画（smooth 跨虚拟 item 沿途测量会闪）；detached=true → 回到底部按钮出现。
     // 不主动 set active——高亮由导航完成后的阅读线计算决定
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "start", behavior: "auto" });
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "center", behavior: "auto" });
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
   });
 
@@ -1269,42 +1269,91 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
 
     const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
-    // 只发起一次导航
+    // 只发起一次导航；历史轮 center 对齐
     expect(scrollSpy).toHaveBeenCalledTimes(1);
-    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "start", behavior: "auto" });
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 1, align: "center", behavior: "auto" });
+    // 用户显式选择立即高亮（selected 优先），不依赖几何
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
 
-    // 导航定位触发的中间 scroll（尚未到 rAF 解除锁定的帧）：active 不因中间
-    // viewport 位置反复变化——高亮保持现状（导航前阅读线命中的轮）
+    // 导航定位触发的中间 scroll：selected 保持，高亮不被中间 viewport 位置抢走
     act(() => {
       m.setTop(300);
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
-    await settle(30); // 小于 rAF 解除帧？jsdom rAF ~16ms——settle 30ms 可能已解除。
-    // 直接断言：导航 rAF 解除后 active 按目标轮计算（第 2 轮）
     await settle(80);
-    // 目标轮几何：readY = 430*0.35 = 150.5 ∈ turn1 → 第 2 轮
     expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
   });
 
-  it("导航完成后下一帧 updateActiveTurn → active = 实际目标轮", async () => {
+  it("尾部点击（目标已可见、无滚动空间）：selected 立即高亮，bottom override 抢不回去；真实滚动后才交还", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
-    mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+    // 已滚到底：bottomGap = 800-500-300 = 0 → 几何 active = 最后一轮（第 4 根）
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
     mockTurnGeometry(scroller, [50, 200, 80, 100]);
+    act(() => {
+      m.setTop(500);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
-    // 点击瞬间：不提前 setActive——active 保持导航前状态（初始未计算 → null）
+    // 点击倒数第二根（第 3 轮）：立即高亮 + center 对齐
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 3 轮对话" }));
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 2, align: "center", behavior: "auto" });
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
     expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
 
-    // 导航 rAF 帧执行后：updateActiveTurn 已重新计算（不再是 null）。
-    // 用确定性几何验证：scroller 高 100 → readY = 35 ∈ turn0 → 第 1 轮
-    mockTurnGeometry(scroller, [50, 200, 80, 100], 100);
+    // 即使随后 atBottomStateChange(true) / 几何重算（activeTurnIndex 后台回到 last）：
+    // selected 优先，第 3 根保持高亮
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
     await settle(80);
-    expect(currentAttr("跳转到第 1 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 4 轮对话")).not.toBe("true");
+
+    // 真实用户滚动（wheel）→ 清除 selected，交还几何 active
+    act(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // 几何：仍在底部 → 第 4 根
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
+    expect(currentAttr("跳转到第 3 轮对话")).not.toBe("true");
   });
 
-  it("点击跳转不锁定 active：高亮跟随真实滚动，手滚回第一轮自然更新", async () => {
+  it("点击最后一根 → align end（到底）；点击回到底部清除 selected", async () => {
+    renderFourTurns();
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 2 轮对话" }));
+    expect(currentAttr("跳转到第 2 轮对话")).toBe("true");
+
+    // 点击最后一根（index 3 = latest）→ align end
+    fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
+    expect(scrollSpy).toHaveBeenLastCalledWith({ index: 3, align: "end", behavior: "auto" });
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
+
+    // 滚离 → detached；点击「回到底部」→ 清除 selected（第 2 轮高亮消失）
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    fireEvent.click(screen.getByRole("button", { name: "回到底部" }));
+    await settle(50);
+    // selected 已清除（几何 active 未布局时为 null）→ 第 2 轮不再高亮
+    expect(currentAttr("跳转到第 2 轮对话")).not.toBe("true");
+  });
+
+  it("点击跳转不锁定 active：真实滚动（wheel）清除 selected 后，高亮跟随阅读线，手滚回第一轮自然更新", async () => {
     renderFourTurns();
     const scroller = findScroller()!;
     await settle();
@@ -1318,24 +1367,27 @@ describe("MessageList 对话导航刻度（Minimap）", () => {
     await settle(80);
     expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
 
-    // 点击第 4 轮（index 3）→ detached
+    // 点击第 4 轮（index 3）→ selected 立即高亮 + detached
     fireEvent.click(screen.getByRole("button", { name: "跳转到第 4 轮对话" }));
+    expect(currentAttr("跳转到第 4 轮对话")).toBe("true");
     expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+    await settle(30); // 导航 rAF 解除导航锁
 
-    // 阅读线随滚动推进（离开底部：bottomGap = 800-300-300 = 200 > 48）：
-    // readY = 900*0.35 = 315 ∈ [250,330]（turn2）→ 第 3 轮
+    // 真实滚动（wheel up）→ 清除 selected；阅读线推进：readY = 900*0.35 = 315 ∈ turn2 → 第 3 轮
     mockTurnGeometry(scroller, [50, 200, 80, 100], 900);
     act(() => {
       m.setTop(300);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
     expect(currentAttr("跳转到第 3 轮对话")).toBe("true");
 
-    // 用户手滚回第一轮：readY = 100*0.35 = 35 ∈ [0,50]（turn0）→ 第 1 轮
+    // 用户手滚回第一轮：readY = 100*0.35 = 35 ∈ turn0 → 第 1 轮
     mockTurnGeometry(scroller, [50, 200, 80, 100], 100);
     act(() => {
       m.setTop(0);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);

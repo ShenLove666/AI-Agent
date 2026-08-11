@@ -36,8 +36,8 @@ describe("ConversationMinimap fisheye rail", () => {
     render(<ConversationMinimap turns={makeTurns(6)} activeIndex={5} onNavigate={() => {}} />);
     expect(marker("跳转到第 6 轮对话").getAttribute("aria-current")).toBe("true");
     // active 与普通线等长
-    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 8px");
-    expect(markerWidth("跳转到第 1 轮对话")).toContain("width: 8px");
+    expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 12px");
+    expect(markerWidth("跳转到第 1 轮对话")).toContain("width: 12px");
     expect(markerWidth("跳转到第 6 轮对话")).toBe(markerWidth("跳转到第 1 轮对话"));
   });
 
@@ -57,8 +57,8 @@ describe("ConversationMinimap fisheye rail", () => {
     expect(markerWidth("跳转到第 11 轮对话")).toContain("width: 18px"); // +2
     expect(markerWidth("跳转到第 6 轮对话")).toContain("width: 13px"); // -3
     expect(markerWidth("跳转到第 12 轮对话")).toContain("width: 13px"); // +3
-    expect(markerWidth("跳转到第 5 轮对话")).toContain("width: 8px"); // -4 → 回落
-    expect(markerWidth("跳转到第 13 轮对话")).toContain("width: 8px"); // +4 → 回落
+    expect(markerWidth("跳转到第 5 轮对话")).toContain("width: 12px"); // -4 → 回落
+    expect(markerWidth("跳转到第 13 轮对话")).toContain("width: 12px"); // +4 → 回落
   });
 
   it("active 与 hover 分开控制：active 远离 hover 时回落 8px，颜色保持深色高亮", () => {
@@ -67,7 +67,7 @@ describe("ConversationMinimap fisheye rail", () => {
 
     // active marker（第 3 轮）保持高亮（颜色/粗细），但长度回落 8px
     expect(marker("跳转到第 3 轮对话").getAttribute("aria-current")).toBe("true");
-    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 8px");
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 12px");
     // hover marker 最大
     expect(markerWidth("跳转到第 9 轮对话")).toContain("width: 30px");
   });
@@ -120,6 +120,6 @@ describe("ConversationMinimap fisheye rail", () => {
 
     fireEvent.mouseLeave(marker("跳转到第 3 轮对话"));
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 8px");
+    expect(markerWidth("跳转到第 3 轮对话")).toContain("width: 12px");
   });
 });

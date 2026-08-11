@@ -102,8 +102,27 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   // touch 方向：记录 touchstart 的 Y，touchmove 用位移判断手指方向
   const touchYRef = React.useRef<number | null>(null);
 
+  // ---- 用户显式导航选择（minimap 点击）----
+  // minimap 显示 = selectedTurnIndex ?? activeTurnIndex：
+  // - activeTurnIndex = viewport 几何事实（阅读线/bottom override）
+  // - selectedTurnIndex = 用户显式导航意图（点击刻度）
+  // 拆分的原因：点击倒数第二轮时，若目标已在尾部可见、scrollTop 无法再滚，
+  // 一帧后几何重算会因 bottom override 把高亮抢回最后一轮——点击看起来「没反应」。
+  // selected 一直保持，直到出现真实用户滚动（wheel/touch/keyboard）等明确动作。
+  const [selectedTurnIndex, setSelectedTurnIndex] = React.useState<number | null>(null);
+  const selectedTurnIndexRef = React.useRef<number | null>(null);
+  selectedTurnIndexRef.current = selectedTurnIndex;
+
+  const clearMinimapSelectionRef = React.useRef<() => void>(() => {});
+  clearMinimapSelectionRef.current = () => {
+    if (selectedTurnIndexRef.current === null) return;
+    selectedTurnIndexRef.current = null;
+    setSelectedTurnIndex(null);
+  };
+
   // 输入监听：只登记 wheel / touch / keydown 等真实输入路径；普通 scroll 事件
-  // （程序滚动、布局变化都会触发）不用于推断「用户滚离/滚回」。
+  // （程序滚动、布局变化都会触发）不用于推断「用户滚离/滚回」，也不清除
+  // minimap 显式选择——只有明确用户输入才能清（与 detached 同一设计原则）。
   // 处理器只依赖 ref 与稳定的 setState，一次性创建后跨渲染复用。
   // 监听挂在 scroller 上（dataset 去重，Virtuoso 随 viewKey 重建时新节点会重新挂载）。
   const handleUserInputRef = React.useRef<((event: Event) => void) | null>(null);
@@ -111,6 +130,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     handleUserInputRef.current = (event: Event) => {
       if (event.type === "keydown") {
         const e = event as KeyboardEvent;
+        // 任何明确的方向键都是真实用户滚动意图 → 清除 minimap 显式选择
+        clearMinimapSelectionRef.current();
         const pageUp = e.key === "PageUp";
         const home = e.key === "Home";
         const arrowUp = e.key === "ArrowUp";
@@ -151,6 +172,10 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         if (currentY == null || touchYRef.current == null) return;
         const delta = currentY - touchYRef.current;
         touchYRef.current = currentY;
+        // 有真实位移的方向滚动 → 清除 minimap 显式选择
+        if (Math.abs(delta) > 3) {
+          clearMinimapSelectionRef.current();
+        }
         // 触屏方向：手指下滑（delta>0）→ 页面向上 → 浏览历史 → detached
         if (delta > 3) {
           detachedRef.current = true;
@@ -168,6 +193,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
 
       if (event.type === "wheel") {
         const e = event as WheelEvent;
+        // 真实用户滚动 → 清除 minimap 显式选择
+        clearMinimapSelectionRef.current();
         // passive wheel 在滚动应用前触发（读到滚动前的位置）：
         // 明确上翻即视为向上浏览
         if (e.deltaY < 0) {
@@ -308,6 +335,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     const prevCount = prevTurnsCountRef.current;
     prevTurnsCountRef.current = stableTurns.length;
     if (stableTurns.length > prevCount && stableTurns[stableTurns.length - 1]?.user) {
+      // 发送新问题 → 清除 minimap 显式选择（否则上一轮的选择会一直亮着）
+      selectedTurnIndexRef.current = null;
+      setSelectedTurnIndex(null);
       // 先同步 ref 再滚动：detachedRef 只靠 render 后同步会晚一拍——新 Turn 发出时
       // ref 可能仍是上一轮的 true，首个 ResizeObserver 回调被跳过，第二轮从一开始失去跟随
       const detachedBefore = detachedRef.current;
@@ -373,6 +403,9 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }, [latestTurnEl, stableTurns.length]);
 
   const scrollToLatest = React.useCallback(() => {
+    // 回到底部 = 不再看显式选中的历史轮次 → 清除 minimap 显式选择
+    selectedTurnIndexRef.current = null;
+    setSelectedTurnIndex(null);
     // 先同步 ref 再滚动：点击后紧接着的 ResizeObserver 回调必须看到 false（不等 render）
     detachedRef.current = false;
     setDetached(false);
@@ -384,41 +417,47 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   }, [stableTurns.length]);
 
   // Minimap 导航是显式用户动作：置 detached=true（绝不与 AI 自动跟随抢占滚动，
-  // 语义同 wheel/键盘输入），随后由 Virtuoso 定位。
-  // 定位用 behavior:"auto" 而非 smooth：目标轮是高度不固定的完整 ChatTurn，
-  // smooth 跨多个虚拟 item 时沿途 mount/unmount/测量，中间会不断修正位置
-  // （看起来像「先到底部 → 闪两下 → 才到顶部」）。minimap 是快速跳转导航，
-  // 不是滚动动画——平滑只留给「回到底部」按钮。
-  // 导航期间锁定 active 更新：定位触发的 scroll 事件不因中间 viewport 位置
-  // 反复改高亮；单次 rAF 后解除锁定并重新按真实阅读位置计算。
+  // 语义同 wheel/键盘输入），并记录 selectedTurnIndex（用户显式选择，优先于
+  // 几何 active——否则点击倒数第二轮时，目标已在尾部可见、scrollTop 无法再滚，
+  // 一帧后几何重算会因 bottom override 把高亮抢回最后一轮，看起来「没反应」）。
+  // 定位用 behavior:"auto"：minimap 是快速跳转导航，不做平滑动画（smooth 跨
+  // 多个虚拟 item 沿途测量会闪）。align：历史轮 center（尾部 start 无滚动空间），
+  // 最后一轮 end（到底）。
+  // 导航期间锁定 active 更新：定位触发的中间 scroll 不因中间 viewport 位置
+  // 反复改高亮。selected 一直保持，直到真实用户滚动等明确动作清除。
   const minimapNavigatingRef = React.useRef(false);
 
-  const handleMinimapNavigate = React.useCallback(
-    (index: number) => {
-      detachedRef.current = true;
-      setDetached(true);
+  const handleMinimapNavigate = React.useCallback((index: number) => {
+    detachedRef.current = true;
+    setDetached(true);
 
-      minimapNavigatingRef.current = true;
-      virtuosoRef.current?.scrollToIndex({
-        index,
-        align: "start",
-        behavior: "auto"
-      });
+    // 用户明确选择了这一轮：立即高亮，不被任何几何回调抢走
+    selectedTurnIndexRef.current = index;
+    setSelectedTurnIndex(index);
 
-      // 只等一帧（Virtuoso 同步定位完成后）：不再滚动页面，仅重算一次 active。
-      // 不用任何 timer 补滚。
-      requestAnimationFrame(() => {
-        minimapNavigatingRef.current = false;
-        updateActiveTurn();
-      });
-    },
-    [updateActiveTurn]
-  );
+    minimapNavigatingRef.current = true;
 
-  // 会话切换（virtuosoKey 变化）时重置 active：DOM 尚未布局，任何旧值都会闪错。
-  // 布局完成后再经 rAF 由阅读线计算真实 active（Test：切换后绝不能继承上一会话）。
+    const latestIndex = stableTurnsRef.current.length - 1;
+    virtuosoRef.current?.scrollToIndex({
+      index,
+      align: index === latestIndex ? "end" : "center",
+      behavior: "auto"
+    });
+
+    // 只等一帧解除导航锁（不重新 updateActiveTurn——bottom override 会覆盖
+    // 显式选择；selected ?? active 已保证高亮稳定）。不用任何 timer 补滚。
+    requestAnimationFrame(() => {
+      minimapNavigatingRef.current = false;
+    });
+  }, []);
+
+  // 会话切换（virtuosoKey 变化）时重置 active 与 minimap 显式选择：
+  // DOM 尚未布局，任何旧值都会闪错（Test：切换后绝不能继承上一会话）。
+  // 布局完成后再经 rAF 由阅读线计算真实 active。
   React.useEffect(() => {
     setActiveTurnIndex(null);
+    selectedTurnIndexRef.current = null;
+    setSelectedTurnIndex(null);
   }, [virtuosoKey]);
 
   // 布局完成后（virtuosoKey / 轮次变化）补一次阅读线计算——无滚动事件也能校准
@@ -516,7 +555,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
           <div className="pointer-events-auto">
             <ConversationMinimap
               turns={stableTurns}
-              activeIndex={activeTurnIndex}
+              // selected（用户显式导航）优先于几何 active
+              activeIndex={selectedTurnIndex ?? activeTurnIndex}
               onNavigate={handleMinimapNavigate}
             />
           </div>

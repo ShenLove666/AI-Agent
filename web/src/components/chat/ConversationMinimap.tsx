@@ -6,8 +6,8 @@ import type { ChatTurn } from "@/utils/chatTurns";
 /** Tooltip 摘要最多展示的字符数 */
 const SUMMARY_MAX = 30;
 
-/** 静态宽度档位：默认全部等长 8px（Codex 式——active 靠颜色+粗细区分，不靠长度） */
-const IDLE_WIDTH = 8;
+/** 静态宽度：默认全部等长 12px（Codex 式——active 靠颜色+粗细区分，不靠长度） */
+const IDLE_WIDTH = 12;
 /** hover 中心向邻域衰减扩张：0=hover、1=±1、2=±2、3=±3，更远回落到 8px */
 const HOVER_WIDTHS = [30, 24, 18, 13];
 
