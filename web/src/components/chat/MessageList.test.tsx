@@ -330,10 +330,15 @@ describe("MessageList 用户滚离", () => {
 
     const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
 
-    // touchmove 滚离
+    // 触屏方向滚离：手指下滑（touches clientY 增大 → delta>0）→ 页面上滚 → detached
     act(() => {
+      const start = new Event("touchstart", { bubbles: true, cancelable: true });
+      Object.defineProperty(start, "touches", { value: [{ clientY: 100 }] });
+      scroller.dispatchEvent(start);
+      const move = new Event("touchmove", { bubbles: true, cancelable: true });
+      Object.defineProperty(move, "touches", { value: [{ clientY: 200 }] });
+      scroller.dispatchEvent(move);
       m.setTop(100);
-      scroller.dispatchEvent(new Event("touchmove", { bubbles: true }));
       scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
     });
     await settle(80);
@@ -804,6 +809,125 @@ describe("MessageList detached 状态机（只由用户意图修改）", () => {
     });
     expect(rAFSpy).not.toHaveBeenCalled();
     expect(scrollSpy).not.toHaveBeenCalled();
+  });
+
+  it("程序滚动到接近底部（无用户输入）→ 不 reattach（防止旧闪动 Bug 回来）", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // wheel 向上 → detached=true
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 程序滚动到 bottomGap=50（≤ REATTACH_GAP 96）：只有 scroll 事件，无用户输入
+    act(() => {
+      m.setTop(450);
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    // 不能 reattach：按钮仍显示（detached 保持 true）
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+
+  it("detached=true + wheel 向下滚到接近底部（bottomGap=50）→ 自动 reattach", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    // wheel 向上 → detached=true → 按钮出现
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 用户明确向下滚：wheel down 后 bottomGap = 800-654-300 = 46 ≤ 96 → reattach
+    act(() => {
+      m.setTop(654);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.queryByRole("button", { name: "回到底部" })).not.toBeInTheDocument();
+  });
+
+  it("detached=true + wheel 向下但仍在历史区（bottomGap=200）→ 保持 detached", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300 });
+
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+
+    // 向下滚但距底仍 200px（> 96）→ 不 reattach，按钮保持
+    act(() => {
+      m.setTop(300);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+    expect(screen.getByRole("button", { name: "回到底部" })).toBeInTheDocument();
+  });
+
+  it("wheel 向下 reattach 后 → 下一次 Latest Turn resize 恢复自动贴底", async () => {
+    const u1 = makeMessage("u1", "user", "问题一");
+    const a1 = makeMessage("a1", "assistant", "回答一");
+    renderList([u1, a1]);
+    const scroller = findScroller()!;
+    await settle();
+    const m = mockScrollMetrics(scroller, { scrollHeight: 800, clientHeight: 300, offsetHeight: 300 });
+
+    // wheel 向上 → detached
+    act(() => {
+      m.setTop(100);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // wheel 向下到接近底部 → reattach（detached=false）
+    act(() => {
+      m.setTop(654);
+      scroller.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 120 }));
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await settle(80);
+
+    // 下一次 streaming 内容增长（resize）→ 看到 detached=false → scrollToIndex(last, end)
+    const observer = lastObserver();
+    const { spy: rAFSpy, captured } = spyRaf();
+    const scrollSpy = vi.spyOn(virtuosoMock.VirtuosoHandleStub.prototype, "scrollToIndex");
+    act(() => {
+      observer.trigger();
+    });
+    expect(rAFSpy).toHaveBeenCalledTimes(1);
+    act(() => {
+      captured[0](0);
+    });
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy).toHaveBeenCalledWith({ index: 0, align: "end", behavior: "auto" });
   });
 });
 

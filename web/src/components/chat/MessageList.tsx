@@ -10,9 +10,6 @@ import { useChatStore } from "@/stores/chatStore";
 import type { Message } from "@/types";
 import { groupMessagesIntoTurns } from "@/utils/chatTurns";
 
-/** 距底部超过该距离（px）视为用户真实滚离，暂停自动跟随 */
-const DETACH_GAP = 40;
-
 interface MessageListProps {
   messages: Message[];
   isLoading: boolean;
@@ -75,19 +72,40 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
   const detachedRef = React.useRef(false);
   detachedRef.current = detached;
 
-  const isDetachedFromBottom = React.useCallback(() => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return false;
-    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > DETACH_GAP;
-  }, []);
+  // 用户「明确向下滚 + 已接近底部」→ 恢复自动跟随（reattach）。
+  // 阈值比 DETACH_GAP 宽：回答还在 streaming 增长时，数学到底很难「追上」，
+  // 距底 96px 内即视为用户已回到最新内容区域。只做 detached=false，
+  // 不主动 scrollToIndex——下一批 streaming 触发 Latest Turn ResizeObserver 时
+  // 看到 detached=false 自然继续跟随，不会突然「吸到底」。
+  const REATTACH_GAP = 96;
 
-  const isDetachedFromBottomRef = React.useRef(isDetachedFromBottom);
-  isDetachedFromBottomRef.current = isDetachedFromBottom;
+  const maybeReattachFromUserScroll = React.useCallback(() => {
+    if (!detachedRef.current) return;
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    const bottomGap = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    if (bottomGap <= REATTACH_GAP) {
+      detachedRef.current = false;
+      setDetached(false);
+      if (import.meta.env.DEV) {
+        console.debug("[scroll]", {
+          reason: "user-returned-near-bottom",
+          bottomGap,
+          detachedAfter: false
+        });
+      }
+    }
+  }, []);
+  const maybeReattachRef = React.useRef(maybeReattachFromUserScroll);
+  maybeReattachRef.current = maybeReattachFromUserScroll;
+
+  // touch 方向：记录 touchstart 的 Y，touchmove 用位移判断手指方向
+  const touchYRef = React.useRef<number | null>(null);
 
   // 输入监听：只登记 wheel / touch / keydown 等真实输入路径；普通 scroll 事件
-  // （程序滚动、布局变化都会触发）不用于推断「用户滚离」。处理器只依赖 ref 与
-  // 稳定的 setState，一次性创建后跨渲染复用。监听挂在 scroller 上（dataset 去重，
-  // Virtuoso 随 viewKey 重建时新节点会重新挂载）。
+  // （程序滚动、布局变化都会触发）不用于推断「用户滚离/滚回」。
+  // 处理器只依赖 ref 与稳定的 setState，一次性创建后跨渲染复用。
+  // 监听挂在 scroller 上（dataset 去重，Virtuoso 随 viewKey 重建时新节点会重新挂载）。
   const handleUserInputRef = React.useRef<((event: Event) => void) | null>(null);
   if (handleUserInputRef.current === null) {
     handleUserInputRef.current = (event: Event) => {
@@ -97,24 +115,73 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
         const home = e.key === "Home";
         const arrowUp = e.key === "ArrowUp";
         const shiftSpace = e.key === " " && e.shiftKey;
-        if (!(pageUp || home || arrowUp || shiftSpace)) return;
-      } else if (event.type === "touchstart") {
-        // 轻点不算滚离，位置判断以 touchmove 为准
-        return;
-      } else if (event.type === "wheel") {
-        // passive wheel 在滚动应用前触发，位置判断读到的是滚动前的位置：
-        // 明确上翻（deltaY < 0）即视为用户向上浏览；下翻仍按位置判断
-        if ((event as WheelEvent).deltaY < 0) {
+        // 明确向上浏览 → detached
+        if (pageUp || home || arrowUp || shiftSpace) {
           detachedRef.current = true;
           setDetached(true);
           return;
         }
-      } else if (event.type !== "touchmove") {
+        // End：明确要回最新 → 直接恢复跟随
+        if (e.key === "End") {
+          detachedRef.current = false;
+          setDetached(false);
+          return;
+        }
+        // 其他向下键：等浏览器完成滚动后检查是否接近底部（reattach）
+        const pageDown = e.key === "PageDown";
+        const arrowDown = e.key === "ArrowDown";
+        const space = e.key === " ";
+        if ((pageDown || arrowDown || space) && detachedRef.current) {
+          requestAnimationFrame(() => {
+            maybeReattachRef.current();
+          });
+        }
         return;
       }
-      if (isDetachedFromBottomRef.current()) {
-        detachedRef.current = true;
-        setDetached(true);
+
+      if (event.type === "touchstart") {
+        const touch = (event as TouchEvent).touches[0];
+        touchYRef.current = touch?.clientY ?? null;
+        return;
+      }
+
+      if (event.type === "touchmove") {
+        const e = event as TouchEvent;
+        const currentY = e.touches[0]?.clientY;
+        if (currentY == null || touchYRef.current == null) return;
+        const delta = currentY - touchYRef.current;
+        touchYRef.current = currentY;
+        // 触屏方向：手指下滑（delta>0）→ 页面向上 → 浏览历史 → detached
+        if (delta > 3) {
+          detachedRef.current = true;
+          setDetached(true);
+          return;
+        }
+        // 手指上滑（delta<0）→ 页面下滚 → 接近最新 → 尝试 reattach
+        if (delta < -3 && detachedRef.current) {
+          requestAnimationFrame(() => {
+            maybeReattachRef.current();
+          });
+        }
+        return;
+      }
+
+      if (event.type === "wheel") {
+        const e = event as WheelEvent;
+        // passive wheel 在滚动应用前触发（读到滚动前的位置）：
+        // 明确上翻即视为向上浏览
+        if (e.deltaY < 0) {
+          detachedRef.current = true;
+          setDetached(true);
+          return;
+        }
+        // 明确下翻且当前 detached：等浏览器完成本帧滚动后再检查 reattach
+        if (e.deltaY > 0 && detachedRef.current) {
+          requestAnimationFrame(() => {
+            maybeReattachRef.current();
+          });
+        }
+        return;
       }
     };
   }
