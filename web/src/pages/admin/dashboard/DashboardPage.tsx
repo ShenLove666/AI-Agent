@@ -402,6 +402,7 @@ const DashboardHeader = ({
         size="icon"
         onClick={onRefresh}
         disabled={loading}
+        aria-label="刷新数据"
         className="h-9 w-9 rounded-lg border-slate-200 bg-white text-slate-500 hover:text-slate-700"
       >
         <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />

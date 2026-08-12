@@ -101,6 +101,18 @@ def _build_whitelist(settings: Settings) -> dict[str, SettingSpec]:
                 max=30,
             ),
             SettingSpec(
+                key="chat_knowledge_release_gate",
+                label="聊天知识发布门禁",
+                description=(
+                    "开启后顾客聊天仅可检索已发布并激活知识版本内的文档"
+                    "（未发布/已禁用文档不可见）；关闭则按全量已索引文档检索"
+                ),
+                scope="immediate",
+                value_type="str",
+                enum=("false", "true"),
+                default="false",
+            ),
+            SettingSpec(
                 key="prompt_history_token_budget",
                 label="历史 Token 预算",
                 description="进入 Prompt 的对话历史 token 上限",

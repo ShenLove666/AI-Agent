@@ -179,23 +179,27 @@ class AgenticRagCoordinator:
         self.max_steps = max(1, max_steps)
         self.max_tool_calls = max(1, max_tool_calls)
         self.registry = registry or build_tool_registry(retrieval)
-        self.graph = self._compile_graph(None)
+        self.graph = self._compile_graph()
 
-    def _compile_graph(self, sink: ProgressSink | None):
-        """构造 LangGraph。sink 通过闭包捕获，随 run() 请求级传入，避免实例共享。
+    def _compile_graph(self):
+        """构造 LangGraph（一次性）。进度 sink 不再经闭包捕获，改为随每次
+        ainvoke 的 configurable 传入——节点从 config 取 emit，既支持并发
+        请求隔离，又避免每个请求重新编译图的开销。"""
 
-        节点函数签名保持 (state) -> dict，sink 由闭包持有，天然支持并发请求。
-        """
-        emit = make_counting_sink(sink)
+        async def planner_node(state: _State, config) -> dict[str, Any]:
+            return await self._planner_node(
+                state, config["configurable"]["progress_emit"]
+            )
 
-        async def planner_node(state: _State) -> dict[str, Any]:
-            return await self._planner_node(state, emit)
+        async def tools_node(state: _State, config) -> dict[str, Any]:
+            return await self._tools_node(
+                state, config["configurable"]["progress_emit"]
+            )
 
-        async def tools_node(state: _State) -> dict[str, Any]:
-            return await self._tools_node(state, emit)
-
-        async def review_node(state: _State) -> dict[str, Any]:
-            return await self._review_node(state, emit)
+        async def review_node(state: _State, config) -> dict[str, Any]:
+            return await self._review_node(
+                state, config["configurable"]["progress_emit"]
+            )
 
         graph = StateGraph(_State)
         graph.add_node("planner_agent", planner_node)
@@ -236,7 +240,7 @@ class AgenticRagCoordinator:
             raise TypeError(
                 "run() requires actor_user_id and data_owner_id (or legacy user_id)"
             )
-        state = await self._compile_graph(progress_sink).ainvoke(
+        state = await self.graph.ainvoke(
             {
                 "question": question,
                 "original_question": original_question,
@@ -254,7 +258,9 @@ class AgenticRagCoordinator:
                 "tool_errors": [],
                 "steps": [],
                 "review_feedback": "",
-            }
+            },
+            # 图编译一次复用；请求级进度 sink 经 configurable 传入各节点
+            config={"configurable": {"progress_emit": make_counting_sink(progress_sink)}},
         )
         decision = state.get("initial_decision") or state.get("decision")
         assert decision is not None, "planner must produce a decision"

@@ -226,10 +226,16 @@ export function SupportWorkbenchPage() {
   const [updatingCase, setUpdatingCase] = useState(false);
   const [escalating, setEscalating] = useState(false);
   const [confirmedFacts, setConfirmedFacts] = useState(false);
+  // 请求序号守卫：快速切换工单时，迟到的旧响应不得覆盖当前选中工单
+  const selectSeqRef = useRef(0);
+  const currentCaseIdRef = useRef<number | null>(null);
   const selectCase = useCallback(async (id: number) => {
+    const seq = ++selectSeqRef.current;
     const [value, context] = await Promise.all([getSupportCase(id), getSupportWorkspace(id)]);
+    if (seq !== selectSeqRef.current) return; // 过期响应：期间已切换到其他工单
     setDetail(value);
     setWorkspace(context);
+    currentCaseIdRef.current = id;
     const suggestion = value.suggestions.find((x) => !x.decision);
     setEdited(suggestion?.content || "");
     setEvidenceOpen(false);
@@ -248,7 +254,11 @@ export function SupportWorkbenchPage() {
       if (items.length) {
         const id = items.some((x) => x.id === detail?.id) ? detail!.id : items[0].id;
         await selectCase(id);
-      } else setDetail(null);
+      } else {
+        selectSeqRef.current += 1; // 使在途的 selectCase 响应失效
+        currentCaseIdRef.current = null;
+        setDetail(null);
+      }
     } catch (e) {
       toast.error((e as Error).message || "工单加载失败");
     } finally {
@@ -266,10 +276,12 @@ export function SupportWorkbenchPage() {
     refresh = true
   ) => {
     setter(true);
+    const caseId = currentCaseIdRef.current;
     try {
       await fn();
-      if (refresh && detail) {
-        const next = await getSupportCase(detail.id);
+      // 仅当用户仍停留在发起操作时的那张工单才刷新详情，避免覆盖已切换的工单
+      if (refresh && caseId !== null && caseId === currentCaseIdRef.current) {
+        const next = await getSupportCase(caseId);
         setDetail(next);
         setWorkspace(await getSupportWorkspace(next.id));
         setCases((list) => list.map((x) => (x.id === next.id ? next : x)));

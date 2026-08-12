@@ -65,6 +65,12 @@ def test_settings_patch_flow_and_audit(tmp_path: Path):
                 assert items["retrieval_candidate_limit"]["value"] >= 5
                 assert items["deepseek_api_key"]["configured"] is False
                 assert items["deepseek_api_key"]["value"] is None
+                # 聊天知识发布门禁：默认关闭，enum 选项暴露给前端渲染下拉
+                assert items["chat_knowledge_release_gate"]["value"] == "false"
+                assert items["chat_knowledge_release_gate"]["enum"] == [
+                    "false",
+                    "true",
+                ]
 
                 # 2. PATCH 保存立即生效参数
                 resp = await client.patch(

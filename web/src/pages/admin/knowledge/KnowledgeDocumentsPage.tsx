@@ -929,7 +929,7 @@ export function KnowledgeDocumentsPage() {
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" title="更多">
+                            <Button size="icon" variant="ghost" className="h-8 w-8" title="更多" aria-label="更多操作">
                               <MoreHorizontal className="h-3.5 w-3.5" />
                             </Button>
                           </DropdownMenuTrigger>

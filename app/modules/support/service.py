@@ -7,6 +7,7 @@ import time
 from datetime import date, datetime
 
 from sqlalchemy import case as sql_case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.framework.errors import AppError, ProviderUnavailableError
@@ -17,11 +18,7 @@ from app.modules.evaluation.models import (
     EvaluationResult,
     EvaluationRun,
 )
-from app.modules.evaluation.runtime import (
-    AgentEvaluationRunner,
-    SCORING_VERSION,
-    execution_payload,
-)
+from app.modules.evaluation.runtime import SCORING_VERSION, execute_run_cases
 from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.knowledge.models import (
     KnowledgeBase,
@@ -50,6 +47,15 @@ from app.modules.provenance.models import DataSource
 
 
 CASE_STATUSES = {"pending", "in_progress", "resolved", "escalated"}
+# 合法流转矩阵：升级必须经 raise_escalation（有升级台账）进入，resolved 为终态。
+_ALLOWED_CASE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "pending": frozenset({"in_progress", "resolved"}),
+    "in_progress": frozenset({"pending", "resolved"}),
+    "escalated": frozenset({"in_progress", "resolved"}),
+    "resolved": frozenset(),
+}
+# 对客回复最大长度（防下游 webhook 载荷超限；suggestion 由 _compose_draft 控制在 320 字符）
+MAX_REPLY_LENGTH = 4000
 CASE_PRIORITIES = {"low", "normal", "high", "urgent"}
 DECISIONS = {"accepted", "edited", "rejected", "escalated"}
 ESCALATION_CATEGORIES = {
@@ -88,6 +94,24 @@ def _json(value: str | None, fallback):
         return json.loads(value or "")
     except (TypeError, ValueError):
         return fallback
+
+
+def _last_messages_by_case(db: Session, case_ids: list[int]) -> dict[int, str]:
+    """批量取每个工单的最新一条消息（列表页/主管队列避免逐单查询的 N+1）。"""
+    if not case_ids:
+        return {}
+    latest = (
+        select(SupportMessage.case_id, func.max(SupportMessage.id).label("max_id"))
+        .where(SupportMessage.case_id.in_(case_ids))
+        .group_by(SupportMessage.case_id)
+        .subquery()
+    )
+    rows = db.execute(
+        select(SupportMessage.case_id, SupportMessage.content).join(
+            latest, latest.c.max_id == SupportMessage.id
+        )
+    ).all()
+    return dict(rows)
 
 
 def _without_frontmatter(content: str) -> str:
@@ -150,7 +174,11 @@ class SupportService:
                 query.order_by(SupportCase.updated_at.desc(), SupportCase.id.desc())
             )
         )
-        return [self._case_summary(db, item) for item in cases]
+        last_messages = _last_messages_by_case(db, [item.id for item in cases])
+        return [
+            self._case_summary(db, item, last_messages=last_messages)
+            for item in cases
+        ]
 
     def detail(self, db: Session, owner_id: int, case_id: int) -> dict:
         case = self.require_case(db, owner_id, case_id)
@@ -397,6 +425,12 @@ class SupportService:
             raise AppError(
                 "CASE_VERSION_CONFLICT", "工单已被其他成员更新，请刷新后重试", 409
             )
+        if status not in _ALLOWED_CASE_TRANSITIONS.get(case.status, frozenset()):
+            raise AppError(
+                "INVALID_CASE_TRANSITION",
+                f"不能从 {case.status} 直接流转到 {status}（升级请走升级流程）",
+                422,
+            )
         if status == "resolved" and not resolution_code:
             raise AppError(
                 "RESOLUTION_CODE_REQUIRED", "解决工单前必须选择解决结果", 422
@@ -474,6 +508,10 @@ class SupportService:
         clean_content = content.strip()
         if not clean_content:
             raise AppError("EMPTY_REPLY", "回复内容不能为空", 422)
+        if len(clean_content) > MAX_REPLY_LENGTH:
+            raise AppError(
+                "REPLY_TOO_LONG", f"回复内容过长（最多 {MAX_REPLY_LENGTH} 字符）", 422
+            )
         OutboundService(build_customer_channel()).confirm(
             db,
             owner_id=owner_id,
@@ -782,6 +820,15 @@ class SupportService:
             reason=reason,
         )
         db.add(item)
+        try:
+            # 立即 flush：并发双击「采纳」时唯一约束在此触发 → 映射为 409
+            # （check-then-insert 竞态不再落成 500）。
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise AppError(
+                "SUGGESTION_ALREADY_REVIEWED", "该建议已经完成审核", 409
+            ) from None
         if outgoing:
             self._event(
                 db,
@@ -1198,6 +1245,17 @@ class SupportService:
             raise AppError("INVALID_QUALITY_VERDICT", "质检结论必须为通过或失败", 422)
         if verdict == "failed" and not failure_category:
             raise AppError("FAILURE_CATEGORY_REQUIRED", "质检失败必须选择失败类型", 422)
+        if suggestion_id is not None:
+            suggestion = db.scalar(
+                select(ReplySuggestion).where(
+                    ReplySuggestion.id == suggestion_id,
+                    ReplySuggestion.case_id == case.id,
+                )
+            )
+            if suggestion is None:
+                raise AppError(
+                    "SUGGESTION_NOT_FOUND", "回复建议不存在或不属于该工单", 422
+                )
         label = SupportQualityLabel(
             owner_id=owner_id,
             case_id=case.id,
@@ -1346,7 +1404,11 @@ class SupportService:
     # ------------------------------------------------------------------
 
     def _escalation_vo(
-        self, db: Session, item: SupportEscalation, case: SupportCase | None = None
+        self,
+        db: Session,
+        item: SupportEscalation,
+        case: SupportCase | None = None,
+        last_messages: dict[int, str] | None = None,
     ) -> dict:
         return {
             "id": item.id,
@@ -1366,7 +1428,9 @@ class SupportService:
             "resolvedAt": item.resolved_at.isoformat() if item.resolved_at else None,
             "isDemo": item.is_demo,
             "case": (
-                SupportService._case_summary(db, case) if case is not None else None
+                SupportService._case_summary(db, case, last_messages=last_messages)
+                if case is not None
+                else None
             ),
         }
 
@@ -1411,6 +1475,7 @@ class SupportService:
         db.add(item)
         db.flush()
         case.status = "escalated"
+        case.version += 1
         case.updated_at = datetime.utcnow()
         self._event(
             db,
@@ -1442,7 +1507,11 @@ class SupportService:
                 SupportEscalation.raised_at.asc(),
             )
         ).all()
-        return [self._escalation_vo(db, item, case) for item, case in rows]
+        last_messages = _last_messages_by_case(db, [case.id for _, case in rows])
+        return [
+            self._escalation_vo(db, item, case, last_messages=last_messages)
+            for item, case in rows
+        ]
 
     def accept_escalation(
         self, db: Session, owner_id: int, escalation_id: int, actor_id: int
@@ -1771,62 +1840,15 @@ class SupportService:
         db.flush()
         run_id = run.id
         db.commit()
-        runner = AgentEvaluationRunner(coordinator)
         try:
-            for case in dataset.cases:
-                try:
-                    execution = await asyncio.wait_for(
-                        runner.execute_case(db, owner_id=owner_id, case=case),
-                        timeout=120,
-                    )
-                except asyncio.TimeoutError:
-                    # 单用例超时：记录失败结果，继续下一个，避免整个评测永久 running
-                    db.add(
-                        EvaluationResult(
-                            run_id=run.id,
-                            case_id=case.id,
-                            answer="",
-                            expected_point_score=0,
-                            citation_correct=False,
-                            refusal_correct=False,
-                            latency_ms=120000,
-                            evidence_json=json.dumps(
-                                {
-                                    "releaseId": release.id,
-                                    "scoringVersion": SCORING_VERSION,
-                                    "runtimeMode": "timeout",
-                                    "terminalState": "timed_out",
-                                    "tools": [],
-                                    "evidenceIds": [],
-                                    "metrics": {
-                                        "expectedPointScore": 0,
-                                        "citationCorrect": False,
-                                        "refusalCorrect": False,
-                                        "highRiskFailure": False,
-                                    },
-                                    "gateBlocked": False,
-                                    "trace": [],
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                    )
-                    continue
-                db.add(
-                    EvaluationResult(
-                        run_id=run.id,
-                        case_id=case.id,
-                        answer=execution.answer,
-                        expected_point_score=execution.metrics.expected_point_score,
-                        citation_correct=execution.metrics.citation_correct,
-                        refusal_correct=execution.metrics.refusal_correct,
-                        latency_ms=execution.latency_ms,
-                        evidence_json=json.dumps(
-                            execution_payload(execution, release_id=release.id),
-                            ensure_ascii=False,
-                        ),
-                    )
-                )
+            await execute_run_cases(
+                db,
+                run_id=run.id,
+                dataset=dataset,
+                coordinator=coordinator,
+                owner_id=owner_id,
+                release_id=release.id,
+            )
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             db.commit()
@@ -1970,13 +1992,20 @@ class SupportService:
         }
 
     @staticmethod
-    def _case_summary(db: Session, item: SupportCase) -> dict:
-        last_message = db.scalar(
-            select(SupportMessage.content)
-            .where(SupportMessage.case_id == item.id)
-            .order_by(SupportMessage.id.desc())
-            .limit(1)
-        )
+    def _case_summary(
+        db: Session,
+        item: SupportCase,
+        last_messages: dict[int, str] | None = None,
+    ) -> dict:
+        if last_messages is not None:
+            last_message = last_messages.get(item.id)
+        else:
+            last_message = db.scalar(
+                select(SupportMessage.content)
+                .where(SupportMessage.case_id == item.id)
+                .order_by(SupportMessage.id.desc())
+                .limit(1)
+            )
         return {
             "id": item.id,
             "caseKey": item.case_key,

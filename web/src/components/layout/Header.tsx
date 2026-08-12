@@ -12,7 +12,9 @@ interface HeaderProps {
 }
 
 export function Header({ onToggleSidebar }: HeaderProps) {
-  const { currentSessionId, sessions } = useChatStore();
+  // 字段级订阅：流式 token 增量不触发顶栏重渲染
+  const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const sessions = useChatStore((state) => state.sessions);
   const user = useAuthStore((state) => state.user);
   const currentSession = sessions.find((session) => session.id === currentSessionId);
   const roleLabel = user?.role === "admin" ? "平台管理员" : "商家运营";

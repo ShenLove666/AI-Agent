@@ -447,9 +447,9 @@ def set_document_enabled(
     request: Request,
     value: bool = True,
 ) -> ApiResponse:
-    item = _resolve_document(db, doc_id, user)
-    item.status = "indexed" if value else "disabled"
-    db.commit()
+    # 禁用同步删除向量（避免向量通道仍检索到已禁用文档）；启用则从 chunk 重建向量
+    _resolve_document(db, doc_id, user)
+    request.app.state.container.knowledge.set_document_enabled(db, doc_id, value)
     return ApiResponse(data=True, traceId=current_trace_id())
 
 

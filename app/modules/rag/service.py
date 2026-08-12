@@ -123,6 +123,8 @@ class RagChatService:
         self.context_token_budget = context_token_budget
         self.agentic = agentic
         self.runtime_settings_repository = runtime_settings_repository
+        # 聊天侧知识发布门禁（默认关，演示环境行为不变；开启后仅检索已发布版本）
+        self.chat_knowledge_release_gate = False
         # 意图前置路由（Intent → Rewrite → Research）。构造时创建，测试可注入
         # 自定义实例；model_router 在每次 classify 前同步为服务当前值
         # （运行期/测试会整体替换 router 实例，避免陈旧绑定）。
@@ -153,6 +155,40 @@ class RagChatService:
                     "retrieval_timeout_seconds", self.retrieval.timeout_seconds
                 )
             )
+        self.chat_knowledge_release_gate = str(
+            overrides.get(
+                "chat_knowledge_release_gate", self.chat_knowledge_release_gate
+            )
+        ).lower() == "true"
+
+    @staticmethod
+    def _published_release_document_ids(
+        db: Session, data_owner_id: int
+    ) -> tuple[int, ...]:
+        """聊天侧知识发布门禁：仅已发布且激活版本内的文档可被引用（与客服
+        copilot 同语义）。无已发布版本 → 空元组，禁止检索任何知识文档，
+        Agent 只能依赖订单/履约/退款等实时业务事实作答。"""
+        from app.modules.support.models import (
+            KnowledgeRelease,
+            KnowledgeReleaseDocument,
+        )
+
+        release = db.scalar(
+            select(KnowledgeRelease).where(
+                KnowledgeRelease.owner_id == data_owner_id,
+                KnowledgeRelease.status == "published",
+                KnowledgeRelease.is_active.is_(True),
+            )
+        )
+        if release is None:
+            return ()
+        return tuple(
+            db.scalars(
+                select(KnowledgeReleaseDocument.document_id).where(
+                    KnowledgeReleaseDocument.release_id == release.id
+                )
+            )
+        )
 
     @staticmethod
     def _assert_knowledge_base_access(
@@ -745,6 +781,12 @@ class RagChatService:
                 db, data_owner_id, request.knowledge_base_ids
             )
             if request.rag_enabled and self.agentic is not None:
+                # 聊天侧知识发布门禁：开启后仅允许引用已发布并激活版本内的文档
+                allowed_document_ids = (
+                    self._published_release_document_ids(db, data_owner_id)
+                    if self.chat_knowledge_release_gate
+                    else None
+                )
                 agent_run = await self.agentic.run(
                     db,
                     actor_user_id=actor_user_id,
@@ -752,6 +794,7 @@ class RagChatService:
                     question=rewrite.rewritten_query,
                     original_question=request.question,
                     knowledge_base_ids=tuple(request.knowledge_base_ids),
+                    allowed_document_ids=allowed_document_ids,
                     progress_sink=collect,
                 )
                 agent_mode = agent_run.decision.mode

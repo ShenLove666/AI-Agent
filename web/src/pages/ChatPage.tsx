@@ -11,17 +11,16 @@ import { useChatStore } from "@/stores/chatStore";
 export function ChatPage() {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId: string }>();
-  const {
-    messages,
-    isLoading,
-    isStreaming,
-    currentSessionId,
-    sessions,
-    isCreatingNew,
-    fetchSessions,
-    selectSession,
-    createSession
-  } = useChatStore();
+  // 字段级订阅：仅在自己依赖的切片变化时重渲染
+  const messages = useChatStore((state) => state.messages);
+  const isLoading = useChatStore((state) => state.isLoading);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const sessions = useChatStore((state) => state.sessions);
+  const isCreatingNew = useChatStore((state) => state.isCreatingNew);
+  const fetchSessions = useChatStore((state) => state.fetchSessions);
+  const selectSession = useChatStore((state) => state.selectSession);
+  const createSession = useChatStore((state) => state.createSession);
   const showWelcome = messages.length === 0 && !isLoading;
   const showEmptyLoading = messages.length === 0 && isLoading;
   const lastMessage = messages[messages.length - 1];

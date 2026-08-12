@@ -80,8 +80,18 @@ export function SourceCitation({ index, messageId, source }: SourceCitationProps
         >
           <div
             role={sourceCanOpen ? "link" : undefined}
+            tabIndex={sourceCanOpen ? 0 : undefined}
             title={source.docName || "查看来源"}
             onClick={() => sourceCanOpen && openSource(source)}
+            onKeyDown={(event) => {
+              if (
+                sourceCanOpen &&
+                (event.key === "Enter" || event.key === " ")
+              ) {
+                event.preventDefault();
+                openSource(source);
+              }
+            }}
             className={cn(
               "group rounded-2xl p-4 transition-colors",
               sourceCanOpen && "cursor-pointer hover:bg-[#FAFAFA] dark:hover:bg-[#26262A]"

@@ -120,6 +120,7 @@ export type RetailTask = {
   sourceId?: string;
   assigneeId?: number | null;
   verificationRunId?: number | null;
+  verificationRunStatus?: string | null;
   changeVersion?: string | null;
   createdAt?: string;
 };

@@ -12,7 +12,6 @@ function vendorChunk(id: string): string | undefined {
   }
   if (
     id.includes("react-markdown") ||
-    id.includes("react-syntax-highlighter") ||
     id.includes("remark-") ||
     id.includes("rehype-")
   ) {

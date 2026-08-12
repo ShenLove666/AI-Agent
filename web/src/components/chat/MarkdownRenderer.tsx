@@ -8,14 +8,20 @@ import remarkCjkFriendly from "remark-cjk-friendly";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { Check, Copy, ImageIcon } from "lucide-react";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark, oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 import { Button } from "@/components/ui/button";
 import { SourceCitation } from "@/components/chat/SourceCitation";
 import { cn } from "@/lib/utils";
+import { copyText } from "@/utils/clipboard";
 import { useThemeStore } from "@/stores/themeStore";
 import type { SourceRef } from "@/types";
+
+// Prism 高亮按需加载：体积大，仅在回答出现代码块时拉取
+const CodeBlock = React.lazy(() =>
+  import("@/components/common/CodeBlock").then((module) => ({
+    default: module.CodeBlock
+  }))
+);
 
 interface MarkdownRendererProps {
   content: string;
@@ -219,22 +225,26 @@ export function MarkdownRenderer({ content, messageId, sources }: MarkdownRender
                 <CopyButton value={value} />
               </div>
               <div className="overflow-x-auto">
-                <SyntaxHighlighter
-                  language={language}
-                  style={theme === "dark" ? oneDark : oneLight}
-                  PreTag="div"
-                  customStyle={{
-                    margin: 0,
-                    padding: "0.75rem 1rem",
-                    background: "transparent",
-                    fontSize: "13px",
-                    lineHeight: "1.5"
-                  }}
-                  showLineNumbers={false}
-                  wrapLines={true}
+                <React.Suspense
+                  fallback={
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: "0.75rem 1rem",
+                        fontSize: "13px",
+                        lineHeight: "1.5"
+                      }}
+                    >
+                      <code>{value}</code>
+                    </pre>
+                  }
                 >
-                  {value}
-                </SyntaxHighlighter>
+                  <CodeBlock
+                    language={language}
+                    value={value}
+                    dark={theme === "dark"}
+                  />
+                </React.Suspense>
               </div>
             </div>
           );
@@ -254,7 +264,7 @@ export function MarkdownRenderer({ content, messageId, sources }: MarkdownRender
           return (
             <img
               src={src}
-              alt=""
+              alt={alt || ""}
               className="my-3 max-w-full rounded-lg"
               onError={() => setHasError(true)}
               loading="lazy"
@@ -430,15 +440,23 @@ export function MarkdownRenderer({ content, messageId, sources }: MarkdownRender
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = React.useState(false);
+  const timerRef = React.useRef<number | null>(null);
+
+  React.useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    []
+  );
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
+    const ok = await copyText(value);
+    if (!ok) {
       setCopied(false);
+      return;
     }
+    setCopied(true);
+    timerRef.current = window.setTimeout(() => setCopied(false), 1500);
   };
 
   return (

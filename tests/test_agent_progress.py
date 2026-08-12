@@ -82,6 +82,7 @@ class _SlowCoordinator:
         question,
         original_question=None,
         knowledge_base_ids=(),
+        allowed_document_ids=None,
         progress_sink=None,
     ):
         if progress_sink is not None:

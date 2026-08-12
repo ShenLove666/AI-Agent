@@ -11,14 +11,13 @@ export function ChatInput() {
   const [isFocused, setIsFocused] = React.useState(false);
   const isComposingRef = React.useRef(false);
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
-  const {
-    sendMessage,
-    isStreaming,
-    cancelGeneration,
-    deepThinkingEnabled,
-    setDeepThinkingEnabled,
-    inputFocusKey
-  } = useChatStore();
+  // 字段级订阅：流式 token 增量只重渲染依赖它的组件，避免整店无差别刷新
+  const sendMessage = useChatStore((state) => state.sendMessage);
+  const isStreaming = useChatStore((state) => state.isStreaming);
+  const cancelGeneration = useChatStore((state) => state.cancelGeneration);
+  const deepThinkingEnabled = useChatStore((state) => state.deepThinkingEnabled);
+  const setDeepThinkingEnabled = useChatStore((state) => state.setDeepThinkingEnabled);
+  const inputFocusKey = useChatStore((state) => state.inputFocusKey);
 
   const focusInput = React.useCallback(() => {
     const el = textareaRef.current;

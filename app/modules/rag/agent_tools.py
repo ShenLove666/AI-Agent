@@ -178,6 +178,14 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return fallback
 
 
+def _format_money(minor: int, currency: str) -> str:
+    """证据文本金额展示：CNY 按 1 元 = 100 分换算为主要单位，避免把「分」级
+    数字直接写进顾客可见文本；非 CNY 货币保守展示原始 minor 并明确标注。"""
+    if currency == "CNY":
+        return f"{minor / 100:.2f} {currency}"
+    return f"{minor} {currency}（最小货币单位）"
+
+
 def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRegistry:
     order_service = OrderService()
 
@@ -369,7 +377,7 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
             id=f"order:{detail['id']}",
             content=(
                 f"订单 {detail['orderNo']} 状态为 {detail['status']}，"
-                f"金额 {amount['minor']} {amount['currency']}（最小货币单位），"
+                f"金额 {_format_money(amount['minor'], amount['currency'])}，"
                 f"共 {len(detail['items'])} 项商品。"
             ),
             source="orders",
@@ -411,7 +419,7 @@ def build_tool_registry(retrieval: MultiChannelRetrievalEngine | None) -> ToolRe
             id=f"refund:{refund['id']}",
             content=(
                 f"订单 {detail['orderNo']} 退款状态为 {refund['status']}，"
-                f"退款金额 {refund['amountMinor']}（最小货币单位）。"
+                f"退款金额 {_format_money(refund['amountMinor'], detail['amount']['currency'])}。"
             ),
             source="refunds",
             provenance=detail["provenance"],

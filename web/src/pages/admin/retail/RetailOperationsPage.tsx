@@ -117,8 +117,8 @@ export function RetailOperationsPage() {
   const [assigneeId, setAssigneeId] = useState("");
   const [changeVersion, setChangeVersion] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const overview = await getRetailOverview();
@@ -126,12 +126,27 @@ export function RetailOperationsPage() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "运营数据加载失败");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 复测运行在后台执行期间轻量轮询（2s），全部进入终态后自动停止；
+  // 轮询走 silent 模式，不闪「加载中」。
+  const verifying = Boolean(
+    data?.tasks.some(
+      (task) =>
+        task.verificationRunStatus === "pending" ||
+        task.verificationRunStatus === "running"
+    )
+  );
+  useEffect(() => {
+    if (!verifying) return;
+    const timer = window.setTimeout(() => void load(true), 2000);
+    return () => window.clearTimeout(timer);
+  }, [verifying, load]);
   const topLift = useMemo(() => data?.rules[0]?.lift ?? 0, [data]);
 
   const downloadReport = async () => {
@@ -651,7 +666,17 @@ export function RetailOperationsPage() {
                   <p className="mt-2 text-xs text-slate-400">
                     目标：{task.targetMetric || "完成问题验证"}
                     {task.sourceType ? ` · 来源：${sourceTypeLabel(task.sourceType)}` : ""}
-                    {task.verificationRunId ? ` · 复测 #${task.verificationRunId}` : ""}
+                    {task.verificationRunId ? (
+                      <>
+                        {" · "}
+                        复测 #{task.verificationRunId}
+                        {task.verificationRunStatus
+                          ? `（${statusLabel[task.verificationRunStatus] || task.verificationRunStatus}）`
+                          : ""}
+                      </>
+                    ) : (
+                      ""
+                    )}
                     {nextStatus[task.status] ? " · 点击查看详情并推进" : " · 点击查看详情"}
                   </p>
                 </button>

@@ -39,12 +39,14 @@ class LabelsRequest(BaseModel):
 
 
 class ReplyRequest(BaseModel):
-    content: str
+    content: str = Field(min_length=1, max_length=4000)
 
 
 class DecisionRequest(BaseModel):
     decision: str
-    final_content: str | None = Field(default=None, alias="finalContent")
+    final_content: str | None = Field(
+        default=None, alias="finalContent", max_length=4000
+    )
     reason: str | None = None
     confirmed_facts: bool = Field(default=False, alias="confirmedFacts")
 

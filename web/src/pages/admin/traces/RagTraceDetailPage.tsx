@@ -294,6 +294,7 @@ function NodeDetailCard({
                 size="sm"
                 onClick={onClose}
                 className="h-7 px-2 text-slate-500 hover:text-slate-800"
+                aria-label="关闭节点详情"
             >
               <X className="h-4 w-4" />
             </Button>
@@ -386,6 +387,9 @@ export function RagTraceDetailPage() {
   const params = useParams<{ traceId: string }>();
   const traceId = decodeTraceId(params.traceId);
   const detailRequestRef = useRef(0);
+  // 轮询去重：800ms 轮询返回的详情与上次完全一致时不 setState，
+  // 避免瀑布图/节点列表整树重渲染（RUNNING 期间节点未变化时收益最大）。
+  const lastDetailJsonRef = useRef<string | null>(null);
   const [detail, setDetail] = useState<RagTraceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
@@ -401,7 +405,11 @@ export function RagTraceDetailPage() {
     try {
       const result = await getRagTraceDetail(nextTraceId);
       if (detailRequestRef.current !== requestId) return null;
-      setDetail(result);
+      const nextJson = JSON.stringify(result);
+      if (nextJson !== lastDetailJsonRef.current) {
+        lastDetailJsonRef.current = nextJson;
+        setDetail(result);
+      }
       return result;
     } catch (error) {
       if (detailRequestRef.current !== requestId) return null;
@@ -462,6 +470,7 @@ export function RagTraceDetailPage() {
   useEffect(() => {
     if (!traceId) {
       detailRequestRef.current += 1;
+      lastDetailJsonRef.current = null;
       setDetail(null);
       setDetailLoading(false);
       return;

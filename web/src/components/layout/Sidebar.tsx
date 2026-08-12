@@ -33,6 +33,7 @@ import { Loading } from "@/components/common/Loading";
 import { BrandMark } from "@/components/brand/BrandMark";
 import { BRAND_NAME, BRAND_SHORT_NAME } from "@/config/brand";
 import { cn } from "@/lib/utils";
+import { parseApiDate } from "@/utils/time";
 import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
 import { shortenSessionTitle } from "@/lib/title";
@@ -64,17 +65,16 @@ function useDesktopNavigation() {
 }
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
-  const {
-    sessions,
-    currentSessionId,
-    isLoading,
-    sessionsLoaded,
-    createSession,
-    deleteSession,
-    renameSession,
-    selectSession,
-    fetchSessions
-  } = useChatStore();
+  // 字段级订阅：流式 token 增量不触发侧边栏无差别重渲染
+  const sessions = useChatStore((state) => state.sessions);
+  const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const isLoading = useChatStore((state) => state.isLoading);
+  const sessionsLoaded = useChatStore((state) => state.sessionsLoaded);
+  const createSession = useChatStore((state) => state.createSession);
+  const deleteSession = useChatStore((state) => state.deleteSession);
+  const renameSession = useChatStore((state) => state.renameSession);
+  const selectSession = useChatStore((state) => state.selectSession);
+  const fetchSessions = useChatStore((state) => state.fetchSessions);
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
   const isDesktop = useDesktopNavigation();
@@ -110,7 +110,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
     const order: string[] = [];
 
     const resolveLabel = (value?: string) => {
-      const parsed = value ? new Date(value) : now;
+      // naive UTC 时间戳需按 UTC 解析（parseApiDate 追加 Z），否则 +8 时区
+      // 在午夜附近会把「今天」错分组到「昨天」。
+      const parsed = value ? parseApiDate(value) : now;
       const date = isValid(parsed) ? parsed : now;
       const diff = Math.max(0, differenceInCalendarDays(now, date));
       if (diff === 0) return "今天";

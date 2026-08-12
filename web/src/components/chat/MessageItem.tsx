@@ -228,7 +228,7 @@ export const MessageItem = React.memo(function MessageItem({
                 </div>
               ) : null}
               {message.turnId && message.status !== "streaming" ? (
-                <button type="button" disabled={isLoading} onClick={() => void regenerateTurn(message.turnId!)} className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" title="重新生成"><RotateCcw className="h-4 w-4" /></button>
+                <button type="button" disabled={isLoading} onClick={() => void regenerateTurn(message.turnId!)} className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40" title="重新生成" aria-label="重新生成"><RotateCcw className="h-4 w-4" /></button>
               ) : null}
             </div>
           ) : null}

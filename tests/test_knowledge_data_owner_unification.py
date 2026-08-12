@@ -433,6 +433,7 @@ class _FakeAgentic:
         question,
         original_question=None,
         knowledge_base_ids=(),
+        allowed_document_ids=None,
         progress_sink=None,
     ):
         return self.run_result

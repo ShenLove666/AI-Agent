@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Boxes,
   Check,
@@ -24,6 +24,7 @@ import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { toast } from "sonner";
 
 import { RelativeTime } from "@/components/RelativeTime";
+import { copyText } from "@/utils/clipboard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -314,15 +315,23 @@ function ChangeDiffTable({ detail }: { detail: BizChangeLog | null }) {
 // 一键复制按钮，成功后短暂切换为对勾，风格对齐聊天区代码块的复制交互
 function CopyButton({ value, label = "复制" }: { value: string; label?: string }) {
   const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    },
+    []
+  );
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
+    const ok = await copyText(value);
+    if (!ok) {
       setCopied(false);
+      return;
     }
+    setCopied(true);
+    timerRef.current = window.setTimeout(() => setCopied(false), 1500);
   };
 
   return (

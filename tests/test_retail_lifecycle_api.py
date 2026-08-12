@@ -17,6 +17,7 @@ import asyncio
 import csv
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from sqlalchemy import event, select
@@ -119,6 +120,33 @@ def _seed_users(database: Database) -> dict[str, User]:
             "operator": operator,
             "agent": agent,
         }
+
+
+class _FakeVerificationAgentic:
+    """可控复测执行器：按问题关键词选择终态，评分结果确定。"""
+
+    def __init__(self, refuse_marker: str = "保证") -> None:
+        self.refuse_marker = refuse_marker
+        self.questions: list[str] = []
+
+    async def run(self, db, **kwargs):
+        question = str(kwargs.get("question") or "")
+        self.questions.append(question)
+        if self.refuse_marker and self.refuse_marker in question:
+            return SimpleNamespace(
+                answer="当前证据不足，无法给出可靠结论，建议转人工复核。",
+                results=(),
+                terminal_state="refused",
+                steps=(),
+                runtime_mode="deterministic_fallback",
+            )
+        return SimpleNamespace(
+            answer="引用有效活动或规则：不虚构优惠与库存。",
+            results=(),
+            terminal_state="grounded",
+            steps=(),
+            runtime_mode="deterministic_fallback",
+        )
 
 
 def _run_scenario(app, database, scenario):
@@ -342,7 +370,8 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 )
                 assert resp.status_code == 400
 
-                # 发起复测：创建评测运行并关联
+                # 发起复测：创建评测运行并关联，响应后后台立即执行（可控 fake 执行器）
+                app.state.container.agentic = _FakeVerificationAgentic()
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/verify",
                     headers=owner,
@@ -356,19 +385,18 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 ).json()["data"]
                 assert detail["verificationRunId"] == run_id
                 assert detail["changeVersion"] == "v3"
-                assert detail["afterEvidence"] == {}
+                # 复测已后台执行：运行完成、证据写回；越权拒答题 0 分 → 保持待复测
+                assert detail["verificationRun"]["status"] == "completed"
+                assert detail["afterEvidence"]["origin"] == "task_verify"
+                assert detail["afterEvidence"]["runId"] == run_id
+                assert detail["afterEvidence"]["failed"] >= 1
+                assert detail["status"] == "pending_verification"
 
                 # 任务详情含来源与目标指标
                 assert detail["targetMetric"] == "搭配购采用率"
                 assert detail["beforeEvidence"]["origin"] == "campaign_confirm"
 
-                # 复测运行补齐 afterEvidence 后可 resolved
-                with database.session_factory() as db:
-                    from app.modules.optimization.models import OptimizationTask
-
-                    task = db.get(OptimizationTask, task_id)
-                    task.after_evidence_json = '{"score": 92}'
-                    db.commit()
+                # 有失败用例：复测证据已存在，人工确认解决可直接流转
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/transition",
                     headers=owner,
@@ -444,3 +472,93 @@ async def _login(client, username: str, password: str = "AdminDemo@2026") -> dic
     )
     assert resp.status_code == 200, resp.text
     return {"Authorization": f"Bearer {resp.json()['data']['access_token']}"}
+
+
+def test_task_verification_auto_resolves_on_full_pass(tmp_path: Path):
+    """④ 复测闭环：全用例通过 → 后台执行完自动流转 resolved；失败则保留待复测。"""
+    os.environ["DB_URL"] = f"sqlite:///{tmp_path / 'retail-verify.db'}"
+    os.environ["VECTOR_BACKEND"] = "disabled"
+    os.environ.pop("EMBED_MODEL_PATH", None)
+
+    from app.application import create_app
+    from app.modules.evaluation.models import EvaluationCase, EvaluationDataset
+    from app.modules.optimization.models import OptimizationTask
+
+    app = create_app()
+    database = app.state.container.database
+    database.create_schema()
+    users = _seed_users(database)
+    with database.session_factory() as db:
+        dataset = EvaluationDataset(
+            owner_id=users["owner"].id, name="复测评测集", is_demo=True
+        )
+        db.add(dataset)
+        db.flush()
+        db.add_all(
+            [
+                EvaluationCase(
+                    dataset_id=dataset.id,
+                    case_key="verify-a",
+                    question="搭配购活动怎么参加？",
+                    category="活动口径",
+                    difficulty="medium",
+                    expected_points_json="[]",
+                    expected_document_keys_json="[]",
+                    should_refuse=False,
+                ),
+                EvaluationCase(
+                    dataset_id=dataset.id,
+                    case_key="verify-b",
+                    question="生鲜商品不满意可以退款吗？",
+                    category="退款售后",
+                    difficulty="medium",
+                    expected_points_json="[]",
+                    expected_document_keys_json="[]",
+                    should_refuse=False,
+                ),
+            ]
+        )
+        task = OptimizationTask(
+            owner_id=users["owner"].id,
+            source_type="manual",
+            source_id="1",
+            title="复测闭环任务",
+            status="pending_verification",
+            target_metric="评测通过率",
+            change_version="v1",
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+        db.commit()
+
+    async def scenario(app, database):
+        transport = httpx.ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                owner = await _login(client, "merchant-demo")
+                app.state.container.agentic = _FakeVerificationAgentic()
+                resp = await client.post(
+                    f"/api/v1/retail/optimization-tasks/{task_id}/verify",
+                    headers=owner,
+                )
+                assert resp.status_code == 200, resp.text
+                run_id = resp.json()["data"]["runId"]
+                detail = (
+                    await client.get(
+                        f"/api/v1/retail/optimization-tasks/{task_id}", headers=owner
+                    )
+                ).json()["data"]
+                # 全部通过：复测运行完成、证据写回、任务自动 resolved
+                assert detail["verificationRun"]["status"] == "completed"
+                assert detail["afterEvidence"]["origin"] == "task_verify"
+                assert detail["afterEvidence"]["runId"] == run_id
+                assert detail["afterEvidence"]["total"] == 2
+                assert detail["afterEvidence"]["passed"] == 2
+                assert detail["afterEvidence"]["failed"] == 0
+                assert detail["status"] == "resolved"
+
+    _run_scenario(app, database, scenario)
+    database.engine.dispose()

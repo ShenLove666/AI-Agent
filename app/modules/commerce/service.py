@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import gzip
 import hashlib
@@ -29,6 +30,7 @@ from app.modules.evaluation.models import (
     EvaluationResult,
     EvaluationRun,
 )
+from app.modules.evaluation.runtime import execute_run_cases
 from app.modules.operations.models import OperationEvent
 from app.modules.optimization.models import OptimizationTask
 from app.modules.provenance.catalog import (
@@ -1121,6 +1123,23 @@ class RetailService:
             metric("escalation_rate", "转人工率", escalated, answers),
             metric("positive_rate", "回答好评率", positive, answers),
         ]
+        task_rows = db.scalars(
+            select(OptimizationTask).where(OptimizationTask.owner_id == owner_id)
+        ).all()
+        run_status_by_id = {
+            run.id: run.status
+            for run in db.scalars(
+                select(EvaluationRun).where(
+                    EvaluationRun.id.in_(
+                        [
+                            task.verification_run_id
+                            for task in task_rows
+                            if task.verification_run_id is not None
+                        ]
+                    )
+                )
+            )
+        }
         tasks = [
             {
                 "id": task.id,
@@ -1131,12 +1150,16 @@ class RetailService:
                 "sourceId": task.source_id,
                 "assigneeId": task.assignee_id,
                 "verificationRunId": task.verification_run_id,
+                # 复测运行状态（供前端轮询：pending/running 时后台仍在执行）
+                "verificationRunStatus": (
+                    run_status_by_id.get(task.verification_run_id)
+                    if task.verification_run_id is not None
+                    else None
+                ),
                 "changeVersion": task.change_version,
                 "createdAt": task.created_at.isoformat(),
             }
-            for task in db.scalars(
-                select(OptimizationTask).where(OptimizationTask.owner_id == owner_id)
-            )
+            for task in task_rows
         ]
         runs = [
             {
@@ -1533,6 +1556,85 @@ class RetailService:
         task.verification_run_id = run.id
         db.commit()
         return run
+
+    def run_task_verification_background(
+        self, db: Session, owner_id: int, task_id: int, coordinator
+    ) -> None:
+        """复测后台执行（BackgroundTasks 同步入口）。
+
+        执行评测用例 → 把复测结果写回任务 afterEvidence →
+        全部通过且处于待复测时自动流转 resolved（失败则保留待复测供人工处置）。
+        """
+        asyncio.run(self._run_task_verification(db, owner_id, task_id, coordinator))
+
+    async def _run_task_verification(
+        self, db: Session, owner_id: int, task_id: int, coordinator
+    ) -> None:
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
+            )
+        )
+        if task is None or task.verification_run_id is None:
+            return
+        run = db.get(EvaluationRun, task.verification_run_id)
+        if run is None or run.status != "pending":
+            return
+        dataset = db.get(EvaluationDataset, run.dataset_id)
+        if dataset is None:
+            run.status = "failed"
+            run.error_summary = "评测集不存在"
+            db.commit()
+            return
+        run.status = "running"
+        run.started_at = datetime.utcnow()
+        db.commit()
+        try:
+            summary = await execute_run_cases(
+                db,
+                run_id=run.id,
+                dataset=dataset,
+                coordinator=coordinator,
+                owner_id=owner_id,
+            )
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            db.commit()
+        except Exception as exc:
+            # 后台执行失败不抛出：运行标记 failed，任务保留待复测（可再次发起）
+            db.rollback()
+            persisted = db.get(EvaluationRun, run.id)
+            if persisted is not None:
+                persisted.status = "failed"
+                persisted.error_summary = type(exc).__name__
+                persisted.completed_at = datetime.utcnow()
+                db.commit()
+            return
+        task = db.get(OptimizationTask, task_id)
+        if task is None:
+            return
+        task.after_evidence_json = json.dumps(
+            {
+                "origin": "task_verify",
+                "runId": run.id,
+                "total": summary["total"],
+                "passed": summary["passed"],
+                "failed": summary["failed"],
+                "timedOut": summary["timedOut"],
+                "highRiskFailures": summary["highRiskFailures"],
+            },
+            ensure_ascii=False,
+        )
+        # 全部用例通过且无高风险失败 → 自动闭环为已解决
+        if (
+            task.status == "pending_verification"
+            and summary["total"] > 0
+            and summary["failed"] == 0
+            and summary["timedOut"] == 0
+            and summary["highRiskFailures"] == 0
+        ):
+            task.status = "resolved"
+        db.commit()
 
     def sync_failed_evaluations(self, db: Session, owner_id: int) -> int:
         """把存在失败用例的评测运行补建为优化任务（幂等）。"""

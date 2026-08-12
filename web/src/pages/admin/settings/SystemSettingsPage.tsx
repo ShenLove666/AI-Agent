@@ -7,6 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -159,6 +166,23 @@ export function SystemSettingsPage() {
                 disabled={!canWrite}
                 className="w-64"
               />
+            ) : item.enum && item.enum.length > 0 ? (
+              <Select
+                value={value}
+                onValueChange={(next) => updateDraft(item.key, next)}
+                disabled={!canWrite}
+              >
+                <SelectTrigger className="w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {item.enum.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {option === "true" ? "开启" : option === "false" ? "关闭" : option}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : (
               <Input
                 value={value}

@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { markdownToPlainText } from "@/lib/markdownToText";
+import { copyText } from "@/utils/clipboard";
 import { useChatStore } from "@/stores/chatStore";
 import type { FeedbackValue } from "@/types";
 
@@ -112,10 +113,9 @@ export function FeedbackButtons({
     cancelCopyTimer();
     setCopyOpen(false);
     const value = mode === "markdown" ? content : markdownToPlainText(content);
-    try {
-      await navigator.clipboard.writeText(value);
+    if (await copyText(value)) {
       toast.success(mode === "markdown" ? "已复制 Markdown" : "复制成功");
-    } catch {
+    } else {
       toast.error("复制失败");
     }
   };

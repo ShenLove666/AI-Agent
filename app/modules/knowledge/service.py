@@ -243,6 +243,76 @@ class KnowledgeService:
         db.refresh(document)
         return document
 
+    def set_document_enabled(
+        self, db: Session, document_id: int, value: bool
+    ) -> KnowledgeDocument:
+        """启用/禁用文档，并同步向量索引：
+        禁用 → 删除向量（否则向量通道无状态过滤，仍可检索到已禁用文档）；
+        重新启用 → 从存量 chunk 重建向量（禁用时向量已删除，避免静默降级为纯关键词）。"""
+        document = db.get(KnowledgeDocument, document_id)
+        if not document:
+            raise AppError("DOCUMENT_NOT_FOUND", "文档不存在", 404)
+        if value:
+            document.status = "indexed"
+            db.commit()
+            if self.vector_indexer is not None and not document.vector_indexed:
+                self._rebuild_document_vectors(db, document)
+            return document
+        document.status = "disabled"
+        db.commit()
+        if self.vector_indexer is not None:
+            try:
+                asyncio.run(self.vector_indexer.store.delete_document(document.id))
+                document.vector_indexed = False
+                document.error_message = None
+                db.commit()
+            except Exception as exc:  # noqa: BLE001
+                # 向量清理失败：状态仍是 disabled（关键词通道已不可见），记录风险
+                db.rollback()
+                document = db.get(KnowledgeDocument, document_id)
+                document.error_message = (
+                    f"禁用成功，但向量清理失败（向量通道可能仍可检索到该文档）：{exc}"
+                )
+                db.commit()
+        return document
+
+    def _rebuild_document_vectors(
+        self, db: Session, document: KnowledgeDocument
+    ) -> None:
+        """从存量 chunk 重建单文档向量（重新启用时调用，失败降级关键词并记录）。"""
+        base = db.get(KnowledgeBase, document.knowledge_base_id)
+        chunks = db.scalars(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.document_id == document.id)
+            .order_by(KnowledgeChunk.position)
+        ).all()
+        try:
+            asyncio.run(self.vector_indexer.store.delete_document(document.id))
+            asyncio.run(
+                self.vector_indexer.index(
+                    owner_id=(
+                        base.owner_id if base is not None else document.uploader_id
+                    ),
+                    knowledge_base_id=document.knowledge_base_id,
+                    document_id=document.id,
+                    source=document.filename,
+                    chunks=[
+                        (chunk.id, chunk.position, chunk.content) for chunk in chunks
+                    ],
+                )
+            )
+            document.vector_indexed = True
+            document.error_message = None
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            document = db.get(KnowledgeDocument, document.id)
+            document.vector_indexed = False
+            document.error_message = (
+                f"重新启用后向量重建失败，当前仅关键词检索：{exc}"
+            )
+            db.commit()
+
     def list_documents(
         self, db: Session, base_id: int, owner_id: int
     ) -> list[KnowledgeDocument]:
