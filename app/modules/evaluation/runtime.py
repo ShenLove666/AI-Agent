@@ -86,12 +86,24 @@ class AgentEvaluationRunner:
     def __init__(self, coordinator: AgenticRagCoordinator):
         self.coordinator = coordinator
 
-    async def execute_case(self, db, *, owner_id: int, case: EvaluationCase) -> CaseExecution:
+    async def execute_case(
+        self,
+        db,
+        *,
+        owner_id: int,
+        case: EvaluationCase,
+        allowed_document_ids: tuple[int, ...] | None = None,
+    ) -> CaseExecution:
         started = time.perf_counter()
         # Reference answer and expected fields are deliberately not passed to the runtime.
+        # allowed_document_ids：评测候选版本白名单——Agent 只允许引用该 Release
+        # 内的文档，绝不检索 v1/v2 或其他未发布文档。
         run = await self.coordinator.run(
-            db, user_id=owner_id, question=case.question,
+            db,
+            user_id=owner_id,
+            question=case.question,
             knowledge_base_ids=tuple(case.knowledge_base_ids),
+            allowed_document_ids=allowed_document_ids,
         )
         latency_ms = max(0, round((time.perf_counter() - started) * 1000))
         tools = tuple(dict.fromkeys(execution.get("tool") for step in run.steps if step.get("agent") == "tools" for execution in step.get("executions", []) if execution.get("tool")))

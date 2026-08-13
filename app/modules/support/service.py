@@ -17,6 +17,7 @@ from app.modules.evaluation.models import (
     EvaluationResult,
     EvaluationRun,
 )
+from app.modules.evaluation.gate import evaluate_gate
 from app.modules.evaluation.runtime import (
     AgentEvaluationRunner,
     SCORING_VERSION,
@@ -1142,6 +1143,30 @@ class SupportService:
             raise AppError(
                 "KNOWLEDGE_RELEASE_NOT_PUBLISHED", "只能启用已发布知识版本", 409
             )
+        # 上线门禁不可绕过：激活必须存在该版本最近一次「approved」评测决策，
+        # 且决策快照中的内容哈希与当前版本一致（哈希漂移 = 内容已变，须重新评测）。
+        decision = db.scalar(
+            select(SupportReleaseDecision)
+            .where(
+                SupportReleaseDecision.knowledge_release_id == release.id,
+                SupportReleaseDecision.owner_id == owner_id,
+                SupportReleaseDecision.decision == "approved",
+            )
+            .order_by(SupportReleaseDecision.id.desc())
+        )
+        if decision is None:
+            raise AppError(
+                "KNOWLEDGE_RELEASE_NOT_APPROVED",
+                "该知识版本未通过评测门禁，不能激活（请先完成上线评测并批准）",
+                409,
+            )
+        snapshot = _json(decision.gate_snapshot_json, {})
+        if snapshot.get("releaseContentHash") != release.content_hash:
+            raise AppError(
+                "KNOWLEDGE_RELEASE_CONTENT_MISMATCH",
+                "知识内容与批准时不一致（内容哈希漂移），需重新评测后批准",
+                409,
+            )
         for item in db.scalars(
             select(KnowledgeRelease).where(
                 KnowledgeRelease.owner_id == owner_id,
@@ -1771,12 +1796,25 @@ class SupportService:
         db.flush()
         run_id = run.id
         db.commit()
+        # 候选版本白名单：评测只允许引用该 Release 内文档，一次性解析传给所有用例
+        allowed_document_ids = tuple(
+            db.scalars(
+                select(KnowledgeReleaseDocument.document_id).where(
+                    KnowledgeReleaseDocument.release_id == release.id
+                )
+            )
+        )
         runner = AgentEvaluationRunner(coordinator)
         try:
             for case in dataset.cases:
                 try:
                     execution = await asyncio.wait_for(
-                        runner.execute_case(db, owner_id=owner_id, case=case),
+                        runner.execute_case(
+                            db,
+                            owner_id=owner_id,
+                            case=case,
+                            allowed_document_ids=allowed_document_ids,
+                        ),
                         timeout=120,
                     )
                 except asyncio.TimeoutError:
@@ -1889,11 +1927,19 @@ class SupportService:
             raise AppError(
                 "EVALUATION_RELEASE_MISMATCH", "评测运行与候选知识版本不匹配", 409
             )
-        risky = sum(
-            1 for item in results if _json(item.evidence_json, {}).get("gateBlocked")
-        )
-        if decision == "approved" and risky:
-            raise AppError("HIGH_RISK_GATE_BLOCKED", "高风险用例未通过，禁止上线", 409)
+        # 门禁策略一次性校验与快照：完成度/超时/高风险/引用率/拒答率/平均得分
+        gate = evaluate_gate(results)
+        if decision == "approved":
+            if run.status != "completed":
+                raise AppError(
+                    "EVALUATION_RUN_NOT_COMPLETED", "评测运行尚未完成，不能批准", 409
+                )
+            if not gate["passed"]:
+                raise AppError(
+                    "KNOWLEDGE_RELEASE_GATE_NOT_PASSED",
+                    "评测未通过上线门禁：" + "；".join(gate["failures"]),
+                    409,
+                )
         item = SupportReleaseDecision(
             owner_id=owner_id,
             evaluation_run_id=run.id,
@@ -1902,9 +1948,21 @@ class SupportService:
             decision=decision,
             gate_snapshot_json=json.dumps(
                 {
-                    "highRiskFailures": risky,
-                    "caseCount": len(results),
+                    "policyVersion": gate["policyVersion"],
+                    "releaseContentHash": release.content_hash,
                     "scoringVersion": SCORING_VERSION,
+                    **{
+                        key: gate[key]
+                        for key in (
+                            "highRiskFailures",
+                            "caseCount",
+                            "timeoutCases",
+                            "citationCorrectRate",
+                            "refusalCorrectRate",
+                            "evidenceRecall",
+                            "totalScore",
+                        )
+                    },
                 }
             ),
         )
@@ -1922,9 +1980,17 @@ class SupportService:
         return {
             "id": item.id,
             "decision": decision,
-            "highRiskFailures": risky,
+            "highRiskFailures": gate["highRiskFailures"],
             "releaseId": release.id,
             "runId": run.id,
+            "gate": {
+                "passed": gate["passed"],
+                "totalScore": gate["totalScore"],
+                "caseCount": gate["caseCount"],
+                "timeoutCases": gate["timeoutCases"],
+                "citationCorrectRate": gate["citationCorrectRate"],
+                "refusalCorrectRate": gate["refusalCorrectRate"],
+            },
         }
 
     def _require_release(
