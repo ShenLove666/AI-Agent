@@ -342,7 +342,7 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 )
                 assert resp.status_code == 400
 
-                # 发起复测：创建评测运行并关联
+                # 发起经营效果复测：创建并同步执行（与 AI 评测彻底分离）
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/verify",
                     headers=owner,
@@ -354,21 +354,23 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                         f"/api/v1/retail/optimization-tasks/{task_id}", headers=owner
                     )
                 ).json()["data"]
-                assert detail["verificationRunId"] == run_id
+                assert detail["businessVerificationRunId"] == run_id
                 assert detail["changeVersion"] == "v3"
-                assert detail["afterEvidence"] == {}
+                # 复测同步完成并写入修改后指标（本测试购物篮无 ordered_at → 数据不足，
+                # 但证据已落库，属于诚实声明而非伪造指标）
+                assert detail["afterEvidence"]["origin"] == "business_verify"
+                assert detail["afterEvidence"]["verificationRunId"] == run_id
+                assert detail["businessVerificationRun"]["status"] in (
+                    "completed",
+                    "insufficient_data",
+                )
+                assert detail["businessVerificationRun"]["metricKey"] == "paired_purchase_rate"
 
                 # 任务详情含来源与目标指标
                 assert detail["targetMetric"] == "搭配购采用率"
                 assert detail["beforeEvidence"]["origin"] == "campaign_confirm"
 
-                # 复测运行补齐 afterEvidence 后可 resolved
-                with database.session_factory() as db:
-                    from app.modules.optimization.models import OptimizationTask
-
-                    task = db.get(OptimizationTask, task_id)
-                    task.after_evidence_json = '{"score": 92}'
-                    db.commit()
+                # 经营效果复测证据已写入 → 可直接流转 resolved
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/transition",
                     headers=owner,

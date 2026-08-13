@@ -1,0 +1,47 @@
+F                                                                        [100%]
+================================== FAILURES ===================================
+__ test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape ___
+
+tmp_path = WindowsPath('C:/Users/zhs/AppData/Local/Temp/pytest-of-zhs/pytest-618/test_upgrade_database_rebuilds0')
+
+    def test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape(tmp_path):
+        database = Database(f"sqlite:///{tmp_path / 'historical.db'}")
+        _create_legacy_schema(database)
+        expected_signature = _current_schema_signature(tmp_path)
+    
+        upgrade_database(database)
+    
+>       assert _schema_signature(database) == expected_signature
+E       AssertionError: assert {'chat_reques...)), ...}, ...} == {'chat_reques...)), ...}, ...}
+E         
+E         Omitting 48 identical items, use -vv to show
+E         Differing items:
+E         {'optimization_tasks': {'columns': (('id', 'INTEGER', False, None, True), ('owner_id', 'INTEGER', False, None, False),...d',)), (None, ('owner_id',), 'users_v2', ('id',)), (None, ('verification_run_id',), 'evaluation_runs', ('id',))), ...}} != {'optimization_tasks': {'columns': (('id', 'INTEGER', False, None, True), ('owner_id', 'INTEGER', False, None, False),...fication_run_id',), 'optimization_verification_runs', ('id',)), (None, ('owner_id',), 'users_v2', ('id',)), ...), ...}}
+E         Use -v to get more diff
+
+tests\test_migrations.py:481: AssertionError
+---------------------------- Captured stderr call -----------------------------
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running stamp_revision  -> 0001_current_schema
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 0001_current_schema -> 0002_demo_source_metadata, add demo ownership and source provenance
+INFO  [alembic.runtime.migration] Running upgrade 0002_demo_source_metadata -> 0003_evaluation_datasets, add evaluation datasets
+INFO  [alembic.runtime.migration] Running upgrade 0003_evaluation_datasets -> 0004_demo_index_metadata, add demo index reconciliation metadata
+INFO  [alembic.runtime.migration] Running upgrade 0004_demo_index_metadata -> 2fce55de2167, add instant retail operations
+INFO  [alembic.runtime.migration] Running upgrade 2fce55de2167 -> 0005_support_quality_loop, add merchant support quality loop
+INFO  [alembic.runtime.migration] Running upgrade 0005_support_quality_loop -> 0006_retail_data_provenance, add truthful retail data provenance
+INFO  [alembic.runtime.migration] Running upgrade 0006_retail_data_provenance -> 0007_v3_order_outbound, add V3 order context and outbound delivery
+INFO  [alembic.runtime.migration] Running upgrade 0007_v3_order_outbound -> 0008_support_escalation, add support escalation lifecycle
+INFO  [alembic.runtime.migration] Running upgrade 0008_support_escalation -> 0009_runtime_settings_and_orgs, runtime settings, organizations, campaign lifecycle, task backfill
+INFO  [alembic.runtime.migration] Running upgrade 0009_runtime_settings_and_orgs -> 0010_agent_execution_summary, agent execution summary on messages
+INFO  [alembic.runtime.migration] Running upgrade 0010_agent_execution_summary -> 0011_knowledge_source_kind, knowledge document source_kind column
+INFO  [alembic.runtime.migration] Running upgrade 0011_knowledge_source_kind -> 0012_repair_knowledge_owner_and_source_kind, repair knowledge owner attribution and backfill source_kind
+INFO  [alembic.runtime.migration] Running upgrade 0012_repair_knowledge_owner_and_source_kind -> 0013_trace_request_id, add request_id to rag_trace_runs
+INFO  [alembic.runtime.migration] Running upgrade 0013_trace_request_id -> 0014_trace_node_start_offset, add start_offset_ms to rag_trace_nodes
+INFO  [alembic.runtime.migration] Running upgrade 0014_trace_node_start_offset -> 0015_trace_run_ttft, add ttft_ms to rag_trace_runs
+INFO  [alembic.runtime.migration] Running upgrade 0015_trace_run_ttft -> 0016_optimization_verification_runs, create optimization_verification_runs and explicit task FKs
+=========================== short test summary info ===========================
+FAILED tests/test_migrations.py::test_upgrade_database_rebuilds_real_legacy_schema_to_exact_current_shape
+1 failed in 2.79s

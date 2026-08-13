@@ -64,6 +64,8 @@ const statusLabel: Record<string, string> = {
   resolved: "已解决",
   completed: "已完成",
   pending: "待执行",
+  running: "计算中",
+  insufficient_data: "数据不足",
   failed: "失败"
 };
 const nextStatus: Record<string, string> = {
@@ -267,7 +269,7 @@ export function RetailOperationsPage() {
     setBusy(`task-verify-${task.id}`);
     try {
       const result = await verifyRetailTask(task.id);
-      toast.success(`复测运行 #${result.runId} 已创建并关联到任务`);
+      toast.success(`经营效果复测 #${result.runId} 已执行并写入修改后指标`);
       setTaskDetailOpen(false);
       await load();
     } catch {
@@ -651,7 +653,17 @@ export function RetailOperationsPage() {
                   <p className="mt-2 text-xs text-slate-400">
                     目标：{task.targetMetric || "完成问题验证"}
                     {task.sourceType ? ` · 来源：${sourceTypeLabel(task.sourceType)}` : ""}
-                    {task.verificationRunId ? ` · 复测 #${task.verificationRunId}` : ""}
+                    {task.businessVerificationRunId ? (
+                      <>
+                        {" · "}
+                        复测 #{task.businessVerificationRunId}
+                        {task.businessVerificationStatus
+                          ? `（${statusLabel[task.businessVerificationStatus] || task.businessVerificationStatus}）`
+                          : ""}
+                      </>
+                    ) : (
+                      ""
+                    )}
                     {nextStatus[task.status] ? " · 点击查看详情并推进" : " · 点击查看详情"}
                   </p>
                 </button>
@@ -801,7 +813,9 @@ export function RetailOperationsPage() {
                 </DialogTitle>
                 <DialogDescription>
                   来源：{sourceTypeLabel(taskDetail.sourceType)} #{taskDetail.sourceId}
-                  {taskDetail.verificationRun ? ` · 复测运行 #${taskDetail.verificationRun.id}` : ""}
+                  {taskDetail.businessVerificationRun
+                    ? ` · 经营效果复测 #${taskDetail.businessVerificationRun.id}`
+                    : ""}
                 </DialogDescription>
               </DialogHeader>
 
@@ -827,9 +841,17 @@ export function RetailOperationsPage() {
                 <div className="rounded-lg bg-slate-50 p-3">
                   <p className="text-xs text-slate-500">复测状态</p>
                   <p className="mt-1 font-medium text-slate-800">
-                    {taskDetail.verificationRun
-                      ? statusLabel[taskDetail.verificationRun.status] || taskDetail.verificationRun.status
+                    {taskDetail.businessVerificationRun
+                      ? statusLabel[taskDetail.businessVerificationRun.status] || taskDetail.businessVerificationRun.status
                       : "未发起"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-500">指标（前后 / 样本量）</p>
+                  <p className="mt-1 font-medium text-slate-800">
+                    {taskDetail.businessVerificationRun?.beforeValue != null
+                      ? `${taskDetail.businessVerificationRun.beforeValue}% → ${taskDetail.businessVerificationRun.afterValue ?? "—"}%（${taskDetail.businessVerificationRun.baselineSampleSize} / ${taskDetail.businessVerificationRun.experimentSampleSize} 篮）`
+                      : "无数据"}
                   </p>
                 </div>
               </div>

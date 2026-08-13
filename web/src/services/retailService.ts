@@ -120,6 +120,8 @@ export type RetailTask = {
   sourceId?: string;
   assigneeId?: number | null;
   verificationRunId?: number | null;
+  businessVerificationRunId?: number | null;
+  businessVerificationStatus?: string | null;
   changeVersion?: string | null;
   createdAt?: string;
 };
@@ -133,6 +135,8 @@ export type RetailTaskDetail = {
   targetMetric: string | null;
   changeVersion: string | null;
   verificationRunId: number | null;
+  aiEvaluationRunId: number | null;
+  businessVerificationRunId: number | null;
   beforeEvidence: Record<string, unknown>;
   afterEvidence: Record<string, unknown>;
   associationRuleId: number | null;
@@ -140,9 +144,20 @@ export type RetailTaskDetail = {
   isDemo: boolean;
   createdAt: string;
   updatedAt: string;
-  verificationRun: null | {
+  businessVerificationRun: null | {
     id: number;
     status: string;
+    metricKey: string;
+    baselineStart: string | null;
+    baselineEnd: string | null;
+    experimentStart: string | null;
+    experimentEnd: string | null;
+    beforeValue: number | null;
+    afterValue: number | null;
+    deltaValue: number | null;
+    deltaRate: number | null;
+    baselineSampleSize: number | null;
+    experimentSampleSize: number | null;
     startedAt: string;
     completedAt: string | null;
     isDemo: boolean;

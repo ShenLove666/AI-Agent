@@ -30,7 +30,10 @@ from app.modules.evaluation.models import (
     EvaluationRun,
 )
 from app.modules.operations.models import OperationEvent
-from app.modules.optimization.models import OptimizationTask
+from app.modules.optimization.models import (
+    OptimizationTask,
+    OptimizationVerificationRun,
+)
 from app.modules.provenance.catalog import (
     DataManifest,
     canonical_json,
@@ -1121,6 +1124,26 @@ class RetailService:
             metric("escalation_rate", "转人工率", escalated, answers),
             metric("positive_rate", "回答好评率", positive, answers),
         ]
+        task_rows = list(
+            db.scalars(
+                select(OptimizationTask).where(OptimizationTask.owner_id == owner_id)
+            )
+        )
+        business_run_ids = [
+            task.business_verification_run_id
+            for task in task_rows
+            if task.business_verification_run_id is not None
+        ]
+        business_status = {}
+        if business_run_ids:
+            business_status = {
+                run.id: run.status
+                for run in db.scalars(
+                    select(OptimizationVerificationRun).where(
+                        OptimizationVerificationRun.id.in_(business_run_ids)
+                    )
+                )
+            }
         tasks = [
             {
                 "id": task.id,
@@ -1131,12 +1154,17 @@ class RetailService:
                 "sourceId": task.source_id,
                 "assigneeId": task.assignee_id,
                 "verificationRunId": task.verification_run_id,
+                "businessVerificationRunId": task.business_verification_run_id,
+                # 经营效果复测状态（前端展示/轮询；AI 评测与经营复测已分离）
+                "businessVerificationStatus": (
+                    business_status.get(task.business_verification_run_id)
+                    if task.business_verification_run_id is not None
+                    else None
+                ),
                 "changeVersion": task.change_version,
                 "createdAt": task.created_at.isoformat(),
             }
-            for task in db.scalars(
-                select(OptimizationTask).where(OptimizationTask.owner_id == owner_id)
-            )
+            for task in task_rows
         ]
         runs = [
             {
@@ -1440,7 +1468,7 @@ class RetailService:
         )
 
     def task_detail(self, db: Session, owner_id: int, task_id: int) -> dict:
-        """任务详情：来源、负责人、目标指标、修改版本、前后证据与复测运行。"""
+        """任务详情：来源、负责人、目标指标、修改版本、前后证据与经营效果复测运行。"""
         task = db.scalar(
             select(OptimizationTask).where(
                 OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
@@ -1448,9 +1476,9 @@ class RetailService:
         )
         if not task:
             raise RetailDataError("优化任务不存在")
-        verification_run = (
-            db.get(EvaluationRun, task.verification_run_id)
-            if task.verification_run_id
+        business_run = (
+            db.get(OptimizationVerificationRun, task.business_verification_run_id)
+            if task.business_verification_run_id
             else None
         )
         return {
@@ -1463,6 +1491,8 @@ class RetailService:
             "targetMetric": task.target_metric,
             "changeVersion": task.change_version,
             "verificationRunId": task.verification_run_id,
+            "aiEvaluationRunId": task.ai_evaluation_run_id,
+            "businessVerificationRunId": task.business_verification_run_id,
             "beforeEvidence": json.loads(task.before_evidence_json or "{}"),
             "afterEvidence": json.loads(task.after_evidence_json or "{}"),
             "associationRuleId": task.association_rule_id,
@@ -1470,17 +1500,36 @@ class RetailService:
             "isDemo": task.is_demo,
             "createdAt": task.created_at.isoformat(),
             "updatedAt": task.updated_at.isoformat(),
-            "verificationRun": (
+            "businessVerificationRun": (
                 {
-                    "id": verification_run.id,
-                    "status": verification_run.status,
-                    "startedAt": verification_run.started_at.isoformat(),
-                    "completedAt": verification_run.completed_at.isoformat()
-                    if verification_run.completed_at
+                    "id": business_run.id,
+                    "status": business_run.status,
+                    "metricKey": business_run.metric_key,
+                    "baselineStart": business_run.baseline_start.isoformat()
+                    if business_run.baseline_start
                     else None,
-                    "isDemo": verification_run.is_demo,
+                    "baselineEnd": business_run.baseline_end.isoformat()
+                    if business_run.baseline_end
+                    else None,
+                    "experimentStart": business_run.experiment_start.isoformat()
+                    if business_run.experiment_start
+                    else None,
+                    "experimentEnd": business_run.experiment_end.isoformat()
+                    if business_run.experiment_end
+                    else None,
+                    "beforeValue": business_run.before_value,
+                    "afterValue": business_run.after_value,
+                    "deltaValue": business_run.delta_value,
+                    "deltaRate": business_run.delta_rate,
+                    "baselineSampleSize": business_run.baseline_sample_size,
+                    "experimentSampleSize": business_run.experiment_sample_size,
+                    "startedAt": business_run.started_at.isoformat(),
+                    "completedAt": business_run.completed_at.isoformat()
+                    if business_run.completed_at
+                    else None,
+                    "isDemo": business_run.is_demo,
                 }
-                if verification_run
+                if business_run
                 else None
             ),
         }
@@ -1501,8 +1550,15 @@ class RetailService:
         db.commit()
         return task
 
-    def verify_task(self, db: Session, owner_id: int, task_id: int) -> EvaluationRun:
-        """发起复测：创建评测运行并关联到任务，用于验证修改效果。"""
+    def verify_task(
+        self, db: Session, owner_id: int, task_id: int
+    ) -> OptimizationVerificationRun:
+        """发起经营效果复测：方案发布前后窗口的指标对比（与 AI 评测彻底分离）。
+
+        同步计算（纯 SQL 聚合，无需后台任务）：按方案发布时刻切分
+        baseline/experiment 窗口，输出 before/after 值与样本量；无可用
+        经营数据时 status=insufficient_data 并在 result_json 写明原因。
+        """
         task = db.scalar(
             select(OptimizationTask).where(
                 OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
@@ -1512,26 +1568,166 @@ class RetailService:
             raise RetailDataError("优化任务不存在")
         if task.status not in {"optimizing", "pending_verification"}:
             raise RetailDataError("当前任务状态无法发起复测")
-        dataset = db.scalar(
-            select(EvaluationDataset)
-            .where(EvaluationDataset.owner_id == owner_id)
-            .order_by(EvaluationDataset.id.desc())
-        )
-        if dataset is None:
-            raise RetailDataError("该商家还没有评测集，无法发起复测")
-        run = EvaluationRun(
-            owner_id=owner_id,
-            dataset_id=dataset.id,
-            status="pending",
-            config_snapshot_json=json.dumps(
-                {"origin": "task_verify", "taskId": task.id}, ensure_ascii=False
-            ),
-            is_demo=task.is_demo,
-        )
+        if task.association_rule_id is None:
+            raise RetailDataError("该任务没有关联的关联规则，无法进行经营效果复测")
+        run = self._compute_business_verification(db, owner_id, task)
         db.add(run)
         db.flush()
-        task.verification_run_id = run.id
+        task.business_verification_run_id = run.id
+        task.after_evidence_json = json.dumps(
+            {
+                "origin": "business_verify",
+                "verificationRunId": run.id,
+                "status": run.status,
+                "metricKey": run.metric_key,
+                "beforeValue": run.before_value,
+                "afterValue": run.after_value,
+                "deltaValue": run.delta_value,
+                "deltaRate": run.delta_rate,
+                "baselineSampleSize": run.baseline_sample_size,
+                "experimentSampleSize": run.experiment_sample_size,
+            },
+            ensure_ascii=False,
+        )
         db.commit()
+        return run
+
+    @staticmethod
+    def _paired_rate_in_window(
+        db: Session,
+        owner_id: int,
+        antecedent_id: int,
+        consequent_id: int,
+        start,
+        end,
+    ) -> tuple[float | None, int]:
+        """窗口内同时包含规则前项与后项商品的购物篮占比（paired purchase rate）。"""
+        window = select(Basket.id).where(
+            Basket.owner_id == owner_id,
+            Basket.ordered_at >= start,
+            Basket.ordered_at < end,
+        )
+        total = (
+            db.scalar(
+                select(func.count())
+                .select_from(Basket)
+                .where(
+                    Basket.owner_id == owner_id,
+                    Basket.ordered_at >= start,
+                    Basket.ordered_at < end,
+                )
+            )
+            or 0
+        )
+        if total == 0:
+            return None, 0
+        paired = (
+            db.scalar(
+                select(func.count())
+                .select_from(
+                    select(BasketItem.basket_id)
+                    .where(
+                        BasketItem.basket_id.in_(window),
+                        BasketItem.product_id.in_((antecedent_id, consequent_id)),
+                    )
+                    .group_by(BasketItem.basket_id)
+                    .having(func.count(func.distinct(BasketItem.product_id)) == 2)
+                    .subquery()
+                )
+            )
+            or 0
+        )
+        return round(paired / total * 100, 2), total
+
+    @staticmethod
+    def _compute_business_verification(
+        db: Session, owner_id: int, task: OptimizationTask
+    ) -> OptimizationVerificationRun:
+        rule = db.get(AssociationRule, task.association_rule_id)
+        campaign = db.scalar(
+            select(Campaign)
+            .where(
+                Campaign.owner_id == owner_id, Campaign.rule_id == rule.id
+            )
+            .order_by(Campaign.id.desc())
+        )
+        activation = campaign.published_at if campaign is not None else None
+        run = OptimizationVerificationRun(
+            owner_id=owner_id,
+            task_id=task.id,
+            status="running",
+            metric_key="paired_purchase_rate",
+            is_demo=task.is_demo,
+            methodology_json=json.dumps(
+                {
+                    "definition": "同时包含规则前项与后项商品的购物篮占比",
+                    "windows": (
+                        "baseline=[最早订单, 方案发布时刻)，"
+                        "experiment=[方案发布时刻, 最新订单]"
+                    ),
+                    "dataSource": "commerce_baskets / commerce_basket_items",
+                },
+                ensure_ascii=False,
+            ),
+        )
+        if rule is None or activation is None:
+            run.status = "insufficient_data"
+            run.result_json = json.dumps(
+                {
+                    "reason": "缺少方案发布时刻（published_at）或关联规则，"
+                    "无法切分前后窗口"
+                },
+                ensure_ascii=False,
+            )
+            run.completed_at = datetime.utcnow()
+            return run
+        bounds = db.execute(
+            select(func.min(Basket.ordered_at), func.max(Basket.ordered_at)).where(
+                Basket.owner_id == owner_id
+            )
+        ).first()
+        earliest, latest = bounds
+        if earliest is None or latest is None or latest <= activation:
+            run.status = "insufficient_data"
+            run.result_json = json.dumps(
+                {
+                    "reason": "购物篮缺少 ordered_at 时间戳，或发布后无样本，"
+                    "无法计算前后窗口对比"
+                },
+                ensure_ascii=False,
+            )
+            run.completed_at = datetime.utcnow()
+            return run
+        run.baseline_start, run.baseline_end = earliest, activation
+        run.experiment_start, run.experiment_end = activation, latest
+        before = RetailService._paired_rate_in_window(
+            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
+            earliest, activation,
+        )
+        after = RetailService._paired_rate_in_window(
+            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
+            activation, latest,
+        )
+        run.before_value, run.baseline_sample_size = before
+        run.after_value, run.experiment_sample_size = after
+        if before[0] is not None and after[0] is not None:
+            run.delta_value = round(after[0] - before[0], 2)
+            run.delta_rate = (
+                round((after[0] - before[0]) / before[0] * 100, 1)
+                if before[0]
+                else None
+            )
+        run.status = "completed"
+        run.result_json = json.dumps(
+            {
+                "before": before[0],
+                "after": after[0],
+                "deltaValue": run.delta_value,
+                "deltaRate": run.delta_rate,
+            },
+            ensure_ascii=False,
+        )
+        run.completed_at = datetime.utcnow()
         return run
 
     def sync_failed_evaluations(self, db: Session, owner_id: int) -> int:
@@ -1564,6 +1760,8 @@ class RetailService:
                     title=f"评测失败复测与修复（评测运行 #{run_id}）",
                     status="new",
                     target_metric="评测通过率",
+                    # AI 评测关联显式化（与经营效果复测分离）
+                    ai_evaluation_run_id=run_id,
                     before_evidence_json=json.dumps(
                         {"origin": "evaluation_failure", "runId": run_id},
                         ensure_ascii=False,
@@ -1603,8 +1801,8 @@ class RetailService:
         if target == "pending_verification" and not change_version:
             raise RetailDataError("进入待复测必须关联配置或知识版本号（changeVersion）")
         if target == "resolved":
-            if not task.verification_run_id:
-                raise RetailDataError("进入已解决必须先发起复测（关联复测运行）")
+            if not task.business_verification_run_id:
+                raise RetailDataError("进入已解决必须先发起复测（关联经营效果复测运行）")
             if not task.after_evidence_json or task.after_evidence_json == "{}":
                 raise RetailDataError("进入已解决必须关联复测结果（修改后指标）")
         task.status = target
