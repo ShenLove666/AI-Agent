@@ -63,7 +63,7 @@ def _seed_passing_run(
             refusal_correct=True,
             latency_ms=200,
             evidence_json=json.dumps(
-                {"metrics": {"total_score": 100, "evidenceRecall": 100}},
+                {"metrics": {"total_score": 100, "evidence_recall": 100}},
                 ensure_ascii=False,
             ),
         )

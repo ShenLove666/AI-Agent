@@ -64,6 +64,15 @@ def _normalize_source(value: str) -> str:
     return value
 
 
+def _overlap_ratio(source: str, answer: str) -> float:
+    """证据与回答的词项重叠率（双字词 + 英文词），用于轻量 groundedness。"""
+    source_terms = _terms(source)
+    if not source_terms:
+        return 1.0
+    answer_terms = _terms(answer)
+    return len(source_terms & answer_terms) / len(source_terms)
+
+
 def score_execution(
     case: EvaluationCase,
     answer: str,
@@ -86,7 +95,16 @@ def score_execution(
     refusal_observed = terminal_state in {"refused", "escalated"}
     refusal_correct = refusal_observed if case.should_refuse else not refusal_observed
     if results:
-        groundedness = 100 if all(" ".join(item.content.split())[:80] in answer for item in results[:3]) else 60
+        # 轻量 groundedness：证据与回答的词项重叠 ≥30%（不奖励逐字抄写原文，
+        # 抽象重述同样 grounded）。首 3 条证据全部覆盖才算 grounded。
+        groundedness = (
+            100
+            if all(
+                _overlap_ratio(item.content, answer) >= 0.3
+                for item in results[:3]
+            )
+            else 60
+        )
     else:
         groundedness = 100 if refusal_observed else 0
     latency_score = 100 if latency_ms <= 2000 else 80 if latency_ms <= 5000 else 50
@@ -119,7 +137,6 @@ class AgentEvaluationRunner:
             knowledge_base_ids=tuple(case.knowledge_base_ids),
             allowed_document_ids=allowed_document_ids,
         )
-        latency_ms = max(0, round((time.perf_counter() - started) * 1000))
         tools = tuple(dict.fromkeys(execution.get("tool") for step in run.steps if step.get("agent") == "tools" for execution in step.get("executions", []) if execution.get("tool")))
         evidence_ids = tuple(item.id for item in run.results)
         # 最终用户回答经共享 GroundedAnswerRuntime 生成：评测的就是线上用户
@@ -134,6 +151,9 @@ class AgentEvaluationRunner:
         else:
             # refused/escalated/无证据：Agent 终态固定文案即最终回答（不调用模型）
             answer = run.answer
+        # end-to-end 耗时：必须包含最终生成阶段（否则 latency_score 只计
+        # Agent 部分，对用户实际等待时间过于乐观）
+        latency_ms = max(0, round((time.perf_counter() - started) * 1000))
         metrics = score_execution(
             case, answer, run.results, run.terminal_state, latency_ms
         )

@@ -1574,6 +1574,7 @@ class RetailService:
         db.add(run)
         db.flush()
         task.business_verification_run_id = run.id
+        result = json.loads(run.result_json or "{}")
         task.after_evidence_json = json.dumps(
             {
                 "origin": "business_verify",
@@ -1586,6 +1587,8 @@ class RetailService:
                 "deltaRate": run.delta_rate,
                 "baselineSampleSize": run.baseline_sample_size,
                 "experimentSampleSize": run.experiment_sample_size,
+                "beforePairedBasketRate": result.get("beforePairedBasketRate"),
+                "afterPairedBasketRate": result.get("afterPairedBasketRate"),
             },
             ensure_ascii=False,
         )
@@ -1600,8 +1603,13 @@ class RetailService:
         consequent_id: int,
         start,
         end,
-    ) -> tuple[float | None, int]:
-        """窗口内同时包含规则前项与后项商品的购物篮占比（paired purchase rate）。"""
+    ) -> dict:
+        """窗口内搭配购买指标（半开区间 [start, end)）：
+
+        paired_basket_rate（搭配购买渗透率）= 同时含 A+B 的篮 / 窗口全部篮；
+        cross_sell_adoption_rate（搭配购采用率）= 同时含 A+B 的篮 / 含 A 的篮
+        （≈ association confidence，买前项的人中有多少采用了推荐搭配）。
+        """
         window = select(Basket.id).where(
             Basket.owner_id == owner_id,
             Basket.ordered_at >= start,
@@ -1620,7 +1628,22 @@ class RetailService:
             or 0
         )
         if total == 0:
-            return None, 0
+            return {
+                "total": 0,
+                "antecedent": 0,
+                "paired": 0,
+                "pairedBasketRate": None,
+                "adoptionRate": None,
+            }
+        antecedent = (
+            db.scalar(
+                select(func.count(func.distinct(BasketItem.basket_id))).where(
+                    BasketItem.basket_id.in_(window),
+                    BasketItem.product_id == antecedent_id,
+                )
+            )
+            or 0
+        )
         paired = (
             db.scalar(
                 select(func.count())
@@ -1637,46 +1660,65 @@ class RetailService:
             )
             or 0
         )
-        return round(paired / total * 100, 2), total
+        return {
+            "total": total,
+            "antecedent": antecedent,
+            "paired": paired,
+            "pairedBasketRate": round(paired / total * 100, 2),
+            "adoptionRate": round(paired / antecedent * 100, 2) if antecedent else None,
+        }
 
     @staticmethod
     def _compute_business_verification(
         db: Session, owner_id: int, task: OptimizationTask
     ) -> OptimizationVerificationRun:
-        rule = db.get(AssociationRule, task.association_rule_id)
-        campaign = db.scalar(
-            select(Campaign)
-            .where(
-                Campaign.owner_id == owner_id, Campaign.rule_id == rule.id
-            )
-            .order_by(Campaign.id.desc())
-        )
-        activation = campaign.published_at if campaign is not None else None
         run = OptimizationVerificationRun(
             owner_id=owner_id,
             task_id=task.id,
             status="running",
-            metric_key="paired_purchase_rate",
+            metric_key="cross_sell_adoption_rate",
             is_demo=task.is_demo,
             methodology_json=json.dumps(
                 {
-                    "definition": "同时包含规则前项与后项商品的购物篮占比",
+                    "primaryMetric": (
+                        "cross_sell_adoption_rate（搭配购采用率）：同时包含规则"
+                        "前项与后项商品的购物篮 / 包含前项商品的购物篮"
+                        "（≈ association confidence）"
+                    ),
+                    "secondaryMetric": (
+                        "paired_basket_rate（搭配购买渗透率）：同时包含前项与后项"
+                        "的购物篮 / 窗口全部购物篮"
+                    ),
                     "windows": (
-                        "baseline=[最早订单, 方案发布时刻)，"
-                        "experiment=[方案发布时刻, 最新订单]"
+                        "对称窗口（半开区间 [start, end)）："
+                        "baseline=[发布时刻-7天, 发布时刻)，"
+                        "experiment=[发布时刻, 发布时刻+7天)"
                     ),
                     "dataSource": "commerce_baskets / commerce_basket_items",
                 },
                 ensure_ascii=False,
             ),
         )
-        if rule is None or activation is None:
+        # 空指针防护：规则可能已被删除，先检查再访问 rule.id
+        rule = db.get(AssociationRule, task.association_rule_id)
+        if rule is None:
             run.status = "insufficient_data"
             run.result_json = json.dumps(
-                {
-                    "reason": "缺少方案发布时刻（published_at）或关联规则，"
-                    "无法切分前后窗口"
-                },
+                {"reason": "关联规则已不存在，无法进行经营效果复测"},
+                ensure_ascii=False,
+            )
+            run.completed_at = datetime.utcnow()
+            return run
+        campaign = db.scalar(
+            select(Campaign)
+            .where(Campaign.owner_id == owner_id, Campaign.rule_id == rule.id)
+            .order_by(Campaign.id.desc())
+        )
+        activation = campaign.published_at if campaign is not None else None
+        if activation is None:
+            run.status = "insufficient_data"
+            run.result_json = json.dumps(
+                {"reason": "缺少方案发布时刻（published_at），无法切分前后窗口"},
                 ensure_ascii=False,
             )
             run.completed_at = datetime.utcnow()
@@ -1687,43 +1729,78 @@ class RetailService:
             )
         ).first()
         earliest, latest = bounds
-        if earliest is None or latest is None or latest <= activation:
+        if earliest is None or latest is None:
+            run.status = "insufficient_data"
+            run.result_json = json.dumps(
+                {"reason": "购物篮缺少 ordered_at 时间戳，无法切分前后窗口"},
+                ensure_ascii=False,
+            )
+            run.completed_at = datetime.utcnow()
+            return run
+        # 对称窗口：发布前后各 7 天（避免 3 年 vs 7 天的长度不对称）
+        window = timedelta(days=7)
+        baseline_start, baseline_end = activation - window, activation
+        experiment_start, experiment_end = activation, activation + window
+        before = RetailService._paired_rate_in_window(
+            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
+            baseline_start, baseline_end,
+        )
+        after = RetailService._paired_rate_in_window(
+            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
+            experiment_start, experiment_end,
+        )
+        run.baseline_start, run.baseline_end = baseline_start, baseline_end
+        run.experiment_start, run.experiment_end = experiment_start, experiment_end
+        run.baseline_sample_size = before["total"]
+        run.experiment_sample_size = after["total"]
+        if (
+            before["total"] == 0
+            or after["total"] == 0
+            or before["adoptionRate"] is None
+            or after["adoptionRate"] is None
+        ):
             run.status = "insufficient_data"
             run.result_json = json.dumps(
                 {
-                    "reason": "购物篮缺少 ordered_at 时间戳，或发布后无样本，"
-                    "无法计算前后窗口对比"
+                    "reason": "对称窗口（发布前后各 7 天）内样本不足，"
+                    "无法计算有效的采用率对比",
+                    "baselineBaskets": before["total"],
+                    "experimentBaskets": after["total"],
                 },
                 ensure_ascii=False,
             )
             run.completed_at = datetime.utcnow()
             return run
-        run.baseline_start, run.baseline_end = earliest, activation
-        run.experiment_start, run.experiment_end = activation, latest
-        before = RetailService._paired_rate_in_window(
-            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
-            earliest, activation,
-        )
-        after = RetailService._paired_rate_in_window(
-            db, owner_id, rule.antecedent_product_id, rule.consequent_product_id,
-            activation, latest,
-        )
-        run.before_value, run.baseline_sample_size = before
-        run.after_value, run.experiment_sample_size = after
-        if before[0] is not None and after[0] is not None:
-            run.delta_value = round(after[0] - before[0], 2)
-            run.delta_rate = (
-                round((after[0] - before[0]) / before[0] * 100, 1)
-                if before[0]
-                else None
+        # 主指标 = 搭配购采用率；渗透率与篮子计数进 result_json（双指标保留）
+        run.before_value = before["adoptionRate"]
+        run.after_value = after["adoptionRate"]
+        run.delta_value = round(after["adoptionRate"] - before["adoptionRate"], 2)
+        run.delta_rate = (
+            round(
+                (after["adoptionRate"] - before["adoptionRate"])
+                / before["adoptionRate"]
+                * 100,
+                1,
             )
+            if before["adoptionRate"]
+            else None
+        )
         run.status = "completed"
         run.result_json = json.dumps(
             {
-                "before": before[0],
-                "after": after[0],
-                "deltaValue": run.delta_value,
-                "deltaRate": run.delta_rate,
+                "primaryMetric": "cross_sell_adoption_rate",
+                "beforeAdoptionRate": before["adoptionRate"],
+                "afterAdoptionRate": after["adoptionRate"],
+                "beforePairedBasketRate": before["pairedBasketRate"],
+                "afterPairedBasketRate": after["pairedBasketRate"],
+                "pairedBaskets": {
+                    "baseline": before["paired"],
+                    "experiment": after["paired"],
+                },
+                "antecedentBaskets": {
+                    "baseline": before["antecedent"],
+                    "experiment": after["antecedent"],
+                },
             },
             ensure_ascii=False,
         )
@@ -1803,6 +1880,20 @@ class RetailService:
         if target == "resolved":
             if not task.business_verification_run_id:
                 raise RetailDataError("进入已解决必须先发起复测（关联经营效果复测运行）")
+            verification_run = db.get(
+                OptimizationVerificationRun, task.business_verification_run_id
+            )
+            # 真闭环：insufficient_data/failed 不得标记已解决——没有有效前后指标
+            # 就谈不上「修改生效」，必须等待更多数据或重新复测
+            if verification_run is None or verification_run.status != "completed":
+                raise RetailDataError(
+                    "经营效果复测尚未得到有效结果，不能标记为已解决"
+                )
+            if (
+                verification_run.before_value is None
+                or verification_run.after_value is None
+            ):
+                raise RetailDataError("经营效果复测缺少前后指标，不能标记为已解决")
             if not task.after_evidence_json or task.after_evidence_json == "{}":
                 raise RetailDataError("进入已解决必须关联复测结果（修改后指标）")
         task.status = target

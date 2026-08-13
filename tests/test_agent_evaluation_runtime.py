@@ -245,3 +245,43 @@ def test_agent_eval_documentation_is_honest_and_matches_contract():
     assert "deterministic_fallback" in readme
     assert "不能作为真实模型质量成绩" in readme
     assert "上线前评测" in readme
+
+
+def test_evaluation_latency_includes_final_generation(tmp_path):
+    """Eval latency 必须覆盖最终生成（end-to-end），否则 latency_score 过于乐观。"""
+    async def evidence(_context, _value):
+        return [ToolEvidence(id="doc:policy", content="退款应按已发布规则处理。", source="policy.md")]
+
+    class _SlowStreamRouter:
+        async def complete(self, _request):
+            return '{"mode":"research","calls":[{"name":"knowledge.search","arguments":{"query":"退款规则"}}],"rationale":"查政策"}'
+
+        async def stream(self, request, cancel_event=None):
+            await asyncio.sleep(0.2)
+            yield ModelStreamChunk("response", "已按政策退款。")
+
+    database = Database(f"sqlite:///{tmp_path / 'latency.db'}")
+    Base.metadata.create_all(database.engine)
+    with database.session_factory() as db:
+        owner = User(username="merchant", password_hash="x", role="admin")
+        db.add(owner); db.flush()
+        dataset = EvaluationDataset(owner_id=owner.id, name="eval", is_demo=True)
+        db.add(dataset); db.flush()
+        case = EvaluationCase(
+            dataset_id=dataset.id, case_key="refund", question="退款规则",
+            category="refund", difficulty="basic",
+            expected_points_json=json.dumps(["退款"]),
+            expected_document_keys_json="[]", should_refuse=False,
+        )
+        db.add(case); db.commit()
+        registry = ToolRegistry([AgentTool("knowledge.search", "policy", _Query, evidence)])
+        coordinator = AgenticRagCoordinator(
+            _SlowStreamRouter(), None, max_steps=1, registry=registry
+        )
+        execution = asyncio.run(
+            AgentEvaluationRunner(coordinator).execute_case(
+                db, owner_id=owner.id, case=case
+            )
+        )
+        # 生成阶段 sleep 200ms 必须计入 latency（Agent 部分远小于 200ms）
+        assert execution.latency_ms >= 200, execution.latency_ms

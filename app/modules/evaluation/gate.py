@@ -56,9 +56,9 @@ def compute_gate_metrics(results: list[Any]) -> dict[str, Any]:
     else:
         total_score = None
     recalls = [
-        item.get("metrics", {}).get("evidenceRecall")
+        item.get("metrics", {}).get("evidence_recall")
         for item in payloads
-        if isinstance(item.get("metrics", {}).get("evidenceRecall"), (int, float))
+        if isinstance(item.get("metrics", {}).get("evidence_recall"), (int, float))
     ]
     return {
         "caseCount": case_count,

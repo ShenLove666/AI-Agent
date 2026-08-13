@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -342,7 +343,10 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 )
                 assert resp.status_code == 400
 
-                # 发起经营效果复测：创建并同步执行（与 AI 评测彻底分离）
+                # 记录发布时刻（用于构造前后 7 天对称窗口内的订单时间戳）
+                publish_moment = datetime.utcnow()
+
+                # ① 无经营时间数据 → insufficient_data：不得标记已解决
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/verify",
                     headers=owner,
@@ -356,21 +360,57 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 ).json()["data"]
                 assert detail["businessVerificationRunId"] == run_id
                 assert detail["changeVersion"] == "v3"
-                # 复测同步完成并写入修改后指标（本测试购物篮无 ordered_at → 数据不足，
-                # 但证据已落库，属于诚实声明而非伪造指标）
                 assert detail["afterEvidence"]["origin"] == "business_verify"
                 assert detail["afterEvidence"]["verificationRunId"] == run_id
-                assert detail["businessVerificationRun"]["status"] in (
-                    "completed",
-                    "insufficient_data",
+                assert (
+                    detail["businessVerificationRun"]["status"]
+                    == "insufficient_data"
                 )
-                assert detail["businessVerificationRun"]["metricKey"] == "paired_purchase_rate"
+                assert (
+                    detail["businessVerificationRun"]["metricKey"]
+                    == "cross_sell_adoption_rate"
+                )
+                resp = await client.post(
+                    f"/api/v1/retail/optimization-tasks/{task_id}/transition",
+                    headers=owner,
+                    json={"status": "resolved"},
+                )
+                assert resp.status_code == 400
+                assert "未得到有效结果" in resp.json()["error"]["message"]
+
+                # ② 补上发布前后 7 天窗口内的订单时间戳 → 复测 completed → 可 resolved
+                with database.session_factory() as db:
+                    from app.modules.commerce.models import Basket
+
+                    baskets = db.scalars(select(Basket)).all()
+                    for index, basket in enumerate(baskets):
+                        basket.ordered_at = (
+                            publish_moment - timedelta(days=3)
+                            if index % 2 == 0
+                            else publish_moment + timedelta(days=1)
+                        )
+                    db.commit()
+                resp = await client.post(
+                    f"/api/v1/retail/optimization-tasks/{task_id}/verify",
+                    headers=owner,
+                )
+                assert resp.status_code == 200
+                detail = (
+                    await client.get(
+                        f"/api/v1/retail/optimization-tasks/{task_id}", headers=owner
+                    )
+                ).json()["data"]
+                assert detail["businessVerificationRun"]["status"] == "completed"
+                assert detail["businessVerificationRun"]["beforeValue"] == 100.0
+                assert detail["businessVerificationRun"]["afterValue"] == 100.0
+                assert detail["businessVerificationRun"]["baselineSampleSize"] > 0
+                assert detail["afterEvidence"]["beforePairedBasketRate"] == 100.0
 
                 # 任务详情含来源与目标指标
                 assert detail["targetMetric"] == "搭配购采用率"
                 assert detail["beforeEvidence"]["origin"] == "campaign_confirm"
 
-                # 经营效果复测证据已写入 → 可直接流转 resolved
+                # 经营效果复测有效 → 可流转 resolved
                 resp = await client.post(
                     f"/api/v1/retail/optimization-tasks/{task_id}/transition",
                     headers=owner,
@@ -446,3 +486,52 @@ async def _login(client, username: str, password: str = "AdminDemo@2026") -> dic
     )
     assert resp.status_code == 200, resp.text
     return {"Authorization": f"Bearer {resp.json()['data']['access_token']}"}
+
+
+def test_verify_task_with_deleted_rule_yields_insufficient_data(tmp_path):
+    """关联规则被删除后发起复测 → insufficient_data（不得 AttributeError 空指针）。"""
+    os.environ["DB_URL"] = f"sqlite:///{tmp_path / 'retail-missing-rule.db'}"
+    os.environ["VECTOR_BACKEND"] = "disabled"
+    os.environ.pop("EMBED_MODEL_PATH", None)
+
+    from app.application import create_app
+    from app.modules.commerce.models import AssociationRule
+    from app.modules.commerce.service import RetailService
+    from app.modules.optimization.models import OptimizationTask
+
+    app = create_app()
+    database = app.state.container.database
+    database.create_schema()
+    users = _seed_users(database)
+    with database.session_factory() as db:
+        rule = AssociationRule(
+            owner_id=users["owner"].id,
+            import_id=1,
+            antecedent_product_id=1,
+            consequent_product_id=2,
+            cooccurrence_count=10,
+            support=0.1,
+            confidence=0.5,
+            lift=1.2,
+            fingerprint="x" * 64,
+        )
+        db.add(rule)
+        db.flush()
+        task = OptimizationTask(
+            owner_id=users["owner"].id,
+            source_type="manual",
+            source_id="1",
+            title="缺规则任务",
+            status="pending_verification",
+            target_metric="搭配购采用率",
+            association_rule_id=rule.id,
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+        db.delete(rule)
+        db.commit()
+        run = RetailService().verify_task(db, users["owner"].id, task_id)
+        assert run.status == "insufficient_data"
+        assert "已不存在" in run.result_json
+    database.engine.dispose()
