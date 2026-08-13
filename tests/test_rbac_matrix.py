@@ -3,7 +3,7 @@
 矩阵（200=允许，403=拒绝）：
 | API                          | 客服 | 主管 | 运营 | Admin |
 | GET /support/cases           | 200  | 200  | 403  | 200   |
-| POST /support/.../replies    | 200  | 200  | 403  | 200   |
+| POST /support/.../replies    | 403¹ | 200  | 403  | 200   |
 | GET /support/escalations     | 403  | 200  | 403  | 200   |
 | POST escalation resolve      | 403  | 200  | 403  | 200   |
 | GET /retail/overview         | 403  | 403  | 200  | 200   |
@@ -231,7 +231,9 @@ def test_rbac_authorization_matrix(tmp_path: Path):
                 matrix = {
                     "user": {
                         "GET /support/cases": 200,
-                        "POST replies": 200,
+                        # ¹ replies 打在已升级工单上：风险策略下沉后，升级工单
+                        # 仅主管可发送对客回复（客服角色 403）
+                        "POST replies": 403,
                         "GET /support/escalations": 403,
                         "POST escalation resolve": 403,
                         "GET /retail/overview": 403,

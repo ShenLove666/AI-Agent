@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+import pytest
 from sqlalchemy import event, select
 
 import app.application_core  # noqa: F401 - register all mapped tables
@@ -279,7 +280,17 @@ def test_campaign_lifecycle_and_task_backfill(tmp_path: Path):
                 ]
                 assert len(campaign_tasks) == 1
                 assert campaign_tasks[0]["status"] == "new"
-                assert any(r["status"] == "pending" for r in overview["evaluations"])
+                # 拆域后：confirm 不再创建 AI EvaluationRun（经营复测与 AI 评测分离），
+                # 不存在「campaign_confirm 产生的 pending 评测」
+                from app.modules.evaluation.models import EvaluationRun as _EvalRun
+
+                with database.session_factory() as _db:
+                    leftover = _db.scalars(
+                        select(_EvalRun).where(
+                            _EvalRun.config_snapshot_json.contains("campaign_confirm")
+                        )
+                    ).all()
+                    assert leftover == []
 
                 # confirmed 重复确认 → 拒绝
                 resp = await client.post(
@@ -488,15 +499,18 @@ async def _login(client, username: str, password: str = "AdminDemo@2026") -> dic
     return {"Authorization": f"Bearer {resp.json()['data']['access_token']}"}
 
 
-def test_verify_task_with_deleted_rule_yields_insufficient_data(tmp_path):
-    """关联规则被删除后发起复测 → insufficient_data（不得 AttributeError 空指针）。"""
+def test_campaign_task_without_rule_is_rejected_clearly(tmp_path):
+    """campaign 任务缺失关联规则 → 明确拒绝（不得空指针/500）。
+
+    FK 开启后「规则行被删」已被引用完整性拦截；无规则任务的拒绝语义
+    在 verify_task 顶层显式给出。
+    """
     os.environ["DB_URL"] = f"sqlite:///{tmp_path / 'retail-missing-rule.db'}"
     os.environ["VECTOR_BACKEND"] = "disabled"
     os.environ.pop("EMBED_MODEL_PATH", None)
 
     from app.application import create_app
-    from app.modules.commerce.models import AssociationRule
-    from app.modules.commerce.service import RetailService
+    from app.modules.commerce.service import RetailDataError, RetailService
     from app.modules.optimization.models import OptimizationTask
 
     app = create_app()
@@ -504,34 +518,114 @@ def test_verify_task_with_deleted_rule_yields_insufficient_data(tmp_path):
     database.create_schema()
     users = _seed_users(database)
     with database.session_factory() as db:
-        rule = AssociationRule(
-            owner_id=users["owner"].id,
-            import_id=1,
-            antecedent_product_id=1,
-            consequent_product_id=2,
-            cooccurrence_count=10,
-            support=0.1,
-            confidence=0.5,
-            lift=1.2,
-            fingerprint="x" * 64,
-        )
-        db.add(rule)
-        db.flush()
         task = OptimizationTask(
             owner_id=users["owner"].id,
-            source_type="manual",
+            source_type="campaign",
             source_id="1",
             title="缺规则任务",
             status="pending_verification",
             target_metric="搭配购采用率",
-            association_rule_id=rule.id,
         )
         db.add(task)
         db.flush()
         task_id = task.id
-        db.delete(rule)
         db.commit()
-        run = RetailService().verify_task(db, users["owner"].id, task_id)
-        assert run.status == "insufficient_data"
-        assert "已不存在" in run.result_json
+        with pytest.raises(RetailDataError) as exc:
+            RetailService().verify_task(db, users["owner"].id, task_id)
+        assert "没有关联的关联规则" in str(exc.value)
+    database.engine.dispose()
+
+
+def test_ai_evaluation_task_verification_closes_loop(tmp_path):
+    """evaluation 来源任务：发起复测 → 后台重跑 AI 评测 → 失败清零后可 resolved。"""
+    os.environ["DB_URL"] = f"sqlite:///{tmp_path / 'retail-ai-verify.db'}"
+    os.environ["VECTOR_BACKEND"] = "disabled"
+    os.environ.pop("EMBED_MODEL_PATH", None)
+
+    from app.application import create_app
+    from app.modules.evaluation.models import (
+        EvaluationCase,
+        EvaluationDataset,
+        EvaluationRun,
+    )
+    from app.modules.optimization.models import OptimizationTask
+
+    app = create_app()
+    database = app.state.container.database
+    database.create_schema()
+    users = _seed_users(database)
+    with database.session_factory() as db:
+        dataset = EvaluationDataset(
+            owner_id=users["owner"].id, name="AI 复测集", is_demo=True
+        )
+        db.add(dataset)
+        db.flush()
+        db.add(
+            EvaluationCase(
+                dataset_id=dataset.id,
+                case_key="verify-a",
+                question="搭配购活动怎么参加？",
+                category="活动口径",
+                difficulty="medium",
+                expected_points_json="[]",
+                expected_document_keys_json="[]",
+                should_refuse=False,
+            )
+        )
+        source_run = EvaluationRun(
+            owner_id=users["owner"].id,
+            dataset_id=dataset.id,
+            status="completed",
+            config_snapshot_json='{"origin": "evaluation_failure", "runId": 1}',
+            is_demo=True,
+        )
+        db.add(source_run)
+        db.flush()
+        task = OptimizationTask(
+            owner_id=users["owner"].id,
+            source_type="evaluation",
+            source_id="1",
+            title="评测失败复测任务",
+            status="pending_verification",
+            target_metric="评测通过率",
+            ai_evaluation_run_id=source_run.id,
+        )
+        db.add(task)
+        db.flush()
+        task_id = task.id
+        db.commit()
+
+    async def scenario(app, database):
+        transport = httpx.ASGITransport(app=app)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                owner = await _login(client, "merchant-demo")
+                resp = await client.post(
+                    f"/api/v1/retail/optimization-tasks/{task_id}/verify",
+                    headers=owner,
+                )
+                assert resp.status_code == 200, resp.text
+                run_id = resp.json()["data"]["runId"]
+                assert resp.json()["data"]["status"] == "pending"
+                detail = (
+                    await client.get(
+                        f"/api/v1/retail/optimization-tasks/{task_id}", headers=owner
+                    )
+                ).json()["data"]
+                # 后台执行完成：证据写回，AI 评测复测关联更新
+                assert detail["aiEvaluationRunId"] == run_id
+                assert detail["afterEvidence"]["origin"] == "task_verify"
+                assert detail["afterEvidence"]["failed"] == 0
+                # 失败清零 → 可 resolved
+                resp = await client.post(
+                    f"/api/v1/retail/optimization-tasks/{task_id}/transition",
+                    headers=owner,
+                    json={"status": "resolved"},
+                )
+                assert resp.status_code == 200
+                assert resp.json()["data"]["status"] == "resolved"
+
+    _run_scenario(app, database, scenario)
     database.engine.dispose()

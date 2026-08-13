@@ -45,7 +45,9 @@ export const evaluation = {
       score: 92,
       caseCount: 14,
       highRiskFailures: 0,
-      gate: "passed",
+      gate: { passed: true, failures: [], totalScore: 92 },
+      releaseId: 1,
+      releaseVersion: "support-v1",
       startedAt: "2026-08-07T00:00:00",
       isDemo: true
     }

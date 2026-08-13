@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import gzip
 import hashlib
@@ -29,6 +30,7 @@ from app.modules.evaluation.models import (
     EvaluationResult,
     EvaluationRun,
 )
+from app.modules.evaluation.runtime import execute_run_cases
 from app.modules.operations.models import OperationEvent
 from app.modules.optimization.models import (
     OptimizationTask,
@@ -1381,7 +1383,6 @@ class RetailService:
                 version.approved_by = owner_id
                 version.approved_at = datetime.utcnow()
             self._create_campaign_task(db, owner_id, campaign)
-            self._create_campaign_eval_run(db, owner_id, campaign, version)
         if action == "publish":
             latest_version = db.scalar(
                 select(CampaignVersion)
@@ -1431,38 +1432,6 @@ class RetailService:
                     ensure_ascii=False,
                 ),
                 association_rule_id=campaign.rule_id,
-                is_demo=campaign.is_demo,
-            )
-        )
-
-    def _create_campaign_eval_run(
-        self,
-        db: Session,
-        owner_id: int,
-        campaign: Campaign,
-        version: CampaignVersion | None,
-    ) -> None:
-        dataset = db.scalar(
-            select(EvaluationDataset)
-            .where(EvaluationDataset.owner_id == owner_id)
-            .order_by(EvaluationDataset.id.desc())
-        )
-        if dataset is None:
-            return
-        db.add(
-            EvaluationRun(
-                owner_id=owner_id,
-                dataset_id=dataset.id,
-                campaign_version_id=version.id if version else None,
-                status="pending",
-                config_snapshot_json=json.dumps(
-                    {
-                        "origin": "campaign_confirm",
-                        "campaignId": campaign.id,
-                        "status": "pending",
-                    },
-                    ensure_ascii=False,
-                ),
                 is_demo=campaign.is_demo,
             )
         )
@@ -1552,12 +1521,12 @@ class RetailService:
 
     def verify_task(
         self, db: Session, owner_id: int, task_id: int
-    ) -> OptimizationVerificationRun:
-        """发起经营效果复测：方案发布前后窗口的指标对比（与 AI 评测彻底分离）。
+    ) -> OptimizationVerificationRun | EvaluationRun:
+        """按任务来源分派验证路径（与 AI 评测 / 经营复测的拆域一致）：
 
-        同步计算（纯 SQL 聚合，无需后台任务）：按方案发布时刻切分
-        baseline/experiment 窗口，输出 before/after 值与样本量；无可用
-        经营数据时 status=insufficient_data 并在 result_json 写明原因。
+        campaign       → 经营效果复测（方案发布前后窗口指标对比，同步执行）
+        evaluation     → 重跑该任务关联的 AI 评测（后台执行，失败清零才可闭环）
+        knowledge_gap  → 同上（知识缺口修复经 AI 评测验证）
         """
         task = db.scalar(
             select(OptimizationTask).where(
@@ -1568,8 +1537,18 @@ class RetailService:
             raise RetailDataError("优化任务不存在")
         if task.status not in {"optimizing", "pending_verification"}:
             raise RetailDataError("当前任务状态无法发起复测")
-        if task.association_rule_id is None:
-            raise RetailDataError("该任务没有关联的关联规则，无法进行经营效果复测")
+        if task.source_type == "campaign":
+            if task.association_rule_id is None:
+                raise RetailDataError("该任务没有关联的关联规则，无法进行经营效果复测")
+            return self._verify_business(db, owner_id, task)
+        if task.source_type in {"evaluation", "knowledge_gap"}:
+            return self._verify_ai_evaluation(db, owner_id, task)
+        raise RetailDataError("不支持该任务来源的复测方式")
+
+    def _verify_business(
+        self, db: Session, owner_id: int, task: OptimizationTask
+    ) -> OptimizationVerificationRun:
+        """经营效果复测：同步 SQL 聚合，before/after + 样本量写入 afterEvidence。"""
         run = self._compute_business_verification(db, owner_id, task)
         db.add(run)
         db.flush()
@@ -1594,6 +1573,114 @@ class RetailService:
         )
         db.commit()
         return run
+
+    def _verify_ai_evaluation(
+        self, db: Session, owner_id: int, task: OptimizationTask
+    ) -> EvaluationRun:
+        """AI 评测复测：基于任务关联评测集的评测集新建运行（后台执行）。
+
+        执行与证据写回由 API 层 BackgroundTasks 调用
+        run_ai_verification_background 完成；失败用例清零后任务才可 resolved。
+        """
+        dataset = None
+        if task.ai_evaluation_run_id:
+            source_run = db.get(EvaluationRun, task.ai_evaluation_run_id)
+            if source_run is not None:
+                dataset = db.get(EvaluationDataset, source_run.dataset_id)
+        if dataset is None:
+            dataset = db.scalar(
+                select(EvaluationDataset)
+                .where(EvaluationDataset.owner_id == owner_id)
+                .order_by(EvaluationDataset.id.desc())
+            )
+        if dataset is None:
+            raise RetailDataError("该商家还没有评测集，无法发起 AI 评测复测")
+        run = EvaluationRun(
+            owner_id=owner_id,
+            dataset_id=dataset.id,
+            status="pending",
+            config_snapshot_json=json.dumps(
+                {
+                    "origin": "task_verify",
+                    "taskId": task.id,
+                    "taskSource": task.source_type,
+                },
+                ensure_ascii=False,
+            ),
+            is_demo=task.is_demo,
+        )
+        db.add(run)
+        db.flush()
+        task.ai_evaluation_run_id = run.id
+        db.commit()
+        return run
+
+    def run_ai_verification_background(
+        self, db: Session, owner_id: int, task_id: int, coordinator
+    ) -> None:
+        """AI 评测复测后台执行（BackgroundTasks 同步入口）：执行用例 →
+        写回任务 afterEvidence。失败用例清零与否由 transition(resolved) 判定。"""
+        asyncio.run(self._run_ai_verification(db, owner_id, task_id, coordinator))
+
+    async def _run_ai_verification(
+        self, db: Session, owner_id: int, task_id: int, coordinator
+    ) -> None:
+        task = db.scalar(
+            select(OptimizationTask).where(
+                OptimizationTask.id == task_id, OptimizationTask.owner_id == owner_id
+            )
+        )
+        if task is None or task.ai_evaluation_run_id is None:
+            return
+        run = db.get(EvaluationRun, task.ai_evaluation_run_id)
+        if run is None or run.status != "pending":
+            return
+        dataset = db.get(EvaluationDataset, run.dataset_id)
+        if dataset is None:
+            run.status = "failed"
+            run.error_summary = "评测集不存在"
+            db.commit()
+            return
+        run.status = "running"
+        run.started_at = datetime.utcnow()
+        db.commit()
+        try:
+            summary = await execute_run_cases(
+                db,
+                run_id=run.id,
+                dataset=dataset,
+                coordinator=coordinator,
+                owner_id=owner_id,
+            )
+            run.status = "completed"
+            run.completed_at = datetime.utcnow()
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            persisted = db.get(EvaluationRun, run.id)
+            if persisted is not None:
+                persisted.status = "failed"
+                persisted.error_summary = type(exc).__name__
+                persisted.completed_at = datetime.utcnow()
+                db.commit()
+            return
+        task = db.get(OptimizationTask, task_id)
+        if task is None:
+            return
+        task.after_evidence_json = json.dumps(
+            {
+                "origin": "task_verify",
+                "verificationRunId": run.id,
+                "taskSource": task.source_type,
+                "total": summary["total"],
+                "passed": summary["passed"],
+                "failed": summary["failed"],
+                "timedOut": summary["timedOut"],
+                "highRiskFailures": summary["highRiskFailures"],
+            },
+            ensure_ascii=False,
+        )
+        db.commit()
 
     @staticmethod
     def _paired_rate_in_window(
@@ -1709,11 +1796,19 @@ class RetailService:
             )
             run.completed_at = datetime.utcnow()
             return run
-        campaign = db.scalar(
-            select(Campaign)
-            .where(Campaign.owner_id == owner_id, Campaign.rule_id == rule.id)
-            .order_by(Campaign.id.desc())
-        )
+        # 必须按 task.source_id 定位 Campaign（同一规则可能先后创建多个方案，
+        # 取「最新 Campaign」会导致 before/after 窗口错位）
+        campaign = None
+        if task.source_type == "campaign" and task.source_id:
+            try:
+                campaign = db.scalar(
+                    select(Campaign).where(
+                        Campaign.owner_id == owner_id,
+                        Campaign.id == int(task.source_id),
+                    )
+                )
+            except ValueError:
+                campaign = None
         activation = campaign.published_at if campaign is not None else None
         if activation is None:
             run.status = "insufficient_data"
@@ -1878,22 +1973,44 @@ class RetailService:
         if target == "pending_verification" and not change_version:
             raise RetailDataError("进入待复测必须关联配置或知识版本号（changeVersion）")
         if target == "resolved":
-            if not task.business_verification_run_id:
-                raise RetailDataError("进入已解决必须先发起复测（关联经营效果复测运行）")
-            verification_run = db.get(
-                OptimizationVerificationRun, task.business_verification_run_id
-            )
-            # 真闭环：insufficient_data/failed 不得标记已解决——没有有效前后指标
-            # 就谈不上「修改生效」，必须等待更多数据或重新复测
-            if verification_run is None or verification_run.status != "completed":
-                raise RetailDataError(
-                    "经营效果复测尚未得到有效结果，不能标记为已解决"
+            # 真闭环：按任务来源校验各自验证路径的有效结果
+            if task.source_type == "campaign":
+                if not task.business_verification_run_id:
+                    raise RetailDataError("进入已解决必须先发起复测（关联经营效果复测运行）")
+                verification_run = db.get(
+                    OptimizationVerificationRun, task.business_verification_run_id
                 )
-            if (
-                verification_run.before_value is None
-                or verification_run.after_value is None
-            ):
-                raise RetailDataError("经营效果复测缺少前后指标，不能标记为已解决")
+                if verification_run is None or verification_run.status != "completed":
+                    raise RetailDataError(
+                        "经营效果复测尚未得到有效结果，不能标记为已解决"
+                    )
+                if (
+                    verification_run.before_value is None
+                    or verification_run.after_value is None
+                ):
+                    raise RetailDataError("经营效果复测缺少前后指标，不能标记为已解决")
+            else:
+                # evaluation / knowledge_gap：AI 评测复测必须完成且失败用例清零
+                if not task.ai_evaluation_run_id:
+                    raise RetailDataError("进入已解决必须先发起复测（关联 AI 评测运行）")
+                ai_run = db.get(EvaluationRun, task.ai_evaluation_run_id)
+                if ai_run is None or ai_run.status != "completed":
+                    raise RetailDataError("AI 评测复测尚未完成，不能标记为已解决")
+                failed_count = (
+                    db.scalar(
+                        select(func.count())
+                        .select_from(EvaluationResult)
+                        .where(
+                            EvaluationResult.run_id == ai_run.id,
+                            EvaluationResult.expected_point_score < 100,
+                        )
+                    )
+                    or 0
+                )
+                if failed_count:
+                    raise RetailDataError(
+                        f"AI 评测复测仍有 {failed_count} 个失败用例，不能标记为已解决"
+                    )
             if not task.after_evidence_json or task.after_evidence_json == "{}":
                 raise RetailDataError("进入已解决必须关联复测结果（修改后指标）")
         task.status = target

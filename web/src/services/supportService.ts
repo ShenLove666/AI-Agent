@@ -246,7 +246,13 @@ export interface EvaluationRun {
   score: number | null;
   caseCount: number;
   highRiskFailures: number;
-  gate: "passed" | "blocked";
+  gate: {
+    passed: boolean;
+    failures: string[];
+    totalScore: number | null;
+  } | null;
+  releaseId: number | null;
+  releaseVersion: string | null;
   startedAt: string;
   isDemo: boolean;
 }
@@ -313,7 +319,9 @@ export const resolveKnowledgeGap = (gapId: number, releaseId: number) =>
 export const getEvaluationOverview = () =>
   api.get<never, EvaluationOverview>("/support/evaluations");
 export const runSupportEvaluation = (releaseId: number) =>
-  api.post<never, EvaluationRun>("/support/evaluations", { releaseId });
+  // 评测为同步执行（几十个用例），解除 60s 全局超时，避免「后端还在跑、
+  // 前端已报超时」的契约错位（后台 Job 化后恢复默认超时）
+  api.post<never, EvaluationRun>("/support/evaluations", { releaseId }, { timeout: 0 });
 export const decideKnowledgeRelease = (
   runId: number,
   releaseId: number,

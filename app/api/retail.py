@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import CurrentUser, DbSession
@@ -256,10 +256,29 @@ def assign_task(
 
 
 @router.post("/optimization-tasks/{task_id}/verify")
-def verify_task(task_id: int, db: DbSession, user: CurrentUser) -> ApiResponse:
+def verify_task(
+    task_id: int,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: DbSession,
+    user: CurrentUser,
+) -> ApiResponse:
     if not has_permission(db, user, PERM_TASK_UPDATE):
         raise AppError("FORBIDDEN", "需要 task.update 权限", 403)
-    run = _safe404(lambda: service.verify_task(db, _owner(db, user), task_id))
+    owner_id = _owner(db, user)
+    run = _safe404(lambda: service.verify_task(db, owner_id, task_id))
+    # AI 评测复测（evaluation / knowledge_gap 来源）返回 pending，在响应后
+    # 后台执行；经营效果复测（campaign）已在 verify_task 内同步完成。
+    if run.status == "pending":
+        container = request.app.state.container
+
+        def execute_ai_verification() -> None:
+            with container.database.session_factory() as task_db:
+                service.run_ai_verification_background(
+                    task_db, owner_id, task_id, container.agentic
+                )
+
+        background_tasks.add_task(execute_ai_verification)
     return ApiResponse(
         data={
             "runId": run.id,

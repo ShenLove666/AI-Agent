@@ -7,7 +7,7 @@ import app.application_core  # noqa: F401
 from pydantic import BaseModel, Field
 
 from app.framework.database import Base, Database
-from app.modules.commerce.models import AssociationRule, Product
+from app.modules.commerce.models import AssociationRule, CommerceImport, Product
 from app.modules.orders.models import CustomerSnapshot, Fulfillment, Order, Refund
 from app.modules.rag.agent_tools import AgentTool, ToolContext, ToolEvidence, ToolRegistry, build_tool_registry
 from app.modules.support.models import KnowledgeGap, SupportCase
@@ -53,7 +53,12 @@ def test_granular_tools_enforce_owner_scope_and_legacy_aliases(tmp_path):
             second = Product(owner_id=owner.id, source_key="b", name="面包", category="烘焙")
             hidden = Product(owner_id=foreign.id, source_key="c", name="隐私商品", category="其他")
             db.add_all([first, second, hidden]); db.flush()
-            db.add(AssociationRule(owner_id=owner.id, import_id=1, antecedent_product_id=first.id, consequent_product_id=second.id, cooccurrence_count=90, support=.2, confidence=.5, lift=1.8, fingerprint="a" * 64))
+            db.add(
+                CommerceImport(owner_id=owner.id, fingerprint="tools-fp", source_row_count=0, basket_count=0, product_count=0)
+            )
+            db.flush()
+            source_import = db.query(CommerceImport).filter_by(fingerprint="tools-fp").one()
+            db.add(AssociationRule(owner_id=owner.id, import_id=source_import.id, antecedent_product_id=first.id, consequent_product_id=second.id, cooccurrence_count=90, support=.2, confidence=.5, lift=1.8, fingerprint="a" * 64))
             db.add_all([
                 SupportCase(owner_id=owner.id, case_key="own", customer_name="甲", subject="牛奶退款", is_demo=True),
                 SupportCase(owner_id=foreign.id, case_key="foreign", customer_name="乙", subject="隐私投诉"),

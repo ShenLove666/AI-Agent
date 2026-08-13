@@ -28,9 +28,10 @@ def test_gap_resolution_and_high_risk_evaluation_gate(tmp_path):
         service.add_quality_label(db, owner.id, support_case.id, owner.id, "failed", "missing_policy", "high", "复核仍缺失")
         deduplicated = [item for item in service.list_gaps(db, owner.id) if item["title"].startswith("优惠券返还时效")]
         assert len(deduplicated) == 1 and deduplicated[0]["occurrenceCount"] == 2
-        resolved = service.resolve_gap(db, owner.id, gap.id, owner.id, release.id)
-        assert resolved["status"] == "resolved"
+        # 缺口闭环语义：必须先通过评测门禁并激活，才能绑定解决
         run = service.run_evaluation(db, owner.id, owner.id, release.id)
-        assert run["gate"] == "passed"
+        assert run["gate"]["passed"] is True
         decision = service.decide_release(db, owner.id, owner.id, run["id"], release.id, "approved")
         assert decision["decision"] == "approved" and decision["highRiskFailures"] == 0
+        resolved = service.resolve_gap(db, owner.id, gap.id, owner.id, release.id)
+        assert resolved["status"] == "resolved"

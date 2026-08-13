@@ -22,7 +22,11 @@ from app.modules.conversations.models import (
     Message,
 )
 from app.modules.demo.catalog import DemoCatalog, load_demo_catalog
-from app.modules.evaluation.models import EvaluationCase, EvaluationDataset
+from app.modules.evaluation.models import (
+    EvaluationCase,
+    EvaluationDataset,
+    EvaluationRun,
+)
 from app.modules.evaluation.repository import EvaluationCaseInput, EvaluationRepository
 from app.modules.knowledge.models import (
     KnowledgeBase,
@@ -37,6 +41,7 @@ from app.modules.support.models import (
     ReplyDecision,
     ReplySuggestion,
     SupportCase,
+    SupportEscalation,
     SupportEvent,
     SupportMessage,
     SupportQualityLabel,
@@ -44,7 +49,13 @@ from app.modules.support.models import (
 )
 from app.modules.users.models import Organization, OrganizationMember, User
 from app.modules.commerce.service import RetailService
-from app.modules.commerce.models import Basket, BasketItem, CommerceImport, Product
+from app.modules.commerce.models import (
+    Basket,
+    BasketItem,
+    CommerceImport,
+    MerchantProfile,
+    Product,
+)
 from app.modules.orders.models import (
     CustomerSnapshot,
     Fulfillment,
@@ -711,6 +722,68 @@ class DemoSeedService:
         order_removed = self._delete_order_rows(db, plan.user_ids)
         for owner_id in plan.user_ids:
             RetailService().clear_managed_snapshots(db, owner_id, commit=False)
+        # 商家画像（merchant_profiles.owner_id → users_v2）不在快照清理范围内，
+        # FK 强制后必须显式删除，否则 users 删除被拒
+        if plan.user_ids:
+            self._delete_ids(
+                db,
+                MerchantProfile,
+                MerchantProfile.id,
+                tuple(
+                    db.scalars(
+                        select(MerchantProfile.id).where(
+                            MerchantProfile.owner_id.in_(plan.user_ids)
+                        )
+                    )
+                ),
+            )
+        # FK 强制后按依赖顺序补删：经营复测 → 优化任务 → 评测运行 →
+        # 知识发布（决策/版本，成员级联）——必须在 datasets/cases/documents 删除前
+        if plan.user_ids:
+            from app.modules.optimization.models import (
+                OptimizationTask,
+                OptimizationVerificationRun,
+            )
+
+            for model in (OptimizationVerificationRun, OptimizationTask):
+                ids = tuple(
+                    db.scalars(
+                        select(model.id).where(model.owner_id.in_(plan.user_ids))
+                    )
+                )
+                self._delete_ids(db, model, model.id, ids)
+            self._delete_ids(
+                db,
+                SupportReleaseDecision,
+                SupportReleaseDecision.id,
+                tuple(
+                    db.scalars(
+                        select(SupportReleaseDecision.id).where(
+                            SupportReleaseDecision.owner_id.in_(plan.user_ids)
+                        )
+                    )
+                ),
+            )
+            release_ids = tuple(
+                db.scalars(
+                    select(KnowledgeRelease.id).where(
+                        KnowledgeRelease.owner_id.in_(plan.user_ids)
+                    )
+                )
+            )
+            self._delete_ids(db, KnowledgeRelease, KnowledgeRelease.id, release_ids)
+            self._delete_ids(
+                db,
+                EvaluationRun,
+                EvaluationRun.id,
+                tuple(
+                    db.scalars(
+                        select(EvaluationRun.id).where(
+                            EvaluationRun.owner_id.in_(plan.user_ids)
+                        )
+                    )
+                ),
+            )
         counts = {
             "removed_request_runs": self._delete_ids(
                 db, ChatRequestRun, ChatRequestRun.id, plan.request_run_ids
@@ -809,6 +882,7 @@ class DemoSeedService:
             (SupportReleaseDecision, SupportReleaseDecision.owner_id.in_(user_ids)),
             (SupportQualityLabel, SupportQualityLabel.owner_id.in_(user_ids)),
             (ReplyDecision, ReplyDecision.case_id.in_(case_ids)),
+            (SupportEscalation, SupportEscalation.owner_id.in_(user_ids)),
             (SupportMessage, SupportMessage.case_id.in_(case_ids)),
             (SupportEvent, SupportEvent.case_id.in_(case_ids)),
             (ReplySuggestion, ReplySuggestion.case_id.in_(case_ids)),

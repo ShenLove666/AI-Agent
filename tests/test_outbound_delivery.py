@@ -314,3 +314,51 @@ def test_accepted_suggestion_creates_one_auditable_outbound(tmp_path):
                 assert workspace.json()["data"]["outboundMessages"][0]["deliveryClaim"] == "simulated"
 
     asyncio.run(scenario())
+
+
+def test_manual_reply_cannot_bypass_high_risk_suggestion_gate(tmp_path):
+    """风险策略下沉最终出口：存在未决策的高风险 AI 建议时，manual reply 也被拒。"""
+    from app.framework.database import Base, Database
+    from app.framework.errors import AppError
+    from app.modules.support.models import ReplySuggestion, SupportCase
+    from app.modules.support.outbound import OutboundService, build_customer_channel
+    from app.modules.users.models import User
+
+    database = Database(f"sqlite:///{tmp_path / 'outbound-gate.db'}")
+    Base.metadata.create_all(database.engine)
+    with database.session_factory() as db:
+        owner = User(username="gate-owner", password_hash="x", role="admin")
+        db.add(owner)
+        db.flush()
+        case = SupportCase(
+            owner_id=owner.id, case_key="gate-1", customer_name="顾客", subject="食品安全"
+        )
+        db.add(case)
+        db.flush()
+        db.add(
+            ReplySuggestion(
+                case_id=case.id,
+                requested_by=owner.id,
+                status="ready",
+                content="建议退款并致歉。",
+                risk_flags_json='["high_risk_food_safety"]',
+                model_id="test",
+                prompt_version="v1",
+            )
+        )
+        db.commit()
+        service = OutboundService(build_customer_channel())
+        try:
+            service.confirm(
+                db,
+                owner_id=owner.id,
+                case_id=case.id,
+                actor_id=owner.id,
+                content="已为您办理退款。",
+                expected_version=case.version,
+                idempotency_key="manual-bypass-1",
+            )
+            raise AssertionError("高风险建议未决策时应拒绝 manual reply")
+        except AppError as exc:
+            assert exc.code == "HIGH_RISK_REQUIRES_ESCALATION"
+            assert exc.status_code == 403

@@ -14,7 +14,17 @@ from sqlalchemy.orm import Session
 
 from app.framework.errors import AppError
 from app.modules.orders.models import OutboundMessage
-from app.modules.support.models import ReplySuggestion, SupportCase, SupportEvent, SupportMessage
+from app.modules.support.models import (
+    ReplyDecision,
+    ReplySuggestion,
+    SupportCase,
+    SupportEvent,
+    SupportMessage,
+)
+
+# 与 support/service.py 的 SUPERVISOR_ROLES 保持一致（风险策略下沉到最终出口，
+# 避免跨模块循环导入，此处独立定义并同步维护）。
+SUPERVISOR_ROLES = {"supervisor", "admin"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +140,70 @@ class OutboundService:
     def __init__(self, channel: CustomerChannel | None = None):
         self.channel = channel or DemoChannel()
 
+    @staticmethod
+    def _suggestion_risk(suggestion: ReplySuggestion) -> str:
+        """读取建议风险等级（与 support/service._suggestion_risk_level 同口径）。"""
+        try:
+            snapshot = json.loads(suggestion.config_snapshot_json or "{}")
+        except (TypeError, ValueError):
+            snapshot = {}
+        resolution = snapshot.get("resolution") or {}
+        if isinstance(resolution, dict) and resolution.get("risk") in {
+            "low",
+            "medium",
+            "high",
+        }:
+            return resolution["risk"]
+        try:
+            flags = json.loads(suggestion.risk_flags_json or "[]")
+        except (TypeError, ValueError):
+            flags = []
+        if any(
+            flag in {"high_risk_food_safety", "high_risk_payment", "high_risk_account"}
+            for flag in flags
+        ):
+            return "high"
+        return "medium"
+
+    @staticmethod
+    def _enforce_outbound_policy(db: Session, case: SupportCase, actor_id: int) -> None:
+        """风险策略最终出口：任何对客发送都必须满足：
+
+        1. 已升级工单仅主管可发送；
+        2. 存在未决策的高风险 AI 建议 → 一律拒绝（堵住 manual reply /
+           outbound 端点绕过 decide() 风险门禁的路径）。
+        """
+        from app.modules.users.models import User
+
+        actor = db.get(User, actor_id)
+        is_supervisor = actor is not None and actor.role in SUPERVISOR_ROLES
+        if case.status == "escalated" and not is_supervisor:
+            raise AppError(
+                "ESCALATED_CASE_REQUIRES_SUPERVISOR",
+                "工单已升级，仅主管可发送对客回复",
+                403,
+            )
+        suggestion = db.scalar(
+            select(ReplySuggestion)
+            .where(ReplySuggestion.case_id == case.id)
+            .order_by(ReplySuggestion.id.desc())
+        )
+        if suggestion is None:
+            return
+        if OutboundService._suggestion_risk(suggestion) != "high":
+            return
+        decided = db.scalar(
+            select(ReplyDecision).where(ReplyDecision.suggestion_id == suggestion.id)
+        )
+        if decided is not None:
+            # 已决策（含主管处理/驳回）→ 交由决策语义，不再重复拦截
+            return
+        raise AppError(
+            "HIGH_RISK_REQUIRES_ESCALATION",
+            "高风险建议必须升级主管后由主管处理",
+            403,
+        )
+
     def confirm(
         self,
         db: Session,
@@ -150,6 +224,9 @@ class OutboundService:
         )
         if case is None:
             raise AppError("SUPPORT_CASE_NOT_FOUND", "客服工单不存在", 404)
+        # 风险策略下沉最终出口：任何对客发送（含 manual reply / outbound 端点）
+        # 都不得绕过 AI 建议的风险控制
+        self._enforce_outbound_policy(db, case, actor_id)
 
         existing = db.scalar(
             select(OutboundMessage).where(

@@ -7,6 +7,7 @@ import time
 from datetime import date, datetime
 
 from sqlalchemy import case as sql_case, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.framework.errors import AppError, ProviderUnavailableError
@@ -18,11 +19,7 @@ from app.modules.evaluation.models import (
     EvaluationRun,
 )
 from app.modules.evaluation.gate import evaluate_gate
-from app.modules.evaluation.runtime import (
-    AgentEvaluationRunner,
-    SCORING_VERSION,
-    execution_payload,
-)
+from app.modules.evaluation.runtime import SCORING_VERSION, execute_run_cases
 from app.modules.rag.agentic import AgenticRagCoordinator
 from app.modules.knowledge.models import (
     KnowledgeBase,
@@ -783,6 +780,16 @@ class SupportService:
             reason=reason,
         )
         db.add(item)
+        try:
+            # 立即 flush：① 并发双击「采纳」时唯一约束在此触发 → 409；
+            # ② 让最终出口（OutboundService 风险策略）能看到本次决策，
+            #    主管放行高风险建议时不会被自己的策略误拦。
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise AppError(
+                "SUGGESTION_ALREADY_REVIEWED", "该建议已经完成审核", 409
+            ) from None
         if outgoing:
             self._event(
                 db,
@@ -1329,9 +1336,13 @@ class SupportService:
         if gap is None:
             raise AppError("KNOWLEDGE_GAP_NOT_FOUND", "知识缺口不存在", 404)
         release = self._require_release(db, owner_id, release_id)
-        if release.status != "published":
+        # 缺口闭环语义：必须绑定已发布**且已激活**的知识版本（激活 = 通过评测
+        # 门禁并 approved）——published 候选（可能未评测/评测失败）不能算解决
+        if release.status != "published" or not release.is_active:
             raise AppError(
-                "KNOWLEDGE_RELEASE_NOT_PUBLISHED", "解决缺口必须绑定已发布版本", 409
+                "KNOWLEDGE_RELEASE_NOT_ACTIVE",
+                "解决缺口必须绑定已发布并通过评测门禁激活的知识版本",
+                409,
             )
         gap.status, gap.owner_user_id, gap.resolving_release_id = (
             "resolved",
@@ -1684,6 +1695,10 @@ class SupportService:
                     if item.get("runtimeMode")
                 }
             )
+            # 门禁口径统一：与 decide_release 使用同一 evaluate_gate，避免
+            # 前端显示「通过」而后端批准被拒的假象
+            gate = evaluate_gate(results)
+            run_snapshot = _json(run.config_snapshot_json, {})
             run_items.append(
                 {
                     "id": run.id,
@@ -1691,7 +1706,15 @@ class SupportService:
                     "score": score,
                     "caseCount": len(results),
                     "highRiskFailures": risky,
-                    "gate": "blocked" if risky else "passed",
+                    "gate": {
+                        "passed": gate["passed"],
+                        "failures": gate["failures"],
+                        "totalScore": gate["totalScore"],
+                    },
+                    # Run 与候选版本显式绑定：前端按 run.releaseId 配对批准按钮，
+                    # 不再拿「当前 candidate」拼凑
+                    "releaseId": run_snapshot.get("knowledgeReleaseId"),
+                    "releaseVersion": run_snapshot.get("knowledgeVersion"),
                     "runtimeModes": modes,
                     "startedAt": run.started_at.isoformat(),
                     "isDemo": run.is_demo,
@@ -1804,67 +1827,16 @@ class SupportService:
                 )
             )
         )
-        runner = AgentEvaluationRunner(coordinator)
         try:
-            for case in dataset.cases:
-                try:
-                    execution = await asyncio.wait_for(
-                        runner.execute_case(
-                            db,
-                            owner_id=owner_id,
-                            case=case,
-                            allowed_document_ids=allowed_document_ids,
-                        ),
-                        timeout=120,
-                    )
-                except asyncio.TimeoutError:
-                    # 单用例超时：记录失败结果，继续下一个，避免整个评测永久 running
-                    db.add(
-                        EvaluationResult(
-                            run_id=run.id,
-                            case_id=case.id,
-                            answer="",
-                            expected_point_score=0,
-                            citation_correct=False,
-                            refusal_correct=False,
-                            latency_ms=120000,
-                            evidence_json=json.dumps(
-                                {
-                                    "releaseId": release.id,
-                                    "scoringVersion": SCORING_VERSION,
-                                    "runtimeMode": "timeout",
-                                    "terminalState": "timed_out",
-                                    "tools": [],
-                                    "evidenceIds": [],
-                                    "metrics": {
-                                        "expectedPointScore": 0,
-                                        "citationCorrect": False,
-                                        "refusalCorrect": False,
-                                        "highRiskFailure": False,
-                                    },
-                                    "gateBlocked": False,
-                                    "trace": [],
-                                },
-                                ensure_ascii=False,
-                            ),
-                        )
-                    )
-                    continue
-                db.add(
-                    EvaluationResult(
-                        run_id=run.id,
-                        case_id=case.id,
-                        answer=execution.answer,
-                        expected_point_score=execution.metrics.expected_point_score,
-                        citation_correct=execution.metrics.citation_correct,
-                        refusal_correct=execution.metrics.refusal_correct,
-                        latency_ms=execution.latency_ms,
-                        evidence_json=json.dumps(
-                            execution_payload(execution, release_id=release.id),
-                            ensure_ascii=False,
-                        ),
-                    )
-                )
+            await execute_run_cases(
+                db,
+                run_id=run.id,
+                dataset=dataset,
+                coordinator=coordinator,
+                owner_id=owner_id,
+                release_id=release.id,
+                allowed_document_ids=allowed_document_ids,
+            )
             run.status = "completed"
             run.completed_at = datetime.utcnow()
             db.commit()

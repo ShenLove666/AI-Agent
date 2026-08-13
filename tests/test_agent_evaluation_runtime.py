@@ -102,7 +102,7 @@ def test_support_evaluation_persists_real_runtime_payload_and_gate(tmp_path):
         registry = ToolRegistry([AgentTool("knowledge.search", "policy", _Query, evidence)])
         result = SupportService().run_evaluation(db, owner.id, owner.id, release.id, AgenticRagCoordinator(None, None, max_steps=1, registry=registry))
         assert result["runtimeModes"] == ["deterministic_fallback"]
-        assert result["caseCount"] == 1 and result["gate"] == "passed"
+        assert result["caseCount"] == 1 and result["gate"]["passed"] is True
         from app.modules.evaluation.models import EvaluationResult
         stored = db.query(EvaluationResult).one()
         detail = json.loads(stored.evidence_json)

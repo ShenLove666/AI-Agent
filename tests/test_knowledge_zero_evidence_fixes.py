@@ -28,7 +28,7 @@ import app.application_core  # noqa: F401  (注册全部 ORM 模型)
 from app.framework.database import Database
 from app.framework.errors import AppError, RetrievalError
 from app.framework.migrations import upgrade_database
-from app.modules.commerce.models import AssociationRule, Product
+from app.modules.commerce.models import AssociationRule, CommerceImport, Product
 from app.modules.conversations.service import ConversationService
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument
 from app.modules.knowledge.search import SqlKeywordSearchChannel
@@ -79,9 +79,18 @@ def _seed_merchant(db, owner_id: int, prefix: str = "牛肉") -> dict:
     )
     db.add_all([first, second])
     db.flush()
+    source_import = CommerceImport(
+        owner_id=owner_id,
+        fingerprint=f"{prefix}-import-fp",
+        source_row_count=0,
+        basket_count=0,
+        product_count=0,
+    )
+    db.add(source_import)
+    db.flush()
     rule = AssociationRule(
         owner_id=owner_id,
-        import_id=1,
+        import_id=source_import.id,
         antecedent_product_id=first.id,
         consequent_product_id=second.id,
         cooccurrence_count=12,

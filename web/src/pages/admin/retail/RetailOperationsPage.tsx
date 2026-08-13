@@ -200,7 +200,7 @@ export function RetailOperationsPage() {
       );
       toast.success(
         action === "confirm"
-          ? "方案已确认，已自动创建评测运行与优化任务"
+          ? "方案已确认，已自动创建优化任务（复测走经营效果验证，与 AI 评测分离）"
           : action === "publish"
             ? "方案已发布"
             : "方案已驳回"
@@ -269,7 +269,11 @@ export function RetailOperationsPage() {
     setBusy(`task-verify-${task.id}`);
     try {
       const result = await verifyRetailTask(task.id);
-      toast.success(`经营效果复测 #${result.runId} 已执行并写入修改后指标`);
+      if (task.sourceType === "campaign") {
+        toast.success(`经营效果复测 #${result.runId} 已执行并写入修改后指标`);
+      } else {
+        toast.success(`AI 评测复测 #${result.runId} 已创建，后台执行中（失败清零后才可标记已解决）`);
+      }
       setTaskDetailOpen(false);
       await load();
     } catch {

@@ -22,7 +22,13 @@ import app.application_core  # noqa: F401  (注册全部 ORM 模型)
 from app.framework.database import Database
 from app.framework.migrations import upgrade_database
 from app.infra_ai.contracts import ModelStreamChunk
-from app.modules.commerce.models import AssociationRule, Basket, BasketItem, Product
+from app.modules.commerce.models import (
+    AssociationRule,
+    Basket,
+    BasketItem,
+    CommerceImport,
+    Product,
+)
 from app.modules.rag.agentic import (
     AgentDecision,
     AgenticRagCoordinator,
@@ -117,7 +123,13 @@ class _SlowCoordinator:
 
 def _seed_commerce(db, owner_id: int) -> None:
     """给 owner 构造 牛肉/根茎类蔬菜 + 关联规则 + 交易明细。"""
-    import_id = 1
+    source_import = CommerceImport(
+        owner_id=owner_id, fingerprint="agent-progress-fp",
+        source_row_count=0, basket_count=0, product_count=0,
+    )
+    db.add(source_import)
+    db.flush()
+    import_id = source_import.id
     beef = Product(owner_id=owner_id, source_key="beef", name="牛肉", category="肉类")
     veg = Product(
         owner_id=owner_id, source_key="veg", name="根茎类蔬菜", category="果蔬"

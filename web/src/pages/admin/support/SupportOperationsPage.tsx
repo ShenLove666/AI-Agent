@@ -313,21 +313,35 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
                     <div>
                       <div className="flex items-center gap-2">
                         <strong>运行 #{run.id}</strong>
-                        <Badge className={run.gate === "passed" ? "bg-emerald-600" : "bg-rose-600"}>
-                          {run.gate === "passed" ? "门禁通过" : "阻断上线"}
+                        {run.releaseVersion ? (
+                          <span className="text-xs text-slate-400">
+                            评测对象：v{run.releaseVersion}
+                          </span>
+                        ) : null}
+                        <Badge className={run.gate?.passed ? "bg-emerald-600" : "bg-rose-600"}>
+                          {run.gate?.passed ? "门禁通过" : "阻断上线"}
                         </Badge>
                       </div>
                       <p className="mt-1 text-sm text-slate-500">
                         {run.caseCount} 用例 · 得分 {fmt(run.score)} · 高风险失败{" "}
                         {run.highRiskFailures}
                       </p>
+                      {!run.gate?.passed && run.gate?.failures?.length ? (
+                        <p className="mt-1 text-xs text-amber-700">
+                          未通过：{run.gate.failures.join("；")}
+                        </p>
+                      ) : null}
                     </div>
-                    {candidate && run.gate === "passed" && (
+                    {/* 批准按钮只出现在「该运行真正评测的版本 == 当前候选版本」时，
+                        不再拿当前 candidate 与任意 run 拼凑（EVALUATION_RELEASE_MISMATCH 兜底） */}
+                    {candidate &&
+                    run.gate?.passed &&
+                    run.releaseId === candidate.id ? (
                       <Button
                         disabled={busy}
                         onClick={() =>
                           void act(
-                            () => decideKnowledgeRelease(run.id, candidate.id, "approved"),
+                            () => decideKnowledgeRelease(run.id, run.releaseId as number, "approved"),
                             `${candidate.version} 已批准上线`
                           )
                         }
@@ -335,7 +349,7 @@ export function SupportOperationsPage({ view = "reports" }: { view?: SupportOper
                         <CheckCircle2 className="mr-2 h-4 w-4" />
                         批准上线
                       </Button>
-                    )}
+                    ) : null}
                   </article>
                 ))
               ) : (
