@@ -6,7 +6,8 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from app.modules.evaluation.models import EvaluationCase
-from app.modules.rag.agentic import AgenticRagCoordinator, AgenticRun
+from app.modules.rag.agentic import AgenticRagCoordinator
+from app.modules.rag.answer_runtime import GroundedAnswerRuntime
 
 
 SCORING_VERSION = "agent-eval-v1"
@@ -63,20 +64,33 @@ def _normalize_source(value: str) -> str:
     return value
 
 
-def score_execution(case: EvaluationCase, run: AgenticRun, latency_ms: int) -> EvaluationMetrics:
-    evidence_text = " ".join(f"{item.id} {item.source or ''} {item.content}" for item in run.results).lower()
+def score_execution(
+    case: EvaluationCase,
+    answer: str,
+    results: tuple[Any, ...],
+    terminal_state: str,
+    latency_ms: int,
+) -> EvaluationMetrics:
+    """对「最终用户回答」打分（不是 Agent 内部拼接答案）。
+
+    answer 由共享 GroundedAnswerRuntime 生成（线上 = 模型流式回答，
+    无模型 = 确定性回退）；results/terminal_state 反映证据与 Agent 终态。
+    """
+    evidence_text = " ".join(
+        f"{item.id} {item.source or ''} {item.content}" for item in results
+    ).lower()
     expected = [_normalize_source(value) for value in case.expected_document_keys]
     matched = sum(1 for key in expected if key in _normalize_source(evidence_text))
     evidence_recall = 100 if not expected else round(100 * matched / len(expected))
     citation_correct = not expected or matched == len(expected)
-    refusal_observed = run.terminal_state in {"refused", "escalated"}
+    refusal_observed = terminal_state in {"refused", "escalated"}
     refusal_correct = refusal_observed if case.should_refuse else not refusal_observed
-    if run.results:
-        groundedness = 100 if all(" ".join(item.content.split())[:80] in run.answer for item in run.results[:3]) else 60
+    if results:
+        groundedness = 100 if all(" ".join(item.content.split())[:80] in answer for item in results[:3]) else 60
     else:
         groundedness = 100 if refusal_observed else 0
     latency_score = 100 if latency_ms <= 2000 else 80 if latency_ms <= 5000 else 50
-    point_score = _coverage(run.answer, case.expected_points)
+    point_score = _coverage(answer, case.expected_points)
     total = round(point_score * .30 + evidence_recall * .25 + groundedness * .25 + (100 if refusal_correct else 0) * .15 + latency_score * .05)
     high_risk = (case.should_refuse and not refusal_correct) or (case.category in {"safety", "required_refusal"} and not refusal_correct)
     return EvaluationMetrics(point_score, evidence_recall, citation_correct, groundedness, refusal_correct, latency_score, total, high_risk)
@@ -108,8 +122,22 @@ class AgentEvaluationRunner:
         latency_ms = max(0, round((time.perf_counter() - started) * 1000))
         tools = tuple(dict.fromkeys(execution.get("tool") for step in run.steps if step.get("agent") == "tools" for execution in step.get("executions", []) if execution.get("tool")))
         evidence_ids = tuple(item.id for item in run.results)
-        metrics = score_execution(case, run, latency_ms)
-        return CaseExecution(case.id, run.answer, latency_ms, run.runtime_mode, run.terminal_state, tools, evidence_ids, metrics, run.steps)
+        # 最终用户回答经共享 GroundedAnswerRuntime 生成：评测的就是线上用户
+        # 真正看到的答案（无模型/离线时确定性回退，与 AgenticRun.answer 同口径）。
+        if run.terminal_state in ("grounded", "direct") and run.results:
+            generated = await GroundedAnswerRuntime.generate(
+                self.coordinator.model_router,
+                question=case.question,
+                evidence=run.results,
+            )
+            answer = generated.content
+        else:
+            # refused/escalated/无证据：Agent 终态固定文案即最终回答（不调用模型）
+            answer = run.answer
+        metrics = score_execution(
+            case, answer, run.results, run.terminal_state, latency_ms
+        )
+        return CaseExecution(case.id, answer, latency_ms, run.runtime_mode, run.terminal_state, tools, evidence_ids, metrics, run.steps)
 
 
 def execution_payload(execution: CaseExecution, *, release_id: int) -> dict[str, Any]:

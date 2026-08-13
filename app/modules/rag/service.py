@@ -25,6 +25,7 @@ from app.modules.conversations.models import (
 from app.modules.conversations.service import ConversationService
 from app.modules.knowledge.models import KnowledgeBase, KnowledgeDocument
 from app.modules.rag.prompt_budget import count_tokens, truncate_to_tokens
+from app.modules.rag.answer_runtime import GroundedAnswerRuntime
 from app.modules.rag.progress import (
     AgentProgressEvent,
     ProgressSink,
@@ -957,29 +958,19 @@ class RagChatService:
                 model_request = self._plain_assistant_prompt(request, budgeted_history)
                 context = ""
             else:
+                # 与 Eval 共享同一 Prompt 构造（answer_runtime）：评测的就是
+                # 线上用户真正看到的最终回答所依赖的同一输入。
                 context = "\n\n".join(
                     f"[资料 {index}] {item.content}"
                     for index, item in enumerate(documents, start=1)
                 )
-                system_prompt = (
-                    "你是零售运营 Agent。依据 ReAct 工具返回的资料回答，并区分"
-                    " observed/derived/synthetic；资料不足时明确说明，不得编造"
-                    "来源、销量、价格或政策。"
-                )
-                user_content = request.question
-                if context:
-                    user_content = f"用户问题：{request.question}\n\n可用资料：\n{context}"
-                messages = [ChatMessage("system", system_prompt)]
-                messages.extend(budgeted_history)
-                messages.append(ChatMessage("user", user_content))
-                model_request = ModelChatRequest(
-                    messages=messages,
+                model_request = GroundedAnswerRuntime.build_grounded_request(
+                    question=request.question,
+                    evidence=documents,
+                    history=budgeted_history,
+                    deep_thinking=request.deep_thinking,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
-                    metadata={
-                        "deep_thinking": request.deep_thinking,
-                        "requested_mode": "thinking" if request.deep_thinking else "normal",
-                    },
                 )
             attributes.update(
                 intent="research",
