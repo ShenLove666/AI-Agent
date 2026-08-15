@@ -45,7 +45,7 @@ import {
   updateIngestionPipeline,
   uploadIngestionTask
 } from "@/services/ingestionService";
-import { getSystemSettings } from "@/services/settingsService";
+import { getNumericRuntimeSetting, getSystemSettings } from "@/services/settingsService";
 import { getErrorMessage } from "@/utils/error";
 import { RelativeTime } from "@/components/RelativeTime";
 const PIPELINE_PAGE_SIZE = 10;
@@ -927,10 +927,10 @@ function PipelineDialog({ open, mode, pipeline, onOpenChange, onSubmit }: Pipeli
         return { ok: false as const, message: "节点类型不能为空" };
       }
       let settings: Record<string, unknown> | undefined;
-      let condition: unknown;
+      let condition: Record<string, unknown> | null | undefined;
       try {
         settings = buildSettings(node) as Record<string, unknown> | undefined;
-        condition = parseCondition(node.condition);
+        condition = parseCondition(node.condition) as Record<string, unknown> | null | undefined;
       } catch (error) {
         return { ok: false as const, message: error instanceof Error ? error.message : "节点配置错误" };
       }
@@ -1888,7 +1888,9 @@ function TaskDialog({ open, pipelineOptions, onOpenChange, onSubmit, onUpload }:
       });
       setLocalFile(null);
       getSystemSettings()
-        .then((settings) => setMaxFileSize(settings.upload.maxFileSize))
+        .then((settings) =>
+          setMaxFileSize(getNumericRuntimeSetting(settings, "max_upload_file_size", 50 * 1024 * 1024))
+        )
         .catch(() => {});
     }
   }, [open, pipelineOptions, form]);
@@ -2139,7 +2141,9 @@ function UploadDialog({ open, pipelineOptions, onOpenChange, onSubmit }: UploadD
       setPipelineId(pipelineOptions[0]?.id || "");
       setFile(null);
       getSystemSettings()
-        .then((settings) => setMaxFileSize(settings.upload.maxFileSize))
+        .then((settings) =>
+          setMaxFileSize(getNumericRuntimeSetting(settings, "max_upload_file_size", 50 * 1024 * 1024))
+        )
         .catch(() => {});
     }
   }, [open, pipelineOptions]);

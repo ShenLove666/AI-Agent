@@ -219,7 +219,9 @@ export const getRetailTask = (taskId: number) =>
 export const assignRetailTask = (taskId: number, assigneeId: number | null) =>
   api.post(`/retail/optimization-tasks/${taskId}/assign`, { assigneeId });
 export const verifyRetailTask = (taskId: number) =>
-  api.post(`/retail/optimization-tasks/${taskId}/verify`);
+  api.post<never, { runId: number; status: string; taskId: number }>(
+    `/retail/optimization-tasks/${taskId}/verify`
+  );
 export const syncFailedEvaluations = () =>
   api.post<never, { created: number }>("/retail/optimization-tasks/sync-from-evaluations");
 export const getRetailReport = () =>

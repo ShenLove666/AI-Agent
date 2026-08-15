@@ -35,6 +35,17 @@ export async function getSystemSettings(): Promise<SystemSettings> {
   return api.get<SystemSettings, SystemSettings>("/rag/settings");
 }
 
+/** Read a numeric runtime setting without inventing a second settings shape on the client. */
+export function getNumericRuntimeSetting(
+  settings: SystemSettings,
+  key: string,
+  fallback: number
+): number {
+  const item = settings.items.find((candidate) => candidate.key === key);
+  const value = typeof item?.value === "number" ? item.value : Number(item?.value);
+  return Number.isFinite(value) ? value : fallback;
+}
+
 export async function patchSystemSettings(
   expectedVersion: number,
   changes: Array<{ key: string; value: string | number }>,

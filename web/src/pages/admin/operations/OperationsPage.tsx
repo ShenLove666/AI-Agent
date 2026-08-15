@@ -52,7 +52,7 @@ function exportReport(data: OperationsOverview) {
     ...data.issues.map((item) => [item.name, item.count, `${item.rate}%`, item.priority, item.action])
   ];
   const csv = rows
-    .map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(","))
+    .map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, '""')}"`).join(","))
     .join("\n");
   const blob = new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);

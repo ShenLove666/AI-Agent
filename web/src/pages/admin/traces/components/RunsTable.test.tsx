@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RunsTable } from "@/pages/admin/traces/components/RunsTable";
-import { getRagTraceNodes, type RagTraceRun } from "@/services/ragTraceService";
+import type { RagTraceRun } from "@/services/ragTraceService";
 
 vi.mock("@/services/ragTraceService", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/services/ragTraceService")>();

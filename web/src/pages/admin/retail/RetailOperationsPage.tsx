@@ -49,6 +49,7 @@ import {
   verifyRetailTask,
   type RetailCampaign,
   type RetailCampaignDetail,
+  type RetailOverview,
   type RetailTask,
   type RetailTaskDetail
 } from "@/services/retailService";

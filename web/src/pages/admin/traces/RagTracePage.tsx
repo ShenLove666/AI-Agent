@@ -66,8 +66,7 @@ export function RagTracePage() {
       }
       return null;
     } finally {
-      if (runsRequestRef.current !== requestId) return;
-      if (!silent) setLoading(false);
+      if (runsRequestRef.current === requestId && !silent) setLoading(false);
     }
   };
 
@@ -169,6 +168,7 @@ export function RagTracePage() {
     unit?: string;
     icon: ReactNode;
     tone: StatCardTone;
+    hint?: string;
   }[] = [
     {
       key: "status",

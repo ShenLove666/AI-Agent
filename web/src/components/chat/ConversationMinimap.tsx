@@ -66,7 +66,7 @@ export function ConversationMinimap({ turns, activeIndex, onNavigate }: Conversa
   }, [activeIndex, manualRailScroll]);
 
   // tooltip 位置按 marker 相对 rail 的 Y 计算（在 overflow viewport 之外渲染）
-  const handleMarkerEnter = (index: number, event: React.MouseEvent<HTMLButtonElement>) => {
+  const handleMarkerEnter = (index: number, event: React.SyntheticEvent<HTMLButtonElement>) => {
     setHoverIndex(index);
     const buttonRect = event.currentTarget.getBoundingClientRect();
     const railRect = railRef.current?.getBoundingClientRect();

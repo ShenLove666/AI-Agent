@@ -423,27 +423,29 @@ export function KnowledgeListPage() {
       {pageData ? (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-500">
           <span>共 {pageData.total} 条</span>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPageNo((prev) => Math.max(1, prev - 1))}
-              disabled={pageData.current <= 1}
-            >
-              上一页
-            </Button>
-            <span>
-              {pageData.current} / {pageData.pages}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPageNo((prev) => Math.min(pageData.pages || 1, prev + 1))}
-              disabled={pageData.current >= pageData.pages}
-            >
-              下一页
-            </Button>
-          </div>
+          {pageData.total > 0 ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPageNo((prev) => Math.max(1, prev - 1))}
+                disabled={pageData.current <= 1}
+              >
+                上一页
+              </Button>
+              <span>
+                {pageData.current} / {Math.max(1, pageData.pages)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPageNo((prev) => Math.min(Math.max(1, pageData.pages), prev + 1))}
+                disabled={pageData.current >= Math.max(1, pageData.pages)}
+              >
+                下一页
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

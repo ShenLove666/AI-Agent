@@ -225,12 +225,12 @@ def test_user_management_and_admin_guard():
                     denied = await client.get("/api/v1/users", headers=worker_headers)
                     assert denied.status_code == 403
 
-                    # 普通用户访问未实现模块 -> 501 (结构化)
+                    # 未实现的管理模块也必须先做权限校验，不向普通用户暴露能力边界
                     not_impl = await client.get("/api/v1/agents", headers=worker_headers)
-                    assert not_impl.status_code == 200
+                    assert not_impl.status_code == 403
                     body = not_impl.json()
                     assert body["success"] is False
-                    assert body["error"]["code"] == "NOT_IMPLEMENTED"
+                    assert body["error"]["code"] == "FORBIDDEN"
 
                     # 管理员
                     admin_login = await client.post(
@@ -397,17 +397,17 @@ def test_all_frontend_service_roots_have_contracts():
                     token = login.json()["data"]["access_token"]
                     headers = {"Authorization": f"Bearer {token}"}
 
-                    # (路径, 期望状态码): 401 表示已注册但需要更多参数/资源
+                    # 未实现的兼容端点返回真实 HTTP 501，已实现端点返回 200。
                     probe_roots = [
-                        ("/api/v1/agents", 200),            # 501 结构化
-                        ("/api/v1/admin/dashboard", 200),   # 501 结构化
-                        ("/api/v1/biz-change-logs", 200),   # 501 结构化
-                        ("/api/v1/ingestion/pipelines", 200),  # 501
-                        ("/api/v1/intent-tree", 200),       # 501
-                        ("/api/v1/admin/kg", 200),          # 501
-                        ("/api/v1/mappings", 200),          # 501
-                        ("/api/v1/sample-questions", 200),  # 501
-                        ("/api/v1/rag/sample-questions", 200),  # 501
+                        ("/api/v1/agents", 501),
+                        ("/api/v1/admin/dashboard", 501),
+                        ("/api/v1/biz-change-logs", 200),
+                        ("/api/v1/ingestion/pipelines", 501),
+                        ("/api/v1/intent-tree", 501),
+                        ("/api/v1/admin/kg", 501),
+                        ("/api/v1/mappings", 501),
+                        ("/api/v1/sample-questions", 501),
+                        ("/api/v1/rag/sample-questions", 200),
                         ("/api/v1/rag/settings", 200),      # 实现
                         ("/api/v1/users", 200),             # 实现
                         ("/api/v1/knowledge-base", 200),    # 实现

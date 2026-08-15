@@ -69,6 +69,10 @@ try {
             Action = { & $npmCommand.Source --prefix $webRoot run test }
         },
         @{
+            Name = 'Type-check frontend'
+            Action = { & $npmCommand.Source --prefix $webRoot run typecheck }
+        },
+        @{
             Name = 'Lint frontend'
             Action = { & $npmCommand.Source --prefix $webRoot run lint }
         },

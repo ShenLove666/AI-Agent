@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -22,27 +22,13 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 
 import { createKnowledgeBase } from "@/services/knowledgeService";
-import { getSystemSettings, type ModelCandidate } from "@/services/settingsService";
 import { getErrorMessage } from "@/utils/error";
 
 const formSchema = z.object({
   name: z.string().min(1, "请输入知识库名称").max(50, "名称不能超过50个字符"),
-  embeddingModel: z.string().min(1, "请选择Embedding模型"),
-  collectionName: z
-    .string()
-    .min(1, "请输入Collection名称")
-    .max(50, "名称不能超过50个字符")
-    .regex(/^[a-z0-9]+$/, "只能包含小写英文字母和数字"),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -59,54 +45,13 @@ export function CreateKnowledgeBaseDialog({
   onSuccess,
 }: CreateKnowledgeBaseDialogProps) {
   const [loading, setLoading] = useState(false);
-  const [modelLoading, setModelLoading] = useState(false);
-  const [embeddingModels, setEmbeddingModels] = useState<ModelCandidate[]>([]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       name: "",
-      embeddingModel: "",
-      collectionName: "",
     },
   });
-
-  useEffect(() => {
-    if (!open) return;
-    let active = true;
-    setModelLoading(true);
-    getSystemSettings()
-      .then((settings) => {
-        if (!active) return;
-        const candidates = settings.ai?.embedding?.candidates || [];
-        const enabledModels = candidates.filter((item) => item.enabled !== false);
-        setEmbeddingModels(enabledModels);
-      })
-      .catch(() => {
-        if (active) {
-          setEmbeddingModels([]);
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setModelLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, form]);
-
-  const selectOptions = useMemo(() => {
-    if (embeddingModels.length === 0) return [];
-    const uniqueMap = new Map<string, ModelCandidate>();
-    embeddingModels.forEach((item) => {
-      if (item.id) {
-        uniqueMap.set(item.id, item);
-      }
-    });
-    return Array.from(uniqueMap.values());
-  }, [embeddingModels]);
 
   const onSubmit = async (values: FormValues) => {
     try {
@@ -128,8 +73,6 @@ export function CreateKnowledgeBaseDialog({
     if (!nextOpen) {
       form.reset({
         name: "",
-        embeddingModel: "",
-        collectionName: "",
       });
     }
     onOpenChange(nextOpen);
@@ -161,66 +104,6 @@ export function CreateKnowledgeBaseDialog({
                   </FormControl>
                   <FormDescription>
                     为知识库起一个易于识别的名称
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="embeddingModel"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Embedding模型</FormLabel>
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="选择Embedding模型" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {modelLoading ? (
-                        <SelectItem value="loading" disabled>
-                          加载中...
-                        </SelectItem>
-                      ) : selectOptions.length === 0 ? (
-                        <SelectItem value="empty" disabled>
-                          暂无可用模型
-                        </SelectItem>
-                      ) : (
-                        selectOptions.map((item) => {
-                          const label = item.provider && item.model
-                            ? `${item.provider} · ${item.model}`
-                            : item.model || item.id;
-                          return (
-                            <SelectItem key={item.id} value={item.id}>
-                              {label}
-                            </SelectItem>
-                          );
-                        })
-                      )}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>
-                    选择用于向量化文档的模型
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="collectionName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Collection名称</FormLabel>
-                  <FormControl>
-                    <Input placeholder="例如：productdocs" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    只能包含小写英文字母和数字
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

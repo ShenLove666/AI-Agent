@@ -73,7 +73,7 @@ export async function listMessages(conversationId: string): Promise<Conversation
         ? (row.recommendedQuestions as string[])
         : null,
       recommendedQuestionsStatus:
-        (row.recommendedQuestionsStatus as PersistedMessage["recommendedQuestionsStatus"]) ||
+        (row.recommendedQuestionsStatus as import("@/types").PersistedRecommendedQuestionStatus) ||
         "NOT_REQUESTED",
       recommendedQuestionsError: (row.recommendedQuestionsError as string | null) || null,
       messageStatus: (row.messageStatus as PersistedMessageStatus) || "NORMAL",

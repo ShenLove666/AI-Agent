@@ -412,8 +412,7 @@ export function RagTraceDetailPage() {
       }
       return null;
     } finally {
-      if (detailRequestRef.current !== requestId) return;
-      if (!silent) setDetailLoading(false);
+      if (detailRequestRef.current === requestId && !silent) setDetailLoading(false);
     }
   };
 

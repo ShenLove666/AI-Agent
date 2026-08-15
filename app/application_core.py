@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,6 +92,48 @@ class ApplicationContainer:
     agentic: AgenticRagCoordinator
     chat: RagChatService
     runtime_settings: RuntimeSettingsService
+
+
+def _include_unique_routers(
+    app: FastAPI, routers: tuple[APIRouter, ...], *, prefix: str
+) -> None:
+    """Assemble the HTTP interface with one owner per method and path.
+
+    Compatibility routers overlap while the Python migration is in progress. The
+    first router keeps the same precedence as before, but duplicate definitions do
+    not leak into runtime routing or OpenAPI generation.
+    """
+    composed = APIRouter()
+    owners: dict[tuple[str, str], str] = {}
+    for source in routers:
+        for route in source.routes:
+            methods = getattr(route, "methods", None)
+            if not methods:
+                composed.routes.append(route)
+                continue
+            normalized_path = re.sub(
+                r"\{[^}:]+(?::[^}]+)?\}", "{}", prefix + route.path
+            )
+            keys = {
+                (method, normalized_path)
+                for method in methods
+                if method not in {"HEAD", "OPTIONS"}
+            }
+            duplicates = keys.intersection(owners)
+            if duplicates:
+                if duplicates != keys:
+                    duplicate_names = ", ".join(
+                        f"{method} {path}" for method, path in sorted(duplicates)
+                    )
+                    raise RuntimeError(
+                        f"Route has partially overlapping methods: {duplicate_names}"
+                    )
+                continue
+            owner = f"{route.endpoint.__module__}.{route.name}"
+            for key in keys:
+                owners[key] = owner
+            composed.routes.append(route)
+    app.include_router(composed, prefix=prefix)
 
 
 def build_vector_components():
@@ -215,30 +258,33 @@ def create_app(app_settings: Settings | None = None) -> FastAPI:
     )
     install_http_conventions(app)
     prefix = resolved_settings.api_prefix
-    for router in (
-        settings_router,
-        create_system_router(resolved_settings),
-        auth_router,
-        conversation_router,
-        knowledge_router,
-        knowledge_mutation_router,
-        chat_router,
-        management_router,
-        orders_router,
-        retail_router,
-        data_source_router,
-        support_router,
-        dashboard_router,
-        knowledge_fixes_router,
-        knowledge_chunk_fixes_router,
-        contract_fixes_router,
-        compat_knowledge_router,
-        compat_chat_router,
-        compat_trace_router,
-        biz_change_logs_router,
-        compat_misc_router,
-    ):
-        app.include_router(router, prefix=prefix)
+    _include_unique_routers(
+        app,
+        (
+            settings_router,
+            create_system_router(resolved_settings),
+            auth_router,
+            conversation_router,
+            knowledge_router,
+            knowledge_mutation_router,
+            chat_router,
+            management_router,
+            orders_router,
+            retail_router,
+            data_source_router,
+            support_router,
+            dashboard_router,
+            knowledge_fixes_router,
+            knowledge_chunk_fixes_router,
+            contract_fixes_router,
+            compat_knowledge_router,
+            compat_chat_router,
+            compat_trace_router,
+            biz_change_logs_router,
+            compat_misc_router,
+        ),
+        prefix=prefix,
+    )
 
     frontend_dist = Path(__file__).resolve().parents[1] / "web" / "dist"
     frontend_assets = frontend_dist / "assets"

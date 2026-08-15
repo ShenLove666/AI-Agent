@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, RotateCcw, Sparkles } from "lucide-react";
+import { Bot, Brain, ChevronDown, ChevronLeft, ChevronRight, RotateCcw } from "lucide-react";
 
 import { AgentExecutionTimeline } from "@/components/chat/AgentExecutionTimeline";
 import { FeedbackButtons } from "@/components/chat/FeedbackButtons";

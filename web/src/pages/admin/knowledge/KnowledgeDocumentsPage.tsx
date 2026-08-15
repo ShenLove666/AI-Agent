@@ -36,7 +36,7 @@ import {
   fetchDocumentFile
 } from "@/services/knowledgeService";
 import type { IngestionPipeline } from "@/services/ingestionService";
-import { getSystemSettings } from "@/services/settingsService";
+import { getNumericRuntimeSetting, getSystemSettings } from "@/services/settingsService";
 import { DocumentPreview, isDocxType, isImageType, isPreviewableType, isSpreadsheetType } from "@/components/document/DocumentPreview";
 import { getErrorMessage } from "@/utils/error";
 
@@ -1416,9 +1416,9 @@ const uploadSchema = z
   .object({
     sourceType: z.enum(["file", "url"]),
     sourceLocation: z.string().optional(),
-    scheduleEnabled: z.boolean().default(false),
+    scheduleEnabled: z.boolean(),
     scheduleCron: z.string().optional(),
-    processMode: z.enum(["chunk", "pipeline"]).default("chunk"),
+    processMode: z.enum(["chunk", "pipeline"]),
     parseProfile: z.string().optional(),
     pipelineId: z.string().optional(),
     // 用户可控的全部自由度：块预算，字段与后端 schema 的 budgetFields 一一对应
@@ -1558,7 +1558,9 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
       setShowAdvanced(false);
       getIngestionSpecSchema().then(setSpecSchema).catch(() => {});
       getSystemSettings()
-        .then((settings) => setMaxFileSize(settings.upload.maxFileSize))
+        .then((settings) =>
+          setMaxFileSize(getNumericRuntimeSetting(settings, "max_upload_file_size", 50 * 1024 * 1024))
+        )
         .catch(() => {});
     }
   }, [open, form]);
@@ -1607,11 +1609,11 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
       const payload: KnowledgeDocumentUploadPayload = {
         sourceType: values.sourceType,
         file: values.sourceType === "file" ? file : null,
-        sourceLocation: values.sourceType === "url" ? values.sourceLocation.trim() : null,
+        sourceLocation: values.sourceType === "url" ? (values.sourceLocation ?? "").trim() : null,
         scheduleEnabled: values.sourceType === "url" ? values.scheduleEnabled : false,
         scheduleCron:
           values.sourceType === "url" && values.scheduleEnabled
-            ? values.scheduleCron.trim()
+            ? (values.scheduleCron ?? "").trim()
             : null,
         processMode: values.processMode,
         ingestionSpec: ingestionSpec ?? null,

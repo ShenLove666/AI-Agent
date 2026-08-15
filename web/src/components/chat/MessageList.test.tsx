@@ -8,15 +8,23 @@ import type { AgentExecutionStep, Message } from "@/types";
 // jsdom 没有 Element.scrollTo / scrollBy。Virtuoso 的 scrollToIndex 落地依赖它们，
 // 这里补最小实现，供 mockScrollMetrics 之外的路径（如回到底部按钮）使用。
 if (typeof Element.prototype.scrollTo !== "function") {
-  Element.prototype.scrollTo = function (this: Element, options?: ScrollToOptions) {
-    const top = typeof options === "object" && options ? options.top ?? 0 : 0;
-    (this as HTMLElement).scrollTop = top;
+  Element.prototype.scrollTo = function (
+    this: Element,
+    leftOrOptions?: number | ScrollToOptions,
+    top?: number
+  ) {
+    const nextTop = typeof leftOrOptions === "number" ? top ?? 0 : leftOrOptions?.top ?? 0;
+    (this as HTMLElement).scrollTop = nextTop;
   };
 }
 if (typeof Element.prototype.scrollBy !== "function") {
-  Element.prototype.scrollBy = function (this: Element, options?: ScrollToOptions) {
-    const top = typeof options === "object" && options ? options.top ?? 0 : 0;
-    (this as HTMLElement).scrollTop += top;
+  Element.prototype.scrollBy = function (
+    this: Element,
+    leftOrOptions?: number | ScrollToOptions,
+    top?: number
+  ) {
+    const nextTop = typeof leftOrOptions === "number" ? top ?? 0 : leftOrOptions?.top ?? 0;
+    (this as HTMLElement).scrollTop += nextTop;
   };
 }
 
@@ -162,7 +170,9 @@ vi.mock("react-virtuoso", async () => {
       };
     }, [atBottomStateChange, followOutput, rangeChanged, scrollerRef]);
 
-    const ListComp = (components?.List ?? undefined) as React.ComponentType | undefined;
+    const ListComp = (components?.List ?? undefined) as
+      | React.ComponentType<React.PropsWithChildren>
+      | undefined;
     const FooterComp = (components?.Footer ?? undefined) as React.ComponentType | undefined;
     const items = (data ?? []).map((item, index) => (
       <React.Fragment key={(item as { key?: string }).key ?? String(index)}>
@@ -364,7 +374,6 @@ describe("MessageList 程序布局变化 ≠ 滚离", () => {
     const u1 = makeMessage("u1", "user", "问题");
     const a1 = makeMessage("a1", "assistant", "回答", { agentSteps: [] });
     const { rerender } = renderList([u1, a1]);
-    const scroller = findScroller()!;
     await settle();
 
     const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");

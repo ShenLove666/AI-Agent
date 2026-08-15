@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle
@@ -18,7 +19,6 @@ import {
   type RagTraceNode,
   type RagTraceRun
 } from "@/services/ragTraceService";
-import { getErrorMessage } from "@/utils/error";
 import {
   formatDuration,
   normalizeStatus,
@@ -241,6 +241,9 @@ function BriefDialog({ run, onClose, onOpenDetail }: BriefDialogProps) {
             <span>链路概览</span>
             <StatusBadge status={run.status} />
           </DialogTitle>
+          <DialogDescription>
+            查看该次请求的执行耗时、节点状态与追踪标识。
+          </DialogDescription>
         </DialogHeader>
 
         <div className="trace-brief-body">

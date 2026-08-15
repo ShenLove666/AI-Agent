@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import re
+from collections import defaultdict
 
 from app.infra_ai.circuit_breaker import CircuitBreaker, CircuitState
 from app.framework.config import Settings
@@ -15,6 +17,36 @@ from app.modules.retrieval.channels import BaseSearchChannel
 from app.modules.retrieval.engine import MultiChannelRetrievalEngine
 from app.modules.retrieval.models import RetrievalRequest, SearchResult
 from app.modules.retrieval.postprocessors import WeightedRrfPostProcessor
+
+
+def test_application_routes_have_one_owner_per_method_and_path(monkeypatch):
+    """The assembled HTTP interface exposes one effective owner per operation."""
+    monkeypatch.setenv("VECTOR_BACKEND", "disabled")
+    from app.application import create_app
+
+    application = create_app(Settings())
+    owners: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for included in application.routes:
+        router = getattr(included, "original_router", None)
+        context = getattr(included, "include_context", None)
+        if router is None or context is None:
+            continue
+        for route in router.routes:
+            path = context.prefix + route.path
+            normalized_path = re.sub(r"\{[^}:]+(?::[^}]+)?\}", "{}", path)
+            endpoint = getattr(route, "endpoint", None)
+            owner = f"{getattr(endpoint, '__module__', '?')}.{route.name}"
+            for method in route.methods or ():
+                if method not in {"HEAD", "OPTIONS"}:
+                    owners[(method, normalized_path)].append(owner)
+
+    duplicates = {
+        f"{method} {path}": route_owners
+        for (method, path), route_owners in owners.items()
+        if len(route_owners) > 1
+    }
+    assert duplicates == {}
 
 
 class FakeChannel(BaseSearchChannel):

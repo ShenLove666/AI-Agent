@@ -16,7 +16,7 @@ function makeTurns(count: number, content: (i: number) => string = (i) => `问�
       id: `u${i + 1}`,
       role: "user",
       content: content(i),
-      status: "sent",
+      status: "done",
       createdAt: "2026-08-09T12:00:00Z",
       updatedAt: "2026-08-09T12:00:00Z"
     } as ChatTurn["user"]
@@ -98,7 +98,7 @@ describe("ConversationMinimap fisheye rail", () => {
   it("hover 显示 tooltip：只含问题摘要（不暴露轮次编号），超过 30 字截断", () => {
     render(
       <ConversationMinimap
-        turns={makeTurns(4, (i) => `这是一段特别长的用户问题描述需要被摘要展示${"很长".repeat(20)}`)}
+        turns={makeTurns(4, () => `这是一段特别长的用户问题描述需要被摘要展示${"很长".repeat(20)}`)}
         activeIndex={0}
         onNavigate={() => {}}
       />

@@ -244,7 +244,8 @@ export function MessageList({ messages, isLoading, sessionKey }: MessageListProp
     };
   }
 
-  const attachScroller = React.useCallback((node: HTMLElement | null) => {
+  const attachScroller = React.useCallback((ref: Window | HTMLElement | null) => {
+    const node = ref instanceof HTMLElement ? ref : null;
     scrollerRef.current = node;
     if (node && !node.dataset.userInputAttached) {
       node.dataset.userInputAttached = "1";
