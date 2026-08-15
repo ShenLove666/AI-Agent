@@ -39,7 +39,7 @@
 │                 evaluation/settings/demo/...）              │
 │  app/framework/ 基础设施（config/database/errors/migrations/ │
 │                 response/trace）                            │
-│  migrations/    Alembic 版本（0001 → 0009）                 │
+│  migrations/    Alembic 版本（0001 → 0016）                 │
 └──────┬──────────────────────────────┬──────────────────────┘
        │                              │
        ▼                              ▼
@@ -63,9 +63,9 @@
 |---|---|---|
 | 后端 | Python 3.12 + FastAPI | 异步 ASGI；`app.main:app` |
 | ORM | SQLAlchemy 2.0（Mapped/Declarative） | 同步 Session + sessionmaker |
-| 迁移 | Alembic | `migrations/versions/0001~0009` |
-| 数据库 | SQLite（默认 `data/ragent-v4-flash.db`） | 可通过 `DB_URL` 切换 |
-| 认证 | JWT（python-jose, HS256）+ argon2 密码哈希 | 12h 默认过期（`JWT_EXPIRE_MINUTES`） |
+| 迁移 | Alembic | `migrations/versions/0001~0016` |
+| 数据库 | SQLite（默认 `data/ragent-v4-flash.db`） | 可通过 `DB_URL` 切换；生产多实例请使用外部数据库 |
+| 认证 | JWT（python-jose, HS256）+ argon2 密码哈希 | 代码兼容默认 43200 分钟（30 天）；生产应显式设为 720 分钟（12 小时）或更短 |
 | 前端 | React 18 + TypeScript + Vite | 路由 react-router v6，状态 zustand |
 | 样式 | Tailwind CSS（自定义 tokens）+ shadcn 风格组件 | `globals.css` 定义设计系统 |
 | 模型 | OpenAI 兼容 Chat Completions（urllib/openai） | DashScope / DeepSeek / 备用端点按优先级 failover |
@@ -95,11 +95,11 @@ rag-project/
 │   │   ├── demo/             # 确定性演示数据 seed / clear
 │   │   ├── rag/ retrieval/ vector/ chat/ ...
 │   ├── framework/            # config/database/migrations/errors/response/trace
-├── migrations/versions/      # 0001_current_schema → 0009_runtime_settings_and_orgs
+├── migrations/versions/      # 0001_current_schema → 0016_optimization_verification_runs
 ├── scripts/
 │   ├── deploy.sh             # 服务器同步 + 重启 + 健康检查
 │   ├── manual/               # 手工验证脚本（不纳入 pytest）
-├── tests/                    # pytest 套件（184+ 用例，含 RBAC 矩阵）
+├── tests/                    # pytest 套件（当前 252 收集，含 RBAC 矩阵）
 ├── web/                      # 前端（src/pages/admin/* 后台页面）
 ├── data/                     # SQLite 数据文件（git 忽略）
 └── docs/                     # 本手册
@@ -121,11 +121,14 @@ rag-project/
 # Windows（PowerShell / Git Bash）
 cd rag-project
 python -m venv .venv
-.venv/Scripts/pip install -r requirements.txt   # Linux: .venv/bin/pip
+.venv/Scripts/pip install -r requirements-dev.txt   # Linux: .venv/bin/pip
 
 # 若项目附带 requirements 且已安装，验证：
 .venv/Scripts/python -c "import fastapi, sqlalchemy, alembic; print('ok')"
 ```
+
+`requirements-dev.txt` 包含 Alembic 与测试工具；仅运行 API 时可使用
+`requirements-api.txt`。依赖文件目前不是完整的锁文件，生产发布应在构建阶段固定并审计实际版本，不能把开发机的 `.venv` 当作依赖清单。
 
 ### 4.3 前端依赖
 
@@ -136,13 +139,14 @@ npm install
 
 ## 5. 配置详解
 
-项目读取根目录 `.env`（`app/framework/config.py` 中 **override=True**，覆盖系统环境变量——系统残留旧变量会导致模型 401）。关键变量：
+项目读取根目录 `.env`（`app/framework/config.py` 中 **override=True**，覆盖系统环境变量——系统残留旧变量会导致模型 401）。可复制仓库根目录的 `.env.example` 作为模板；它不含密钥。生产应由 systemd/Supervisor、容器编排或密钥管理系统注入私密变量，不要把真实 `.env` 放进版本库。关键变量：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | 数据库连接串 |
-| `JWT_SECRET` | `change-me-before-production` | **生产必须修改** |
-| `JWT_EXPIRE_MINUTES` | `43200` | Token 过期分钟 |
+| `CORS_ORIGINS` | `http://localhost:3000`（代码兼容默认） | Vite 本地开发通常使用 5173，需显式配置；生产只允许实际 HTTPS 来源 |
+| `JWT_SECRET` | 内置占位值（不安全） | **生产必须注入至少 32 字节随机值，并定期轮换**；不要使用仓库模板中的占位符 |
+| `JWT_EXPIRE_MINUTES` | `43200`（30 天，代码兼容默认） | 生产建议显式设为 `720`（12 小时）或更短 |
 | `VECTOR_BACKEND` | `milvus` | 向量后端；**无 milvus 环境必须 `disabled`**（见 §12） |
 | `DASHSCOPE_API_KEY` | — | 百炼模型密钥（识图/chat 通用） |
 | `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼 OpenAI 兼容端点 |
@@ -157,7 +161,7 @@ npm install
 
 ### 6.1 首次启动自动迁移
 
-启动服务时 `upgrade_database(container.database)` 自动执行 Alembic 迁移到最新版本（0009），无需手动操作。
+启动服务时 `upgrade_database(container.database)` 自动执行 Alembic 迁移到最新版本（当前 head：`0016_optimization_verification_runs`），无需手动操作。生产发布前仍应先做一致性备份并在副本数据库上演练迁移；自动迁移失败会阻止服务启动，不提供自动回滚。
 
 ### 6.2 手动执行
 
@@ -166,7 +170,7 @@ npm install
 .venv/Scripts/python -m alembic revision --autogenerate -m "描述"  # 生成新迁移
 ```
 
-### 6.3 迁移历史（0001 → 0009）
+### 6.3 迁移历史（0001 → 0016）
 
 | 版本 | 内容 |
 |---|---|
@@ -177,7 +181,14 @@ npm install
 | 0006 | 零售数据溯源（observed/synthetic 标注） |
 | 0007 | V3 订单上下文与对外发送 |
 | 0008 | 升级生命周期（支持升级单状态机） |
-| 0009 | **运行时设置 + 组织成员 + 方案状态机 + 任务回填**（当前头部） |
+| 0009 | 运行时设置 + 组织成员 + 方案状态机 + 任务回填 |
+| 0010 | Agent 执行摘要 |
+| 0011 | 知识文档来源类型 |
+| 0012 | 修复知识归属并回填来源类型 |
+| 0013 | Trace 请求 ID |
+| 0014 | Trace 节点起始偏移 |
+| 0015 | Trace 首 Token 延迟（TTFT） |
+| 0016 | **经营效果复测表与优化任务显式外键**（当前 head） |
 
 ## 7. 演示数据与零售数据导入
 
@@ -243,7 +254,7 @@ VECTOR_BACKEND=disabled .venv/Scripts/python server.py
 VECTOR_BACKEND=disabled .venv/bin/python -u server.py > logs/server.log 2>&1 &
 ```
 
-- 监听 `0.0.0.0:8081`；健康检查：`GET /api/v1/health` → `{"success":true,...,"status":"up"}`
+- 开发可监听 `0.0.0.0:8081`；生产建议仅监听 `127.0.0.1:8081` 并由反向代理对外提供 HTTPS。健康检查：`GET /api/v1/health` → `{"success":true,...,"status":"up"}`
 - 首次启动自动建表/迁移
 
 ### 8.2 前端
@@ -259,7 +270,7 @@ npm run build      # 生产构建 → dist/
 ## 9. 测试与质量门禁
 
 ```bash
-# 后端全量测试（184+ 用例）
+# 后端全量测试（当前 252 收集：250 passed，2 个环境相关 skip）
 .venv/Scripts/python -m pytest tests/ -q
 
 # 重点测试文件
@@ -270,11 +281,13 @@ tests/test_migrations.py         # 迁移一致性
 
 # 前端
 cd web
-npx tsc --noEmit                 # TypeScript 类型
+npm run typecheck                 # TypeScript 类型（app + node 配置）
 npx eslint src --max-warnings=0  # Lint
-npm test                         # vitest（96 用例）
+npm test                         # vitest（当前 303 用例）
 npm run build                    # 构建门禁
 ```
+
+仓库还提供 `.github/workflows/ci.yml`：每次 push/PR 在干净的 Python 3.12 + Node 20 环境执行编译、后端测试、API 契约、前端测试、类型检查、Lint 与生产构建。
 
 ## 10. 服务器部署
 
@@ -284,9 +297,15 @@ npm run build                    # 构建门禁
 mkdir -p /home/sj/rag-project-<version>
 # 软链接复用依赖（升级版本时避免重装）：
 ln -s /home/sj/rag-project-<old-version>/.venv /home/sj/rag-project-<version>/.venv
-# 准备 .env（含 VECTOR_BACKEND=disabled 与模型密钥）
-# 准备 logs/ 目录
+# 准备仅服务账号可读的 .env（含 APP_ENV=production、VECTOR_BACKEND=disabled、
+# 随机 JWT_SECRET、JWT_EXPIRE_MINUTES=720 与模型密钥）
+# 准备 data/、uploads/、backups/ 和 logs/ 的持久化目录与权限
 ```
+
+生产入口建议使用 systemd/Supervisor 托管进程，并让 Uvicorn 只监听
+`127.0.0.1:8081`；由 Nginx/Caddy 在 `443` 终止 TLS 后反代到该端口。防火墙应拒绝公网访问
+8081，应用的 `/docs`、`/redoc`、`/openapi.json` 也应按环境限制或关闭。不要把演示账号
+（默认密码 `AdminDemo@2026`）带到公网。
 
 ### 10.2 部署脚本（本地执行）
 
@@ -294,7 +313,7 @@ ln -s /home/sj/rag-project-<old-version>/.venv /home/sj/rag-project-<version>/.v
 bash scripts/deploy.sh [目标目录]   # 默认 rag-project-20260809-runtime-settings-v5
 ```
 
-`deploy.sh` 流程：
+`deploy.sh` 流程（**演示/单机预览辅助脚本，不是生产发布控制器**）：
 
 ```
 1. tar 打包（排除 .git/.venv/node_modules/data/*.db/.env/logs 等）
@@ -304,6 +323,14 @@ bash scripts/deploy.sh [目标目录]   # 默认 rag-project-20260809-runtime-se
 5. curl 健康检查 /api/v1/health 验证
 ```
 
+脚本不会自动安装依赖、备份数据库、执行回滚、验证迁移结果、配置 TLS、轮转日志或在进程崩溃后自动拉起；它还会按 8081 端口查找并终止进程，不能在共享主机上盲目执行。生产切换至少应先完成：
+
+1. 对 SQLite 数据库做一致性备份并记录校验和，保留最近多份且至少一份异机/对象存储副本；
+2. 在副本上运行 `alembic upgrade head` 并验证应用健康、登录和关键闭环；
+3. 由 systemd/Supervisor 启动新版本，等待就绪后再切换反代；
+4. 保留上一版本目录和明确的回滚命令，迁移不可逆时先确认恢复方案；
+5. 配置日志轮转、磁盘空间/进程/数据库备份告警和定期恢复演练。
+
 ### 10.3 部署要点（踩坑记录）
 
 | 坑 | 现象 | 规避 |
@@ -312,6 +339,8 @@ bash scripts/deploy.sh [目标目录]   # 默认 rag-project-20260809-runtime-se
 | 依赖重复安装 | 部署慢、版本漂移 | 新目录软链接旧 .venv |
 | 端口冲突 | 服务起不来 | 按端口 PID 精确 kill，不按进程名 |
 | 日志缓冲 | 启动"看起来卡住" | 等待 10s 再健康检查；日志在 logs/server.log |
+
+> 安全底线：曾经出现在本地 `.env` 或日志中的 API key 一律视为已泄露，必须立即在供应商控制台撤销并重新注入；仅依赖 `.gitignore` 不能撤销已复制到服务器、备份或聊天记录中的密钥。
 
 ## 11. 全流程实现原理
 

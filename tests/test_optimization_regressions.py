@@ -156,6 +156,7 @@ def test_frontend_contracts_auth_and_knowledge_state_are_real():
                         "budgetFields",
                         "wholeDocumentSentinel",
                     } == schema.keys()
+                    assert schema["parseProfileExtensions"] == ["csv", "xlsx"]
 
                     disabled = await client.patch(
                         f"/api/v1/knowledge-base/docs/{document_id}/chunks/batch-enable",

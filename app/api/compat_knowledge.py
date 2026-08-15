@@ -29,6 +29,7 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.knowledge.service import DocumentParser
 from app.modules.users.models import User
 from app.modules.knowledge.uploads import save_upload, validate_upload
 from app.modules.users.access import resolve_owner
@@ -459,12 +460,12 @@ def preview_document(
 ) -> ApiResponse:
     item = _resolve_document(db, doc_id, user)
     path = Path(item.storage_path)
-    if not path.exists():
+    if path.is_symlink() or not path.is_file():
         raise AppError("FILE_NOT_FOUND", "源文件不存在", 404)
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError as exc:
-        raise AppError("FILE_READ_ERROR", f"文件读取失败: {exc}", 500) from exc
+    # Preview must use exactly the same parser as background ingestion so PDF,
+    # DOCX, CSV and XLSX all render meaningful text instead of attempting
+    # ``read_text`` on a binary container.
+    text = DocumentParser().parse(path)
     return ApiResponse(data=text[:20000], traceId=current_trace_id())
 
 
@@ -472,7 +473,7 @@ def preview_document(
 def download_document(doc_id: int, db: DbSession, user: CurrentUser, request: Request):
     item = _resolve_document(db, doc_id, user)
     path = Path(item.storage_path)
-    if not path.exists():
+    if path.is_symlink() or not path.is_file():
         raise AppError("FILE_NOT_FOUND", "源文件不存在", 404)
     from fastapi.responses import FileResponse
 

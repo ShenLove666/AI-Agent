@@ -165,6 +165,21 @@ describe("RetailOperations", () => {
     mocks.getRetailReport.mockResolvedValue({ filename: "report.md", content: "# 周报" });
   });
 
+  it("shows a retryable error before falling back to the empty-data state", async () => {
+    mocks.getRetailOverview.mockRejectedValueOnce(new Error("服务暂不可用"));
+    const user = userEvent.setup();
+    render(<RetailOperationsPage />);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("即时零售数据加载失败");
+    expect(alert).toHaveTextContent("服务暂不可用");
+    expect(screen.queryByText("还没有即时零售数据")).not.toBeInTheDocument();
+
+    mocks.getRetailOverview.mockResolvedValueOnce(overview);
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("真实零售快照")).toBeInTheDocument();
+  });
+
   it("labels observed, derived and synthetic populations", async () => {
     mockPermissions(["retail.view"]);
     render(<RetailOperationsPage />);

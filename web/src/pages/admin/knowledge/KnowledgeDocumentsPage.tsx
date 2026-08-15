@@ -386,6 +386,7 @@ export function KnowledgeDocumentsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchOperating, setBatchOperating] = useState(false);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  const documentsRequestId = useRef(0);
 
   useEffect(() => {
     // schema 是静态的，且列表与编辑弹窗都要用它判定档位是否适用，挂载拉一次即可
@@ -460,6 +461,7 @@ export function KnowledgeDocumentsPage() {
   };
 
   const loadDocuments = async (page = current, status = statusFilter, keywordValue = keyword) => {
+    const requestId = ++documentsRequestId.current;
     if (!kbId) return;
     setLoading(true);
     try {
@@ -469,12 +471,14 @@ export function KnowledgeDocumentsPage() {
         status,
         keyword: keywordValue || undefined
       });
+      if (requestId !== documentsRequestId.current) return;
       setPageData(data);
     } catch (error) {
+      if (requestId !== documentsRequestId.current) return;
       toast.error(getErrorMessage(error, "加载文档失败"));
       console.error(error);
     } finally {
-      setLoading(false);
+      if (requestId === documentsRequestId.current) setLoading(false);
     }
   };
 
@@ -484,6 +488,12 @@ export function KnowledgeDocumentsPage() {
 
   useEffect(() => {
     loadDocuments();
+  }, [kbId, current, statusFilter, keyword]);
+
+  // Batch actions are scoped to the visible page.  A selection from a prior
+  // page/filter must never follow the user into a different result set.
+  useEffect(() => {
+    setSelectedIds(new Set());
   }, [kbId, current, statusFilter, keyword]);
 
   useEffect(() => {
@@ -1713,7 +1723,7 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
                       ref={fileInputRef}
                       type="file"
                       className="hidden"
-                      accept=".pdf,.md,.markdown,.docx,.txt"
+                      accept=".pdf,.md,.markdown,.docx,.txt,.csv,.xlsx"
                       onChange={(e) => setFile(e.target.files?.[0] || null)}
                     />
                     {file ? (
@@ -1736,7 +1746,7 @@ function UploadDialog({ open, onOpenChange, onSubmit }: UploadDialogProps) {
                       <>
                         <FileUp className="h-7 w-7 text-muted-foreground" />
                         <div className="text-sm font-medium">拖拽文件到此处，或点击选择</div>
-                        <div className="text-xs text-muted-foreground">支持 PDF、Markdown、DOCX、TXT，最大 50MB</div>
+                        <div className="text-xs text-muted-foreground">支持 PDF、Markdown、DOCX、TXT、CSV、XLSX，最大 50MB</div>
                       </>
                     )}
                   </div>

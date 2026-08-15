@@ -8,7 +8,9 @@ from fastapi import UploadFile
 from app.framework.errors import AppError
 
 
-SUPPORTED_DOCUMENT_EXTENSIONS = frozenset({".txt", ".md", ".markdown", ".pdf", ".docx"})
+SUPPORTED_DOCUMENT_EXTENSIONS = frozenset(
+    {".txt", ".md", ".markdown", ".pdf", ".docx", ".csv", ".xlsx"}
+)
 DEFAULT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 

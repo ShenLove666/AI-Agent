@@ -309,6 +309,22 @@ export function RetailOperationsPage() {
       </div>
     );
 
+  if (error && !data)
+    return (
+      <div
+        role="alert"
+        className="rounded-lg border border-rose-200 bg-rose-50 p-8 text-center"
+      >
+        <TriangleAlert className="mx-auto h-10 w-10 text-rose-500" />
+        <h1 className="mt-4 text-xl font-semibold text-rose-900">即时零售数据加载失败</h1>
+        <p className="mt-2 text-sm text-rose-700">{error}</p>
+        <Button className="mt-5" onClick={() => void load()} disabled={loading}>
+          <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
+          重试
+        </Button>
+      </div>
+    );
+
   if (!data || data.dataState === "empty")
     return (
       <div className="rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">

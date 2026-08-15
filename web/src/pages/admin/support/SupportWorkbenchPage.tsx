@@ -226,33 +226,65 @@ export function SupportWorkbenchPage() {
   const [updatingCase, setUpdatingCase] = useState(false);
   const [escalating, setEscalating] = useState(false);
   const [confirmedFacts, setConfirmedFacts] = useState(false);
+  // Detail/workspace requests are independent HTTP calls.  Sequence guards
+  // prevent a slower click or refresh from repainting the case selected later.
+  const caseRequestIdRef = useRef(0);
+  const loadRequestIdRef = useRef(0);
+  const actionRequestIdRef = useRef(0);
+  const actionSetterRequestRef = useRef(new Map<(value: boolean) => void, number>());
+  const activeCaseIdRef = useRef<number | null>(null);
+
   const selectCase = useCallback(async (id: number) => {
-    const [value, context] = await Promise.all([getSupportCase(id), getSupportWorkspace(id)]);
-    setDetail(value);
-    setWorkspace(context);
-    const suggestion = value.suggestions.find((x) => !x.decision);
-    setEdited(suggestion?.content || "");
-    setEvidenceOpen(false);
-    setConfirmedFacts(false);
-    setOrderExpanded(false);
+    const requestId = ++caseRequestIdRef.current;
+    // Invalidate actions against the previously visible case immediately;
+    // their eventual errors must not surface after the user changed cases.
+    actionRequestIdRef.current += 1;
+    activeCaseIdRef.current = null;
+    try {
+      const [value, context] = await Promise.all([getSupportCase(id), getSupportWorkspace(id)]);
+      if (requestId !== caseRequestIdRef.current) return;
+      activeCaseIdRef.current = id;
+      setDetail(value);
+      setWorkspace(context);
+      const suggestion = value.suggestions.find((x) => !x.decision);
+      setEdited(suggestion?.content || "");
+      setEvidenceOpen(false);
+      setConfirmedFacts(false);
+      setOrderExpanded(false);
+    } catch (error) {
+      if (requestId === caseRequestIdRef.current) {
+        toast.error((error as Error).message || "工单详情加载失败");
+      }
+    }
   }, []);
   const load = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
+    // A refresh supersedes any detail request started before it.
+    caseRequestIdRef.current += 1;
+    actionRequestIdRef.current += 1;
     setLoading(true);
     try {
       const [items, summary] = await Promise.all([
         getSupportCases({ status: status || undefined, search: search || undefined }),
         getSupportMetrics()
       ]);
+      if (requestId !== loadRequestIdRef.current) return;
       setCases(items);
       setMetrics(summary);
       if (items.length) {
         const id = items.some((x) => x.id === detail?.id) ? detail!.id : items[0].id;
         await selectCase(id);
-      } else setDetail(null);
+      } else if (requestId === loadRequestIdRef.current) {
+        activeCaseIdRef.current = null;
+        setDetail(null);
+        setWorkspace(null);
+      }
     } catch (e) {
-      toast.error((e as Error).message || "工单加载失败");
+      if (requestId === loadRequestIdRef.current) {
+        toast.error((e as Error).message || "工单加载失败");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestIdRef.current) setLoading(false);
     }
   }, [detail?.id, search, status, selectCase]);
   useEffect(() => {
@@ -265,22 +297,36 @@ export function SupportWorkbenchPage() {
     message: string,
     refresh = true
   ) => {
+    const actionRequestId = ++actionRequestIdRef.current;
+    const targetCaseId = detail?.id ?? null;
+    const isCurrentAction = () =>
+      actionRequestId === actionRequestIdRef.current &&
+      (targetCaseId === null || activeCaseIdRef.current === targetCaseId);
+    actionSetterRequestRef.current.set(setter, actionRequestId);
     setter(true);
     try {
       await fn();
-      if (refresh && detail) {
-        const next = await getSupportCase(detail.id);
+      if (refresh && targetCaseId !== null) {
+        const [next, nextWorkspace, nextMetrics] = await Promise.all([
+          getSupportCase(targetCaseId),
+          getSupportWorkspace(targetCaseId),
+          getSupportMetrics()
+        ]);
+        if (!isCurrentAction()) return;
         setDetail(next);
-        setWorkspace(await getSupportWorkspace(next.id));
+        setWorkspace(nextWorkspace);
         setCases((list) => list.map((x) => (x.id === next.id ? next : x)));
-        setMetrics(await getSupportMetrics());
+        setMetrics(nextMetrics);
         setEdited(next.suggestions.find((x) => !x.decision)?.content || "");
       }
-      toast.success(message);
+      if (isCurrentAction()) toast.success(message);
     } catch (e) {
-      toast.error((e as Error).message || "操作失败");
+      if (isCurrentAction()) toast.error((e as Error).message || "操作失败");
     } finally {
-      setter(false);
+      if (actionSetterRequestRef.current.get(setter) === actionRequestId) {
+        actionSetterRequestRef.current.delete(setter);
+        setter(false);
+      }
     }
   };
   const suggestion = detail?.suggestions.find((x) => !x.decision) || null;

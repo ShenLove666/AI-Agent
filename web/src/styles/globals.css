@@ -3073,3 +3073,39 @@ textarea {
   flex: 1;
   border-top: 1px solid var(--border-default);
 }
+
+/* On phones the admin navigation is a drawer.  Keeping it out of the flex
+   row prevents the collapsed desktop width from squeezing the page content. */
+@media (max-width: 1023px) {
+  .admin-layout .admin-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 40;
+    width: min(16rem, 86vw);
+    transform: translateX(-105%);
+    visibility: hidden;
+    pointer-events: none;
+    box-shadow: 0 20px 44px rgb(15 23 42 / 18%);
+    transition:
+      transform 180ms ease,
+      visibility 180ms ease;
+  }
+
+  .admin-layout .admin-sidebar.admin-sidebar--collapsed {
+    width: min(16rem, 86vw);
+  }
+
+  .admin-layout .admin-sidebar.admin-sidebar--mobile-open {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .admin-layout .admin-sidebar__backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    border: 0;
+    background: rgb(15 23 42 / 38%);
+  }
+}

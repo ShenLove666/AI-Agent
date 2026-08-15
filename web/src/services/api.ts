@@ -4,7 +4,12 @@ import { toast } from "sonner";
 import { storage } from "@/utils/storage";
 import { ApiError } from "@/services/ApiError";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api/v1";
+/**
+ * Keep the REST and streaming clients on the same API root.  The SSE client
+ * cannot use Axios' `baseURL`, so this is exported for consumers that build a
+ * URL with `fetch` directly.
+ */
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api/v1").replace(/\/$/, "");
 
 export const api = axios.create({ baseURL: API_BASE_URL, timeout: 60000 });
 

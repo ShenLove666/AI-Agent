@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { apiErrorMessage } from "./api";
+import { API_BASE_URL, api, apiErrorMessage } from "./api";
+
+describe("API transport base URL", () => {
+  it("uses the versioned API root for REST and streaming consumers", () => {
+    expect(API_BASE_URL).toBe("/api/v1");
+    expect(api.defaults.baseURL).toBe(API_BASE_URL);
+  });
+});
 
 describe("apiErrorMessage", () => {
   it("turns FastAPI validation details into render-safe text", () => {

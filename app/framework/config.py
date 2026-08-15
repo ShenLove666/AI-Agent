@@ -11,6 +11,49 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 
+# This value is intentionally retained for development/test compatibility.  It
+# must never be accepted by a production process: the authentication service
+# uses the same environment variable when signing and verifying JWTs.
+DEFAULT_JWT_SECRET = "change-me-before-production"
+INSECURE_JWT_SECRETS = frozenset(
+    {
+        DEFAULT_JWT_SECRET,
+        # Keep the committed template placeholder fail-fast as well; it is
+        # long enough to pass a length-only check but is publicly known.
+        "REPLACE_WITH_RANDOM_64_CHAR_SECRET",
+    }
+)
+MIN_PRODUCTION_JWT_SECRET_LENGTH = 32
+PRODUCTION_ENVIRONMENTS = frozenset({"prod", "production"})
+
+
+def validate_jwt_secret(environment: str, secret: str | None = None) -> str:
+    """Validate the JWT signing secret at application configuration time.
+
+    Development keeps the historical fallback so local demos/tests remain
+    self-contained.  Production must provide a non-default, sufficiently
+    long secret with a little character diversity; otherwise startup fails
+    before any request can be authenticated with a forgeable key.
+    """
+
+    value = secret if secret is not None else os.getenv("JWT_SECRET", DEFAULT_JWT_SECRET)
+    normalized_environment = (environment or "").strip().lower()
+    if normalized_environment in PRODUCTION_ENVIRONMENTS:
+        distinct_characters = len(set(value))
+        if (
+            not value
+            or value.strip() != value
+            or value in INSECURE_JWT_SECRETS
+            or len(value) < MIN_PRODUCTION_JWT_SECRET_LENGTH
+            or distinct_characters < 8
+        ):
+            raise RuntimeError(
+                "JWT_SECRET must be configured with at least 32 diverse characters "
+                "when APP_ENV is production/prod"
+            )
+    return value
+
+
 def _csv(name: str, default: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in os.getenv(name, default).split(",") if item.strip())
 
@@ -66,6 +109,11 @@ class Settings:
     circuit_recovery_seconds: float = field(
         default_factory=lambda: float(os.getenv("CIRCUIT_RECOVERY_SECONDS", "30"))
     )
+
+    def __post_init__(self) -> None:
+        # Fail fast only for production-like environments.  Local development
+        # intentionally keeps the historical fallback secret for compatibility.
+        validate_jwt_secret(self.environment)
 
     def chat_endpoints(self) -> tuple[ModelEndpoint, ...]:
         endpoints: list[ModelEndpoint] = []

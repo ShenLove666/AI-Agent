@@ -20,9 +20,12 @@ from app.modules.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
 )
+from app.modules.knowledge.uploads import SUPPORTED_DOCUMENT_EXTENSIONS
 from app.modules.users.access import resolve_owner
 
 router = APIRouter(prefix="/knowledge-base", tags=["knowledge-compat"])
+
+_TABLE_PARSE_EXTENSIONS = ("csv", "xlsx")
 
 
 # 归属校验统一用商家数据 owner（resolve_owner(db, user) → data_owner_id），
@@ -235,7 +238,14 @@ def ingestion_schema(user: CurrentUser) -> ApiResponse:
                 },
                 {"value": "table", "label": "表格优先", "hint": "适合 CSV 与电子表格"},
             ],
-            "parseProfileExtensions": ["csv", "xls", "xlsx"],
+            # Keep this list derived from formats the upload/parser pipeline
+            # actually accepts. Legacy .xls files may still be previewed when
+            # already stored, but new uploads must use .xlsx or .csv.
+            "parseProfileExtensions": [
+                extension
+                for extension in _TABLE_PARSE_EXTENSIONS
+                if f".{extension}" in SUPPORTED_DOCUMENT_EXTENSIONS
+            ],
             "budgetFields": [
                 {
                     "key": "maxChars",

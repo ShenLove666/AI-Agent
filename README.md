@@ -269,6 +269,8 @@ $env:VECTOR_BACKEND = "disabled"   # 未配置向量模型时必须关闭（见"
 | `demo-operator` | 商家运营 | `AdminDemo@2026` | 商品组合洞察、运营方案、用户管理 |
 | `demo-agent` | 客服 | `AdminDemo@2026` | 客服工作台 |
 
+> 上表账号仅用于本地演示。任何共享环境或公网部署都必须删除或停用演示账号、修改密码，并显式设置随机 `JWT_SECRET`；不要把演示凭据当作生产凭据。
+
 > 权限模型为 **4 角色 RBAC**（user / supervisor / operator / admin）：角色 → 权限 → API 三层校验。前端菜单只是展示层，后端每个端点按权限依赖硬性拦截；数据范围由组织成员关系限定，跨组织资源统一返回 404（不暴露存在性）。
 
 ### 首次完整初始化
@@ -300,7 +302,8 @@ $env:DEEPSEEK_MODEL = "deepseek-v4-flash"
 $env:DEEPSEEK_REASONING_MODEL = "deepseek-v4-flash"
 ```
 
-密钥只应放在环境变量或服务器私密环境文件中，不要提交到 Git。
+密钥只应放在环境变量或服务器私密环境文件中，不要提交到 Git。可从仓库根目录的
+`.env.example` 复制一份本地 `.env`，再逐项填写；`.env.example` 不包含任何可用密钥。
 
 ### 开发模式
 
@@ -364,7 +367,9 @@ $env:VECTOR_BACKEND = "disabled"   # 或 none / off
 |:---|:---|:---|
 | `DB_URL` | `sqlite:///./data/ragent-v4-flash.db` | SQLAlchemy 数据库地址 |
 | `API_PREFIX` | `/api/v1` | API 前缀 |
-| `CORS_ORIGINS` | `http://localhost:5173` | 允许的跨域来源 |
+| `CORS_ORIGINS` | `http://localhost:3000`（代码兼容默认） | 本地 Vite 使用 5173 时请在 `.env` 中显式改为 `http://localhost:5173`；生产只列真实 HTTPS 来源 |
+| `JWT_SECRET` | 内置占位值（不安全） | 共享/生产环境必须注入随机密钥；应用不会替你轮换密钥 |
+| `JWT_EXPIRE_MINUTES` | `43200`（30 天，代码兼容默认） | 生产建议显式设为 `720`（12 小时）或更短 |
 | `VECTOR_BACKEND` | `milvus` | `milvus`（Milvus Lite/Standalone）、`memory`（内存索引）或 `disabled`（仅关键词） |
 | `EMBED_MODEL_PATH` | 项目内 BGE 路径 | 本地 Embedding 模型目录 |
 | `EMBED_DIMENSION` | `512` | 必须与模型输出维度一致 |
@@ -389,13 +394,13 @@ $env:DB_URL = "sqlite:///./data/ragent-v4-flash.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-当前迁移 head 为 `0012_repair_knowledge_owner_and_source_kind`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
+当前迁移 head 为 `0016_optimization_verification_runs`。已识别的旧 SQLite 会保留数据并升级；无法安全识别的 schema 会拒绝启动，而不是猜测性修改。
 
 ### 服务器部署
 
-服务监听 `0.0.0.0:8081`。公网部署建议由 Nginx/Caddy 提供 HTTPS，并反向代理到 `127.0.0.1:8081`。前后端应使用同一入口，避免登录、SSE 或来源预览跳到错误端口。
+服务默认监听 `0.0.0.0:8081`，这是开发/内网端口，不应直接暴露公网。生产必须由 Nginx/Caddy 在 `443` 终止 TLS，反向代理到仅监听回环地址的 `127.0.0.1:8081`，并在防火墙中拒绝公网访问 8081；前后端应使用同一 HTTPS 入口，避免登录、SSE 或来源预览跳到错误端口。
 
-一键部署（本地执行，tar 同步 + 按端口重启 + 健康检查）：
+一键部署（本地执行，tar 同步 + 按端口重启 + 健康检查）适合演示/单机预览，不是完整生产发布系统：
 
 ```bash
 bash scripts/deploy.sh [目标目录]   # 默认 rag-project-<version>
@@ -403,6 +408,8 @@ bash scripts/deploy.sh [目标目录]   # 默认 rag-project-<version>
 
 - 同步时**排除 `.env` / `data/` / `*.db` / `node_modules` 等**，服务器私密配置与数据库不受覆盖
 - 新版本目录软链接旧 `.venv` 复用依赖；`VECTOR_BACKEND=disabled` 必须写入服务器 `.env`
+- 脚本不会自动备份数据库、执行回滚、安装依赖或托管进程；生产请在 systemd/Supervisor 下运行，并在切换前做可验证的数据库备份
+- 公开部署前必须配置 HTTPS、随机 JWT 密钥、非演示账号、日志轮转和告警；不要把脚本的 8081 端口直接暴露给互联网
 - 详细流程与踩坑记录见 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 
 部署时至少持久化：
@@ -427,10 +434,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 2. 后端 pytest；
 3. 前端 API / OpenAPI 契约检查；
 4. Vitest；
-5. ESLint；
-6. Vite 生产构建。
+5. TypeScript 类型检查；
+6. ESLint；
+7. Vite 生产构建。
 
 任一阶段失败会立即停止并传递真实退出码。脚本使用项目自己的 `.venv` 和 `web` 环境，不依赖已启动的 8081 服务。
+
+当前 `main` 基线验证结果为后端 252 个收集用例（250 passed、2 个环境相关 skip）和前端 303 个通过用例；同一组门禁也在
+`.github/workflows/ci.yml` 的每次 push/PR 中运行。
 
 单独运行：
 
@@ -456,7 +467,7 @@ npm run build
 | `tests/test_support_escalation.py` | 升级生命周期状态机（接管/决议/退回/转交） |
 | `tests/test_reply_review.py` | AI 回复审核闭环（采纳/修订/升级） |
 | `tests/test_support_copilot_gates.py` | Copilot 风险门禁：高/中/低风险发送控制、release 限定检索 |
-| `tests/test_migrations.py` | 迁移链一致性（0001 → 0012） |
+| `tests/test_migrations.py` | 迁移链一致性（0001 → 0016） |
 
 ## ⚠️ 当前能力边界
 

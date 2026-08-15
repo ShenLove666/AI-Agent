@@ -1,0 +1,76 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Backend and frontend quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_ENV: test
+      DB_URL: sqlite:///./ci.db
+      VECTOR_BACKEND: disabled
+      JWT_SECRET: ci-only-not-for-production
+      JWT_EXPIRE_MINUTES: 720
+      CORS_ORIGINS: http://localhost:5173
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-api.txt
+            requirements-dev.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+
+      - name: Compile Python sources
+        run: python -m compileall -q app tests scripts
+
+      - name: Run backend tests
+        run: python -m pytest -q
+
+      - name: Check active frontend API contracts
+        run: python scripts/check_api_contracts.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix web
+
+      - name: Run frontend tests
+        run: npm run test --prefix web
+
+      - name: Type-check frontend
+        run: npm run typecheck --prefix web
+
+      - name: Lint frontend
+        run: npm run lint --prefix web
+
+      - name: Build frontend production bundle
+        run: npm run build --prefix web

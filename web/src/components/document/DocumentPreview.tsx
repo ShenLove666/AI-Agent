@@ -20,9 +20,16 @@ const PdfPreview = lazy(() =>
   import("@/components/document/PdfPreview").then((m) => ({ default: m.PdfPreview }))
 );
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "svg", "gif", "webp", "bmp"];
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  svg: "image/svg+xml",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp"
+};
 
 export const isSpreadsheetType = (ext?: string | null) => {
   const e = (ext || "").toLowerCase();
@@ -30,6 +37,9 @@ export const isSpreadsheetType = (ext?: string | null) => {
 };
 
 export const isImageType = (ext?: string | null) => IMAGE_EXTS.includes((ext || "").toLowerCase());
+
+export const imageMimeType = (ext?: string | null) =>
+  IMAGE_MIME_TYPES[(ext || "").toLowerCase()] || "application/octet-stream";
 
 export const isDocxType = (ext?: string | null) => (ext || "").toLowerCase() === "docx";
 
@@ -110,6 +120,8 @@ export function DocumentPreview({ docId, fileType, docName }: DocumentPreviewPro
 
   const [content, setContent] = useState("");
   const [status, setStatus] = useState<"loading" | "done" | "error">("loading");
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageStatus, setImageStatus] = useState<"loading" | "done" | "error">("loading");
 
   useEffect(() => {
     if (!needsText) {
@@ -139,7 +151,33 @@ export function DocumentPreview({ docId, fileType, docName }: DocumentPreviewPro
     };
   }, [docId, isCsv, isPlainText, needsText]);
 
-  const fileUrl = `${API_BASE_URL}/knowledge-base/docs/${docId}/file`;
+  useEffect(() => {
+    if (!isImage) {
+      setImageUrl(null);
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setImageUrl(null);
+    setImageStatus("loading");
+
+    fetchDocumentFile(docId)
+      .then((buffer) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([buffer], { type: imageMimeType(type) }));
+        setImageUrl(objectUrl);
+        setImageStatus("done");
+      })
+      .catch(() => {
+        if (!cancelled) setImageStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [docId, isImage, type]);
 
   if (isPdf) {
     return (
@@ -163,9 +201,18 @@ export function DocumentPreview({ docId, fileType, docName }: DocumentPreviewPro
     );
   }
   if (isImage) {
+    if (imageStatus === "loading") return <Centered>正在加载图片…</Centered>;
+    if (imageStatus === "error" || !imageUrl) {
+      return <DownloadFallback docId={docId} docName={docName} fileType={fileType} />;
+    }
     return (
       <div className="flex flex-1 items-center justify-center overflow-auto bg-[#F7F7F8] p-4">
-        <img className="max-h-full max-w-full object-contain" src={fileUrl} alt={docName || ""} />
+        <img
+          className="max-h-full max-w-full object-contain"
+          src={imageUrl}
+          alt={docName || "文档图片"}
+          onError={() => setImageStatus("error")}
+        />
       </div>
     );
   }

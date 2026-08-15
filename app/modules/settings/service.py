@@ -272,6 +272,26 @@ class RuntimeSettingsService:
             .order_by(RuntimeSettingAudit.id.desc())
             .limit(20)
         ).all()
+
+        def audit_value(item: RuntimeSettingAudit, raw: str | None) -> str | None:
+            """Return an audit value without ever exposing a secret payload.
+
+            Secret settings still need a useful audit trail (configured → default,
+            or default → configured), but their JSON value must never cross the
+            HTTP interface.  Keep the public shape a string so existing clients
+            can render it without special handling.
+            """
+            spec = self._whitelist.get(item.key)
+            if spec is None or spec.value_type != "secret":
+                return raw
+            if raw in (None, "", "null"):
+                return None
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError):
+                value = raw
+            return "已配置" if value not in (None, "", False) else None
+
         return {
             "version": self._repository.get_version(db),
             "items": items,
@@ -279,8 +299,8 @@ class RuntimeSettingsService:
                 {
                     "key": item.key,
                     "operation": item.operation,
-                    "oldValue": item.old_value_json,
-                    "newValue": item.new_value_json,
+                    "oldValue": audit_value(item, item.old_value_json),
+                    "newValue": audit_value(item, item.new_value_json),
                     "operatorName": item.operator_name,
                     "scope": item.scope,
                     "createdAt": item.created_at.isoformat(),

@@ -231,16 +231,24 @@ def build_container(app_settings: Settings) -> ApplicationContainer:
 def create_app(app_settings: Settings | None = None) -> FastAPI:
     resolved_settings = app_settings or settings
     container = build_container(resolved_settings)
+    active_container = container
 
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
-        upgrade_database(container.database)
-        # 需重启生效的配置：合并回环境变量后重建容器
-        if apply_restart_env_overrides(container.database):
-            rebuilt = build_container(Settings())
-            app.state.container = rebuilt
-        yield
-        container.database.engine.dispose()
+    async def lifespan(application: FastAPI):
+        nonlocal active_container
+        try:
+            upgrade_database(active_container.database)
+            # 需重启生效的配置：合并回环境变量后重建容器。重建后必须
+            # 切换 shutdown 所释放的容器；否则旧容器会被释放而新引擎泄漏。
+            if apply_restart_env_overrides(active_container.database):
+                previous_container = active_container
+                rebuilt = build_container(Settings())
+                active_container = rebuilt
+                application.state.container = rebuilt
+                previous_container.database.engine.dispose()
+            yield
+        finally:
+            active_container.database.engine.dispose()
 
     app = FastAPI(
         title=resolved_settings.app_name,

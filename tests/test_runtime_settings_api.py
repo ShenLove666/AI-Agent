@@ -207,3 +207,33 @@ def test_settings_patch_flow_and_audit(tmp_path: Path):
                 assert "user.manage" in me_admin["permissions"]
 
     asyncio.run(scenario())
+
+
+def test_settings_audit_never_exposes_secret_values(tmp_path: Path):
+    """Secret setting audits remain useful without returning the secret itself."""
+    from app.framework.config import Settings
+    from app.modules.settings.repository import RuntimeSettingsRepository
+    from app.modules.settings.service import RuntimeSettingsService
+
+    database_url = f"sqlite:///{tmp_path / 'secret-audit.db'}"
+    settings = Settings(database_url=database_url)
+    from app.framework.database import Database
+
+    database = Database(database_url)
+    database.create_schema()
+    service = RuntimeSettingsService(settings, RuntimeSettingsRepository())
+
+    with database.session_factory() as db:
+        service.apply(
+            db,
+            changes={"deepseek_api_key": "unit-test-secret-value"},
+            reset_keys=[],
+            expected_version=1,
+            operator_id=None,
+            operator_name="test-admin",
+        )
+        snapshot = service.snapshot(db)
+
+    audit = next(item for item in snapshot["audits"] if item["key"] == "deepseek_api_key")
+    assert audit["newValue"] == "已配置"
+    assert "unit-test-secret-value" not in repr(snapshot)

@@ -99,7 +99,13 @@ def test_knowledge_base_compat_contract():
                         f"/api/v1/knowledge-base/{base_id}/docs/upload",
                         headers=headers,
                         data={"sourceType": "local", "processMode": "chunk"},
-                        files={"file": ("fake.xlsx", b"not-a-sheet", "application/octet-stream")},
+                        files={
+                            "file": (
+                                "fake.xls",
+                                b"not-a-sheet",
+                                "application/octet-stream",
+                            )
+                        },
                     )
                     assert unsupported.status_code == 415
                     assert unsupported.json()["error"]["code"] == "UNSUPPORTED_DOCUMENT_TYPE"

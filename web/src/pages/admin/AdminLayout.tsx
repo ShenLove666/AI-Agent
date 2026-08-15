@@ -268,6 +268,7 @@ export function AdminLayout() {
   const navigate = useNavigate();
   const { user, logout } = useAuthStore();
   const [collapsed, setCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
   const [passwordForm, setPasswordForm] = useState({
@@ -289,6 +290,21 @@ export function AdminLayout() {
   const isDashboardRoute = location.pathname.startsWith("/admin/dashboard");
   // 知识图谱页要沉浸式铺满，去掉内容区内边距与面包屑
   const isGraphRoute = location.pathname.startsWith("/admin/knowledge-graph");
+
+  // The mobile drawer is independent from the desktop collapsed state.  A
+  // route change should always dismiss it so the next page is not obscured.
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setMobileSidebarOpen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [mobileSidebarOpen]);
 
   const handleLogout = async () => {
     await logout();
@@ -510,7 +526,15 @@ export function AdminLayout() {
 
   return (
     <div className="admin-layout flex h-screen">
-      <aside className={cn("admin-sidebar", collapsed && "admin-sidebar--collapsed")}>
+      <aside
+        id="admin-sidebar"
+        className={cn(
+          "admin-sidebar",
+          collapsed && "admin-sidebar--collapsed",
+          mobileSidebarOpen && "admin-sidebar--mobile-open"
+        )}
+        aria-label="管理后台主导航"
+      >
         <div className="admin-sidebar__brand">
           <div className={cn("flex items-center gap-3", collapsed && "justify-center")}>
             <div className="admin-sidebar__logo">
@@ -693,6 +717,15 @@ export function AdminLayout() {
         </div>
       </aside>
 
+      {mobileSidebarOpen ? (
+        <button
+          type="button"
+          className="admin-sidebar__backdrop lg:hidden"
+          aria-label="关闭侧边栏"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      ) : null}
+
       <div
         className={cn(
           "admin-main flex min-h-screen min-w-0 flex-1 flex-col overflow-auto",
@@ -706,8 +739,10 @@ export function AdminLayout() {
                 variant="ghost"
                 size="icon"
                 className="lg:hidden"
-                onClick={() => setCollapsed((prev) => !prev)}
-                aria-label="切换侧边栏"
+                onClick={() => setMobileSidebarOpen((prev) => !prev)}
+                aria-label={mobileSidebarOpen ? "关闭侧边栏" : "打开侧边栏"}
+                aria-expanded={mobileSidebarOpen}
+                aria-controls="admin-sidebar"
               >
                 <Menu className="h-5 w-5" />
               </Button>

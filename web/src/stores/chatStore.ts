@@ -35,6 +35,7 @@ import {
   hasAgentProgressScheduler
 } from "@/utils/agentProgressPresentation";
 import { storage } from "@/utils/storage";
+import { API_BASE_URL } from "@/services/api";
 
 interface ChatState {
   sessions: Session[];
@@ -176,9 +177,17 @@ function mapConversationMessages(data: ConversationMessageVO[]): Message[] {
   }));
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-
 export const useChatStore = create<ChatState>((set, get) => {
+  // Loading a conversation is not cancellable through the current service
+  // contract.  Keep a request sequence so a slower, older response can never
+  // clear the loading state or replace the conversation selected afterwards.
+  let sessionLoadSequence = 0;
+
+  const invalidateSessionLoad = () => {
+    sessionLoadSequence += 1;
+    return sessionLoadSequence;
+  };
+
   /**
    * 应用单条 agent_progress 事件到当前流式消息。
    * - 仅更新 streamingMessageId 对应的 assistant 消息（老请求不污染新请求）
@@ -524,6 +533,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     }
   },
   createSession: async () => {
+    invalidateSessionLoad();
     const state = get();
     if (state.messages.length === 0 && !state.currentSessionId) {
       set({
@@ -555,12 +565,16 @@ export const useChatStore = create<ChatState>((set, get) => {
     return "";
   },
   deleteSession: async (sessionId) => {
+    if (get().currentSessionId === sessionId) {
+      invalidateSessionLoad();
+    }
     try {
       await deleteSessionRequest(sessionId);
       set((state) => ({
         sessions: state.sessions.filter((session) => session.id !== sessionId),
         messages: state.currentSessionId === sessionId ? [] : state.messages,
         currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
+        isLoading: state.currentSessionId === sessionId ? false : state.isLoading,
         openedSourceMessageId:
           state.currentSessionId === sessionId ? null : state.openedSourceMessageId
       }));
@@ -587,6 +601,7 @@ export const useChatStore = create<ChatState>((set, get) => {
   selectSession: async (sessionId) => {
     if (!sessionId) return;
     if (get().currentSessionId === sessionId && get().messages.length > 0) return;
+    const requestSequence = invalidateSessionLoad();
     if (get().isStreaming) {
       get().cancelGeneration();
     }
@@ -597,28 +612,28 @@ export const useChatStore = create<ChatState>((set, get) => {
       thinkingStartAt: null,
       openedSourceMessageId: null
     });
+    const isCurrentRequest = () =>
+      requestSequence === sessionLoadSequence && get().currentSessionId === sessionId;
     try {
       const data = await listMessages(sessionId);
-      if (get().currentSessionId !== sessionId) {
-        return;
-      }
+      if (!isCurrentRequest()) return;
       const mapped = mapConversationMessages(data);
       set({ messages: mapped });
     } catch (error) {
-      toast.error((error as Error).message || "加载消息失败");
-    } finally {
-      if (get().currentSessionId !== sessionId) {
-        set({ isLoading: false });
-        return;
+      if (isCurrentRequest()) {
+        toast.error((error as Error).message || "加载消息失败");
       }
-      set({
-        isLoading: false,
-        isStreaming: false,
-        streamTaskId: null,
-        streamAbort: null,
-        streamingMessageId: null,
-        cancelRequested: false
-      });
+    } finally {
+      if (isCurrentRequest()) {
+        set({
+          isLoading: false,
+          isStreaming: false,
+          streamTaskId: null,
+          streamAbort: null,
+          streamingMessageId: null,
+          cancelRequested: false
+        });
+      }
     }
   },
   updateSessionTitle: (sessionId, title) => {

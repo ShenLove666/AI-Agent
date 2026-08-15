@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -60,6 +60,30 @@ describe("AdminLayout top navigation", () => {
     expect(container.querySelector(".admin-topbar-search")?.className).toContain("min-w-0");
     expect(container.querySelector(".admin-topbar-search")?.parentElement?.className).toContain(
       "min-w-0"
+    );
+  });
+
+  it("opens the mobile navigation as an overlay without changing desktop collapse state", () => {
+    const { container } = render(
+      <MemoryRouter initialEntries={["/admin/traces"]}>
+        <AdminLayout />
+      </MemoryRouter>
+    );
+
+    const toggle = screen.getByRole("button", { name: "打开侧边栏" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector(".admin-sidebar")?.className).toContain(
+      "admin-sidebar--mobile-open"
+    );
+    const backdrop = container.querySelector(".admin-sidebar__backdrop");
+    expect(backdrop).toBeInTheDocument();
+    fireEvent.click(backdrop as HTMLElement);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".admin-sidebar")?.className).not.toContain(
+      "admin-sidebar--mobile-open"
     );
   });
 });
